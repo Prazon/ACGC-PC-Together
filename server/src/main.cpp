@@ -436,6 +436,10 @@ int main(int argc, char** argv) {
         std::cerr << "Server configuration failed: " << error << '\n';
         return 2;
     }
+    if (config.clock.sync_to_system_clock &&
+        (config.clock.mode != acserver::ClockMode::Realtime || config.clock.starting_town_unix_seconds >= 0)) {
+        std::cout << "sync_to_system_clock is on: clock_mode, clock_scale, and starting_datetime are ignored.\n";
+    }
     if (!invite_required) config.allow_unauthenticated = true;
     if (const char* environment_key = std::getenv("ACGC_INVITE_KEY");
         environment_key != nullptr && environment_key[0] != '\0') {

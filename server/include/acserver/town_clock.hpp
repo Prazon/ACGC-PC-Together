@@ -30,6 +30,11 @@ struct ClockConfig {
     ClockMode mode = ClockMode::Realtime;
     double scale = 1.0;
     bool allow_time_travel = false;
+    // Slaves town time to the host system clock (plus the timezone offset) on
+    // every advance, overriding the mode and any starting time. Realtime mode
+    // without a starting time already behaves this way; the flag additionally
+    // covers seeded, scaled, fixed, and admin-adjusted clocks.
+    bool sync_to_system_clock = false;
     // Local civil time encoded on a UTC-like timeline. Used only when a town
     // has no persisted clock state; -1 selects the current configured time.
     std::int64_t starting_town_unix_seconds = -1;

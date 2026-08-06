@@ -362,6 +362,56 @@ void named_timezone_applies_dst_transitions() {
     CHECK(summer.state().town_unix_seconds - 1721044800 == -5 * 3600);
 }
 
+void system_clock_sync_overrides_seeded_and_scaled_time() {
+    constexpr std::int64_t start = 1735732800; // 2025-01-01 12:00:00 UTC
+    constexpr std::int64_t hour = 3600;
+    acserver::ClockConfig seeded;
+    seeded.mode = acserver::ClockMode::Scaled;
+    seeded.scale = 4.0;
+    seeded.starting_town_unix_seconds = 1893553445;
+
+    // Without the flag a seeded, scaled town keeps its own timeline.
+    acserver::TownClock unsynced(seeded, 7);
+    CHECK(unsynced.initialize(start));
+    CHECK(unsynced.state().town_unix_seconds == seeded.starting_town_unix_seconds);
+    CHECK(unsynced.advance(start + hour, true));
+    CHECK(unsynced.state().town_unix_seconds == seeded.starting_town_unix_seconds + 4 * hour);
+
+    // With the flag the host clock wins over the start, the mode, and the scale.
+    acserver::ClockConfig synced = seeded;
+    synced.sync_to_system_clock = true;
+    acserver::TownClock clock(synced, 7);
+    CHECK(clock.initialize(start));
+    CHECK(clock.state().town_unix_seconds == start);
+    CHECK(clock.advance(start + hour, true));
+    CHECK(clock.state().town_unix_seconds == start + hour);
+
+    // A persisted town resumes on the host clock rather than its stored drift,
+    // including the backwards correction after an administrative time change.
+    const auto encoded = clock.encode_state();
+    CHECK(!encoded.empty());
+    acserver::TownClock resumed(synced, 7);
+    CHECK(resumed.decode_state(encoded));
+    CHECK(resumed.advance(start + 5 * hour, true));
+    CHECK(resumed.state().town_unix_seconds == start + 5 * hour);
+    CHECK(resumed.set_time(start + 90 * hour, start + 5 * hour, false));
+    CHECK(resumed.advance(start + 6 * hour, true));
+    CHECK(resumed.state().town_unix_seconds == start + 6 * hour);
+
+    // A backwards host clock still needs allow_time_travel.
+    CHECK(resumed.advance(start + 2 * hour, true));
+    CHECK(resumed.state().town_unix_seconds == start + 6 * hour);
+
+    // The configured timezone offset still applies to the synced time.
+    acserver::ClockConfig zoned;
+    zoned.sync_to_system_clock = true;
+    zoned.timezone = "America/Winnipeg";
+    acserver::TownClock local(zoned, 7);
+    CHECK(local.initialize(start));
+    CHECK(local.advance(start + hour, true));
+    CHECK(local.state().town_unix_seconds == start + hour - 6 * hour);
+}
+
 void town_configuration_is_loaded_and_validated() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -378,7 +428,7 @@ void town_configuration_is_loaded_and_validated() {
                   "tick_rate = 60\nsnapshot_rate = 20\nconnection_timeout_ms = 45000\n"
                   "dashboard = false\n\n[town]\ntown_id = 91\ntown_name = Winnipeg\ntown_seed = 42\n"
                   "\n[clock]\ntimezone = America/Winnipeg\nutc_offset_minutes = -360\n"
-                  "clock_mode = scaled\nclock_scale = 4.0\n"
+                  "clock_mode = scaled\nclock_scale = 4.0\nsync_to_system_clock = true\n"
                   "starting_datetime = \"2030-01-02 03:04:05\"\n"
                   "allow_time_travel = true\nempty_town_simulation = scheduled\n"
                   "\n[storage]\ndata_directory = town-data\n"
@@ -399,6 +449,7 @@ void town_configuration_is_loaded_and_validated() {
     CHECK(config.clock.timezone == "America/Winnipeg");
     CHECK(config.clock.mode == acserver::ClockMode::Scaled);
     CHECK(config.clock.scale == 4.0);
+    CHECK(config.clock.sync_to_system_clock);
     CHECK(config.clock.starting_town_unix_seconds == 1893553445);
     CHECK(config.clock.allow_time_travel);
     CHECK(invite_required);
@@ -411,6 +462,7 @@ void town_configuration_is_loaded_and_validated() {
     bool generated_invite_required = false;
     CHECK(acserver::load_town_config(generated, generated_config, generated_invite_required, false, error));
     CHECK(generated_config.town_name == config.town_name);
+    CHECK(generated_config.clock.sync_to_system_clock);
     CHECK(generated_config.clock.starting_town_unix_seconds == config.clock.starting_town_unix_seconds);
     CHECK(generated_config.invite_key.empty());
     CHECK(generated_invite_required);
@@ -2468,6 +2520,7 @@ int main() {
         {"runtime journal replay", runtime_replays_uncheckpointed_world_journal},
         {"SQLite WAL metadata", sqlite_metadata_uses_wal_and_migrations},
         {"IANA timezone DST", named_timezone_applies_dst_transitions},
+        {"system clock sync", system_clock_sync_overrides_seeded_and_scaled_time},
         {"town configuration", town_configuration_is_loaded_and_validated},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},

@@ -292,6 +292,9 @@ bool load_town_config(const std::filesystem::path& path,
         } else if (key == "clock_scale") {
             valid = parse_double(value, 0.01, 1000.0, double_value);
             if (valid) config.clock.scale = double_value;
+        } else if (key == "sync_to_system_clock") {
+            valid = parse_boolean(value, boolean_value);
+            if (valid) config.clock.sync_to_system_clock = boolean_value;
         } else if (key == "starting_datetime") {
             valid = parse_datetime(value, signed_value);
             if (valid) config.clock.starting_town_unix_seconds = signed_value;
@@ -369,7 +372,10 @@ bool write_default_town_config(const std::filesystem::path& path,
               "timezone = " << quote_ini(config.clock.timezone) << "\n"
               "utc_offset_minutes = " << config.clock.utc_offset_minutes << "\n"
               "clock_mode = " << clock_mode_name(config.clock.mode) << "\n"
-              "clock_scale = " << std::setprecision(15) << config.clock.scale << "\n";
+              "clock_scale = " << std::setprecision(15) << config.clock.scale << "\n"
+              "; Continuously match the host system clock. Overrides clock_mode,\n"
+              "; clock_scale, starting_datetime, and any administrative time change.\n"
+              "sync_to_system_clock = " << (config.clock.sync_to_system_clock ? "true" : "false") << "\n";
     if (config.clock.starting_town_unix_seconds >= 0) {
         output << "; Used only for a new town; existing towns keep persisted time.\n"
                   "starting_datetime = "

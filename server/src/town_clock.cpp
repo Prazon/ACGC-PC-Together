@@ -55,7 +55,8 @@ acnet::Revision TownClock::next_revision(acnet::Revision revision) {
 bool TownClock::initialize(std::int64_t wall_unix_seconds) {
     if (wall_unix_seconds < 0) return false;
     state_.last_wall_unix_seconds = wall_unix_seconds;
-    state_.town_unix_seconds = config_.starting_town_unix_seconds >= 0
+    const bool seeded = config_.starting_town_unix_seconds >= 0 && !config_.sync_to_system_clock;
+    state_.town_unix_seconds = seeded
         ? config_.starting_town_unix_seconds
         : wall_unix_seconds + static_cast<std::int64_t>(timezone_offset_minutes(wall_unix_seconds)) * 60;
     state_.day_number = state_.town_unix_seconds / kSecondsPerDay;
@@ -98,7 +99,11 @@ bool TownClock::advance(std::int64_t wall_unix_seconds, bool town_empty) {
     if (config_.mode == ClockMode::Fixed) wall_delta = 0;
     const double scale = config_.mode == ClockMode::Scaled ? config_.scale : 1.0;
     std::int64_t town_delta = static_cast<std::int64_t>(std::llround(static_cast<double>(wall_delta) * scale));
-    if (config_.mode == ClockMode::Realtime && config_.starting_town_unix_seconds < 0) {
+    // An explicit sync request outranks the mode, the seeded start, and any
+    // drift left behind by an administrative set_time.
+    const bool follow_system_clock = config_.sync_to_system_clock ||
+        (config_.mode == ClockMode::Realtime && config_.starting_town_unix_seconds < 0);
+    if (follow_system_clock) {
         const std::int64_t target = wall_unix_seconds +
             static_cast<std::int64_t>(timezone_offset_minutes(wall_unix_seconds)) * 60;
         town_delta = target - state_.town_unix_seconds;
