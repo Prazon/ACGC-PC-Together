@@ -58,7 +58,7 @@ User provides disc image (.ciso/.iso/.gcm)
 1. **Transforms source files in-place**: replaces inline `#include` with sized-array declarations and lazy-load code under `#ifdef TARGET_PC`
 2. **Generates `pc/src/pc_assets.c`** (~30K lines): central loader with asset table mapping ~2500 assets to their ROM offsets, byte-swap types, and source (DOL or REL)
 3. **Generates `pc/include/pc_assets.h`**: public API (`pc_assets_init`, `pc_load_asset`)
-4. **Copies `.bin` fallback files** to `pc/build32/bin/assets/` for non-disc-image builds
+4. **Copies `.bin` fallback files** to `pc/build64/bin/assets/` for non-disc-image builds
 
 ### Fallback Chain
 
@@ -129,7 +129,7 @@ User provides disc image (.ciso/.iso/.gcm)
 
 | File | Purpose |
 |------|---------|
-| `pc/include/pc_platform.h` | Platform config, 32-bit guard, SDL2/GL includes, crash API, widescreen defs |
+| `pc/include/pc_platform.h` | Platform config, 64-bit ABI guard, SDL2/GL includes, crash API, widescreen defs |
 | `pc/include/pc_gx_internal.h` | PCGXState, PCGXVertex, PCGXTevStage, indirect texture structs |
 | `pc/include/pc_save_bswap.h` | GCI save byte-swap API |
 | `pc/include/pc_model_viewer.h` | Model viewer struct and init/cleanup |
@@ -318,29 +318,24 @@ Actor profile validation remains in `m_actor.c` to skip NULL/invalid profiles be
 
 ## Build System
 
-32-bit MinGW GCC 15.x (i686) + CMake + SDL2 2.30.10 + GLAD2 (GL 3.3 Core).
-
-**Must compile as 32-bit** — decomp code casts pointers to u32 everywhere.
+The sole supported ABI is 64-bit. CMake rejects any compiler whose pointer
+width is not eight bytes. Windows builds use native MinGW-w64 CMake with Ninja;
+the build produces both `AnimalCrossing.exe` and
+`AnimalCrossingServer.exe`.
 
 ### Quick Start
 
-```bash
-# 1. Place disc image in pc/build32/bin/rom/
-# 2. Build (from MSYS2 MINGW32 shell):
-./build_pc.sh
+```bat
+rem Install the mingw-w64-x86_64 GCC, CMake, Ninja, SDL2, and SQLite packages.
+build_pc.bat
 
-# 3. Run:
-pc/build32/bin/AnimalCrossing.exe --verbose
+rem Place a legitimate USA disc image in pc\build64\bin\rom, then run:
+pc\build64\bin\AnimalCrossing.exe --verbose
 ```
 
-`build_pc.sh` handles CMake configuration and build in one step.
-
-### Cross-Compilation
-
-| Toolchain | File | Target |
-|-----------|------|--------|
-| Linux i686 | `pc/cmake/Toolchain-linux32.cmake` | Native Linux 32-bit |
-| MinGW from Linux | `pc/cmake/Toolchain-mingw32.cmake` | Windows 32-bit cross-compile |
+For Linux and macOS, configure `pc/` directly with 64-bit CMake and Ninja as
+shown in the root `README.md`. `pc/cmake/Toolchain-mingw64-ninja.cmake` is the
+only checked-in cross-platform Windows toolchain file.
 
 ### CLI Flags
 
@@ -350,20 +345,25 @@ pc/build32/bin/AnimalCrossing.exe --verbose
 | `--no-framelimit` | Disable the frame limiter |
 | `--model-viewer [N]` | Launch model viewer (optional start index) |
 | `--time HOUR` | Override in-game hour (0-23) |
+| `--online HOST:PORT` | Connect to a dedicated town server |
+| `--town ID` | Select a nonzero town ID |
+| `--account ID` | Select the stable account identity |
+| `--invite-key KEY` | Authenticate to an invitation-only town |
 | `--help` / `-h` | Show help |
 
 ## Platform Support
 
 | Platform | Status |
 |----------|--------|
-| Windows (MinGW i686) | Primary target, fully tested |
-| Linux (i686) | Compiles and links, mmap arena |
+| Windows (MinGW-w64 x86-64) | Primary target, game and server tested |
+| Linux (x86-64/ARM64) | CMake/Ninja game and server targets |
+| macOS (x86-64/Apple Silicon) | CMake/Ninja game and server targets |
 
 Linux support uses POSIX equivalents: `mmap()` instead of `VirtualAlloc()`, `mkdir()` guards for directory creation.
 
 ## Common Pitfalls
 
-- **32-bit required**: 64-bit builds crash in JKRHeap (pointer→u32 casts).
+- **64-bit required**: display-list pointer fields use `uintptr_t`; truncating them is unsupported and rejected at configure and compile time.
 - **`__attribute__((weak))`** doesn't work on MinGW/PE. Use regular definitions.
 - **libc64/malloc.c** is excluded — it redefines system malloc and crashes the CRT.
 - **NDEBUG must always be defined**: decomp asserts have side effects. Without NDEBUG, assert macros run and cause texture corruption.

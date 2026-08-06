@@ -322,7 +322,58 @@ static int mMsg_Count_MsgData(u8* data) {
     return i;
 }
 
+#ifdef NETCODE_ENABLED
+static u8* mMsg_AppendOnlineText(u8* destination, const char* text) {
+    while (*text != '\0') *destination++ = (u8)*text++;
+    return destination;
+}
+
+static u8* mMsg_AppendOnlineControl(u8* destination, u8 control) {
+    *destination++ = CHAR_CONTROL_CODE;
+    *destination++ = control;
+    return destination;
+}
+
+static int mMsg_LoadOnlineTownTime(mMsg_Data_c* msg_data, int index, int cut) {
+    u8* output;
+    if (index != MSG_PC_ONLINE_TOWN_TIME || msg_data == NULL) return FALSE;
+    output = msg_data->text_buf.data;
+    output = mMsg_AppendOnlineText(output, "Welcome aboard!");
+    *output++ = CHAR_NEW_LINE;
+    output = mMsg_AppendOnlineText(output, "The town clock says ");
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_HOUR);
+    *output++ = ':';
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_MIN);
+    *output++ = CHAR_SPACE;
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_AM_PM);
+    *output++ = '.';
+    *output++ = CHAR_NEW_LINE;
+    output = mMsg_AppendOnlineText(output, "Today is ");
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_MONTH);
+    *output++ = CHAR_SPACE;
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_DAY);
+    *output++ = ',';
+    *output++ = CHAR_SPACE;
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_PUT_STRING_YEAR);
+    *output++ = '.';
+    *output++ = CHAR_NEW_LINE;
+    output = mMsg_AppendOnlineText(output, "That's the official town time.");
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_SET_NEXT_MESSAGE_F);
+    *output++ = 0x2A;
+    *output++ = 0xC7;
+    output = mMsg_AppendOnlineControl(output, mFont_CONT_CODE_CONTINUE);
+    msg_data->msg_no = index;
+    msg_data->data_loaded = TRUE;
+    msg_data->msg_len = mMsg_Count_MsgData(msg_data->text_buf.data);
+    msg_data->cut = cut;
+    return TRUE;
+}
+#endif
+
 static int mMsg_LoadMsgData(mMsg_Data_c* msg_data, int index, int cut) {
+#ifdef NETCODE_ENABLED
+    if (index == MSG_PC_ONLINE_TOWN_TIME) return mMsg_LoadOnlineTownTime(msg_data, index, cut);
+#endif
     if (msg_data != NULL) {
         u32 addr;
         u32 size;
@@ -378,7 +429,11 @@ static int mMsg_LoadMsgData(mMsg_Data_c* msg_data, int index, int cut) {
 }
 
 extern int mMsg_ChangeMsgData(mMsg_Window_c* msg_p, int index) {
-    if (index >= 0 && index < MSG_MAX && mMsg_LoadMsgData(msg_p->msg_data, index, FALSE)) {
+    int valid_index = index >= 0 && index < MSG_MAX;
+#ifdef NETCODE_ENABLED
+    valid_index = valid_index || index == MSG_PC_ONLINE_TOWN_TIME;
+#endif
+    if (valid_index && mMsg_LoadMsgData(msg_p->msg_data, index, FALSE)) {
         msg_p->end_text_cursor_idx = 0;
         mMsg_Clear_CursolIndex(msg_p);
         mMsg_SetTimer(msg_p, 20.0f);

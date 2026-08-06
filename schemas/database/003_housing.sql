@@ -1,0 +1,1 @@
+CREATE TABLE housing_metadata(house_id INTEGER PRIMARY KEY, owner_account_id INTEGER NOT NULL UNIQUE, original_slot INTEGER NOT NULL CHECK(original_slot BETWEEN 0 AND 3), zone_id INTEGER NOT NULL, revision INTEGER NOT NULL);

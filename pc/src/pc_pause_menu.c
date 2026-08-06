@@ -3,6 +3,7 @@
 #include "pc_settings_menu.h"
 #include "pc_menu_util.h"
 #include "pc_text_draw.h"
+#include "m_net_hooks.h"
 
 #include "m_font.h"
 #include "m_rcp.h"
@@ -210,7 +211,8 @@ int pc_pause_menu_handle_event(const SDL_Event* e) {
 static void draw_main_page(struct game_s* game) {
     static const char* items[MAIN_ITEM_COUNT] = { "Resume", "Settings", "Quit Game" };
 
-    pc_menu_draw_centered(game, "- Paused -", 80.0f, 255, 255, 255, 255, 1.0f);
+    pc_menu_draw_centered(game, Net_IsConnected() ? "- Menu (Town Live) -" : "- Paused -",
+                          80.0f, 255, 255, 255, 255, 1.0f);
 
     f32 y = 110.0f;
     f32 line_h = 18.0f;

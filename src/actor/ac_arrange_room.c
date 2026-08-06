@@ -173,7 +173,7 @@ static void Arrange_Room_Actor_draw(ACTOR* actor, GAME* game) {
 }
 
 static void Arrange_Room_Actor_move(ACTOR* actor, GAME* game) {
-
+    (void)actor; (void)game;
 }
 
 static void aAR_Redma() {

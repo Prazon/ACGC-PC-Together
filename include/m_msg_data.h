@@ -20,6 +20,10 @@ extern "C" {
 #define MSG_SONCHO_LIGHTHOUSE_2     0x340b
 
 #define MSG_MAX                     0x3F91 /* Maximum message id */
+#ifdef NETCODE_ENABLED
+/* PC-only synthetic text, loaded without modifying or distributing ROM data. */
+#define MSG_PC_ONLINE_TOWN_TIME     MSG_MAX
+#endif
 
 #ifdef __cplusplus
 }

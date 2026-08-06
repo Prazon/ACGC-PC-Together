@@ -11,6 +11,7 @@
 #include "m_house.h"
 #include "m_bgm.h"
 #include "m_timeIn_ovl.h"
+#include "m_net_hooks.h"
 #include "dolphin/os/OSRtc.h"
 
 enum {
@@ -81,6 +82,7 @@ static void aNPS2_schedule_proc(NPC_ACTOR*, GAME_PLAY*, int);
 
 static int aNPS2_count_player_sum(void);
 static int aNPS2_setup_game_start(NPC_P_SEL2_ACTOR* p_sel2, GAME_PLAY* play);
+static int aNPS2_setup_load_data(NPC_P_SEL2_ACTOR* p_sel2, GAME_PLAY* play);
 
 static void aNPS2_change_talk_proc(NPC_P_SEL2_ACTOR* p_sel2, GAME_PLAY* play, int talk_idx);
 
@@ -173,6 +175,24 @@ static void aNPS2_actor_init(ACTOR* actorx, GAME* game) {
 static void aNPS2_actor_move(ACTOR* actorx, GAME* game) {
     NPC_P_SEL2_ACTOR* p_sel2 = (NPC_P_SEL2_ACTOR*)actorx;
     GAME_PLAY* play = (GAME_PLAY*)game;
+
+    /* K.K.'s player-select conversation is not part of save initialization.
+     * Quickstart selects the server-assigned resident slot and invokes the
+     * same card/start-data path that the conversation would have selected. */
+    if (Net_QuickstartEnabled() && !p_sel2->talk_end_flag && !p_sel2->start_flag) {
+        const int player_no = Net_ResidentSlot();
+        if (player_no >= 0) {
+            p_sel2->player_no = player_no;
+            p_sel2->card_file_idx = -1;
+            p_sel2->talk_idx = Save_Get(private_data[player_no]).exists
+                                   ? aNPS2_TALK_START_TYPE0
+                                   : aNPS2_TALK_START_TYPE3;
+            p_sel2->talk_end_flag = TRUE;
+            if (aNPS2_setup_load_data(p_sel2, play) == mCD_TRANS_ERR_NONE) {
+                p_sel2->start_flag = TRUE;
+            }
+        }
+    }
 
     CLIP(npc_clip)->move_proc(actorx, game);
 

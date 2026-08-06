@@ -139,6 +139,11 @@ static void Player_actor_CutTree_Swing_axe(ACTOR* actor, GAME* game, mPlayer_mai
         int ut_z;
         mActor_name_t item = main_axe->axe_common.item;
 
+        if (Net_IsConnected()) {
+            (void)Net_RequestChop(&main_axe->axe_common.target_pos);
+            return;
+        }
+
         if (mFI_Wpos2UtNum(&ut_x, &ut_z, main_axe->axe_common.target_pos)) {
             mActor_name_t tree = Player_actor_Get_TreeNoToStumpNo(actor, game, item, ut_x, ut_z, main_axe, flag);
             s16 type;

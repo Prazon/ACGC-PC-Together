@@ -386,7 +386,8 @@ static void aNG2_sitdown(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play) {
     guide2->npc_class.actor_class.shape_info.rotation.y = 0;
 
     /* Wait for the sit animation to finish before continuing */
-    if (guide2->npc_class.draw.main_animation_state == cKF_STATE_STOPPED) {
+    guide2->online_action_frames += (int)play->game.graph->dt_num_60fps_frames;
+    if (Net_IsConnected() || guide2->npc_class.draw.main_animation_state == cKF_STATE_STOPPED) {
         mMsg_UNSET_LOCKCONTINUE();
         guide2->next_action = aNG2_ACTION_PNAME_MENU_OPEN_WAIT;
         aNG2_setupAction(guide2, play, aNG2_ACTION_SDON_AND_PB_WAIT);
@@ -437,6 +438,23 @@ static void aNG2_msg_win_open_wait(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play) {
 
 static void aNG2_sex_select_wait(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play) {
     if (mMsg_CHECK_MAINNORMALCONTINUE() == TRUE) {
+        if (Net_IsConnected()) {
+            switch (mChoice_GET_CHOSENUM()) {
+                case mChoice_CHOICE0:
+                    Now_Private->gender = mPr_SEX_MALE;
+                    break;
+                case mChoice_CHOICE1:
+                    Now_Private->gender = mPr_SEX_FEMALE;
+                    break;
+                default:
+                    guide2->next_action = aNG2_ACTION_PNAME_MENU_OPEN_WAIT;
+                    aNG2_setupAction(guide2, play, aNG2_ACTION_SDON_AND_PB_WAIT);
+                    return;
+            }
+            Net_ApplyTownIdentity();
+            aNG2_setupAction(guide2, play, aNG2_ACTION_SCENE_CHANGE_WAIT);
+            return;
+        }
         switch (mChoice_GET_CHOSENUM()) {
             case mChoice_CHOICE0: // male
             case mChoice_CHOICE1: // female
@@ -741,9 +759,12 @@ static void aNG2_last_talk_end_wait_init(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* pl
     guide2->npc_class.right_hand.item_actor_p = NULL;
 }
 
-static void aNG2_scene_change_wait_init(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play) {
-    /* Init next scene transition */
-    goto_next_scene(play, 0, 1);
+static void aNG2_scene_change_wait(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play) {
+    /* See the first-town Rover: door data is not guaranteed to exist during
+     * actor construction, so keep retrying without consuming the transition. */
+    if (goto_next_scene(play, 0, 1) != TRUE) {
+        return;
+    }
     play->fb_wipe_type = WIPE_TYPE_FADE_BLACK;
     Common_Get(transition).wipe_type = WIPE_TYPE_CIRCLE_LEFT;
 
@@ -752,6 +773,10 @@ static void aNG2_scene_change_wait_init(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* pla
     mEnv_DecideWeather_NormalGameStart();
     aNG2_set_pl_face_type(guide2);
     mPr_SetNowPrivateCloth();
+    Net_RandomizeInitialAppearance();
+    /* Existing-town residents still publish their final Rover appearance. The
+     * server ignores their local foreground when the town is initialized. */
+    if (Net_IsConnected()) (void)Net_SubmitInitialTown();
     Common_Set(submenu_disabled, TRUE);
     mBGMPsComp_make_ps_wipe(0x41C2);
     mBGMPsComp_scene_mode(18);
@@ -789,7 +814,7 @@ static void aNG2_init_proc(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play, int action
         &aNG2_sitdown2_start_wait_init,
         &aNG2_sitdown2_init,
         &aNG2_last_talk_end_wait_init,
-        &aNG2_scene_change_wait_init,
+        (aNG2_INIT_PROC)&none_proc1,
     };
 
     (*init_proc[action])(guide2, play);
@@ -825,11 +850,12 @@ static void aNG2_setupAction(NPC_GUIDE2_ACTOR* guide2, GAME_PLAY* play, int acti
         &aNG2_sitdown2_start_wait,
         &aNG2_sitdown2,
         &aNG2_last_talk_end_wait,
-        (aNG2_PROC)&none_proc1,
+        &aNG2_scene_change_wait,
     };
 
     guide2->action = action;
     guide2->proc = process[action];
+    guide2->online_action_frames = 0;
     aNG2_set_animation(guide2, action);
     aNG2_init_proc(guide2, play, action);
 }

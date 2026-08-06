@@ -4,7 +4,7 @@
 #include <time.h>
 
 /* --- Memory arena --- */
-static u8* arena_memory = NULL;
+u8* arena_memory = NULL;
 static u8* arena_lo = NULL;
 static u8* arena_hi = NULL;
 
@@ -234,7 +234,20 @@ void LCDisable(void) {}
 /* --- Init --- */
 void OSInit(void) {
     if (!arena_memory) {
-        arena_memory = (u8*)malloc(PC_MAIN_MEMORY_SIZE);
+        /* Native 64-bit allocations are naturally above the emulated N64
+         * segment range, so the OS may choose the arena address. */
+#ifdef _WIN32
+        arena_memory = (u8*)VirtualAlloc(NULL,
+            PC_MAIN_MEMORY_SIZE, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
+        arena_memory = (u8*)mmap(NULL, PC_MAIN_MEMORY_SIZE,
+            PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if (arena_memory == MAP_FAILED) arena_memory = NULL;
+#endif
+        if (!arena_memory) {
+            fprintf(stderr, "[PC] WARNING: virtual arena allocation failed; falling back to malloc\n");
+            arena_memory = (u8*)malloc(PC_MAIN_MEMORY_SIZE);
+        }
         if (!arena_memory) {
             fprintf(stderr, "Failed to allocate main memory arena\n");
             exit(1);
@@ -341,8 +354,8 @@ int __osResetSwitchPressed = 0;
 /* --- Address translation (physical addr → arena_memory offset) --- */
 void* OSPhysicalToCached(u32 paddr) { return (void*)(arena_memory + paddr); }
 void* OSPhysicalToUncached(u32 paddr) { return (void*)(arena_memory + paddr); }
-u32 OSCachedToPhysical(void* caddr) { return (u32)((u8*)caddr - arena_memory); }
-u32 OSUncachedToPhysical(void* ucaddr) { return (u32)((u8*)ucaddr - arena_memory); }
+u32 OSCachedToPhysical(void* caddr) { return (u32)(uintptr_t)((u8*)caddr - arena_memory); }
+u32 OSUncachedToPhysical(void* ucaddr) { return (u32)(uintptr_t)((u8*)ucaddr - arena_memory); }
 void* OSCachedToUncached(void* caddr) { return caddr; }
 void* OSUncachedToCached(void* ucaddr) { return ucaddr; }
 

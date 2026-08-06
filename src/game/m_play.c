@@ -1,4 +1,5 @@
 #include "m_play.h"
+#include "m_net_hooks.h"
 
 #include "evw_anime.h"
 #include "m_common_data.h"
@@ -407,9 +408,9 @@ extern void play_init(GAME* game) {
     int type;
     fbdemo_fade* fade;
     int freebytes;
-    u32 alloc;
-    u32 aligned;
-    u32 size;
+    uintptr_t alloc;
+    uintptr_t aligned;
+    uintptr_t size;
 
     game_resize_hyral(game, -Game_play_HYRAL_SIZE); // reserve bytes from gamealloc
     Common_Set(rhythym_updated, 0);
@@ -473,7 +474,7 @@ extern void play_init(GAME* game) {
     play->fade_color_value.rgba8888 = 0;
 
     freebytes = game_getFreeBytes(game);
-    alloc = (u32)THA_alloc16(&game->tha, freebytes);
+    alloc = (uintptr_t)THA_alloc16(&game->tha, freebytes);
     aligned = ALIGN_NEXT(alloc, 16);
     size = aligned - alloc;
 
@@ -501,14 +502,16 @@ extern void play_init(GAME* game) {
 
 static void Game_play_move_fbdemo_not_move(GAME* game) {
     GAME_PLAY* play = (GAME_PLAY*)game;
+    int online_menu;
 
     game->doing_point = 0;
     game->doing_point_specific = 0x8F;
     game->doing_point = 1;
 
     mSM_submenu_ctrl(play);
+    online_menu = Net_IsConnected() && play->submenu.process_status != mSM_PROCESS_WAIT;
 
-    if (play->submenu.process_status == mSM_PROCESS_WAIT) {
+    if (play->submenu.process_status == mSM_PROCESS_WAIT || online_menu) {
         game->doing_point = 2;
         mDemo_Main(play);
         game->doing_point = 3;
@@ -522,7 +525,8 @@ static void Game_play_move_fbdemo_not_move(GAME* game) {
     game->doing_point = 6;
     mSM_submenu_move(&play->submenu);
 
-    if (play->submenu.process_status == mSM_PROCESS_WAIT) {
+    online_menu = Net_IsConnected() && play->submenu.process_status != mSM_PROCESS_WAIT;
+    if (play->submenu.process_status == mSM_PROCESS_WAIT || online_menu) {
         play->game_frame++;
         mVibctl_clr_force_stop(2);
         game->doing_point = 7;
@@ -532,7 +536,11 @@ static void Game_play_move_fbdemo_not_move(GAME* game) {
         game->doing_point = 9;
         game->doing_point = 0;
         game->doing_point_specific = 0x90;
-        Actor_info_call_actor(play, &play->actor_info);
+        if (online_menu) {
+            Actor_info_call_actor_except_player(play, &play->actor_info);
+        } else {
+            Actor_info_call_actor(play, &play->actor_info);
+        }
         game->doing_point = 0;
         game->doing_point_specific = 0x91;
         game->doing_point = 1;
@@ -553,9 +561,13 @@ static void Game_play_move(GAME* game) {
 #ifdef TARGET_PC
     {
         extern int g_pc_paused;
-        if (g_pc_paused) return;
+        /* The PC overlay remains interactive online, but only offline play
+         * actually stops. Input is still suppressed by padmgr while open. */
+        if (g_pc_paused && !Net_IsConnected()) return;
     }
 #endif
+
+    Net_PreSimulation(play);
 
     game->doing_point = 0;
     game->doing_point_specific = 0x8D;
@@ -584,7 +596,7 @@ static void Game_play_move(GAME* game) {
         }
     }
 
-    if (play->submenu.process_status == mSM_PROCESS_WAIT) {
+    if (play->submenu.process_status == mSM_PROCESS_WAIT || Net_IsConnected()) {
         evw_anime_add_scroll_phase(&play->game);
         game->doing_point = 0;
         game->doing_point_specific = 0x92;
@@ -613,6 +625,7 @@ static void Game_play_move(GAME* game) {
     title_demo_move(play);
     game->doing_point = 0;
     game->doing_point_specific = 0x95;
+    Net_PostSimulation(play);
 }
 
 // @BUG - this function works properly in N64, but not in GC.
@@ -1020,4 +1033,5 @@ static void Gameplay_Scene_Read(GAME_PLAY* play, s16 idx) {
     current->unk13 = 0;
     Gameplay_Scene_Init(play);
     sAdo_RoomType(mPl_SceneNo2SoundRoomType(Save_Get(scene_no)));
+    Net_OnSceneLoaded(play);
 }

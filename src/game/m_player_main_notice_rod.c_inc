@@ -33,8 +33,12 @@ static void Player_actor_setup_main_Notice_rod(ACTOR* actor, GAME* game) {
         int free_space = mPlib_Get_space_putin_item();
 
         if (free_space >= 0) {
-            Player_actor_putin_item(free_space, uki->get_fish_type_proc(&uki->actor_class), NULL);
-            main_notice->not_full_pocket = TRUE;
+            if (Net_IsConnected()) {
+                main_notice->not_full_pocket = Net_RequestEncounter(0);
+            } else {
+                Player_actor_putin_item(free_space, uki->get_fish_type_proc(&uki->actor_class), NULL);
+                main_notice->not_full_pocket = TRUE;
+            }
         } else {
             main_notice->not_full_pocket = FALSE;
         }

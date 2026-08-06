@@ -31,6 +31,9 @@
 #include "m_home.h"
 #include "lb_rtc.h"
 #include "game.h"
+#ifdef NETCODE_ENABLED
+#include "acnet/c_api.h"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -804,6 +807,13 @@ void mCD_InitAll(void) {
 
 int mCD_InitGameStart_bg(int player_no, int card_private_idx, int start_cond, s32* mounted_chan) {
     static int init_done = 0;
+
+#ifdef NETCODE_ENABLED
+    if (acnet_client_status() == ACNET_CONNECTED) {
+        const u8 online_slot = acnet_client_resident_slot();
+        if (online_slot < PLAYER_NUM) player_no = online_slot;
+    }
+#endif
 
     /* On GC, save is re-read from the memory card each game start.
      * On PC, the save was already reloaded from disk in common_data_reinit

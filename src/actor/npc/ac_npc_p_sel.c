@@ -10,6 +10,7 @@
 #include "m_choice.h"
 #include "m_msg.h"
 #include "m_vibctl.h"
+#include "m_net_hooks.h"
 #include "libultra/libultra.h"
 #include "dolphin/os/OSRtc.h"
 

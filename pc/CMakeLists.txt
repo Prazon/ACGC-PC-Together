@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.16)
 project(ac_pc C CXX)
 
+# MinGW's native CMake package may omit the convenience WIN32 variable when a
+# toolchain file explicitly names the same host system. Normalize it here so
+# platform selection is based on the actual target.
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(WIN32 TRUE)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
@@ -11,18 +18,15 @@ set(CMAKE_CXX_STANDARD 17)
 
 # Options
 option(PC_CONSOLE "Show console window (disables -mwindows, useful for debugging)" OFF)
+option(NETCODE_ENABLED "Build the dedicated-town online client" ON)
 
 # =============================================================================
-# 32-bit enforcement (required: JSystem casts pointers to u32)
+# 64-bit is the sole supported game ABI
 # =============================================================================
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    message(FATAL_ERROR
-        "This project MUST be built as 32-bit (pointer-to-u32 casts in JSystem).\n"
-        "  Windows/MSYS2: Use the MINGW32 shell (not MINGW64)\n"
-        "  Linux: Use a 32-bit toolchain, e.g.:\n"
-        "    cmake .. -DCMAKE_C_COMPILER=i686-linux-gnu-gcc -DCMAKE_CXX_COMPILER=i686-linux-gnu-g++\n"
-        "    OR: cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/Toolchain-linux32.cmake")
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "AnimalCrossing must be built with a 64-bit compiler")
 endif()
+message(STATUS "Building the 64-bit game client")
 
 # Allow mixed C/C++ linkage
 set(CMAKE_C_EXTENSIONS ON)
@@ -36,11 +40,14 @@ add_compile_definitions(
     VERSION=0
     F3DEX_GBI_2
     NDEBUG
-    BUGFIXES        # Fix OOB reads in letter scoring tables (m_mail_check_ovl.c).
+    BUGFIXES       # Fix original game bugs (buffer overflows, etc.) that crash on modern platforms
     _LANGUAGE_C    # Required for N64 GBI/ultratypes headers
     PC_ENHANCEMENTS   # Optional visual improvements (MSAA, etc). Remove to get pure PC port.
     KEYBOARD_TYPING   # Physical keyboard typing in text editor. Remove for platforms without keyboards.
 )
+if(APPLE)
+    add_compile_definitions(GL_SILENCE_DEPRECATION)
+endif()
 
 # Common compiler flags (applied to all sources). GCC is required:
 # the decomp depends on -fno-strict-aliasing/-fwrapv semantics and the
@@ -68,6 +75,8 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/glad/include
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/fixnes
+    ${DECOMP_ROOT}/net/include
+    ${DECOMP_ROOT}/server/include
     # .inc assets are loaded at runtime from disc image (no build/GAFE01_00 needed)
 )
 
@@ -88,16 +97,15 @@ if(NOT SDL2_FOUND)
 endif()
 if(NOT SDL2_FOUND)
     if(WIN32)
-        # Windows-specific fallback paths
-        # MSYS2 32-bit location
-        set(SDL2_MSYS2_DIR "C:/msys64/mingw32")
+        # Native 64-bit MinGW installation (the build itself uses Ninja).
+        set(SDL2_MSYS2_DIR "C:/msys64/mingw64")
         if(EXISTS "${SDL2_MSYS2_DIR}/include/SDL2/SDL.h")
             set(SDL2_FOUND TRUE)
             set(SDL2_INCLUDE_DIRS "${SDL2_MSYS2_DIR}/include/SDL2")
             set(SDL2_LIBRARIES "${SDL2_MSYS2_DIR}/lib/libSDL2.a")
         else()
-            # Downloaded SDL2 MinGW dev package (32-bit)
-            set(SDL2_DOWNLOAD_DIR "${DECOMP_ROOT}/../SDL2-2.30.10/i686-w64-mingw32")
+            # Downloaded SDL2 MinGW development package (64-bit)
+            set(SDL2_DOWNLOAD_DIR "${DECOMP_ROOT}/../SDL2-2.30.10/x86_64-w64-mingw32")
             if(EXISTS "${SDL2_DOWNLOAD_DIR}/include/SDL2/SDL.h")
                 set(SDL2_FOUND TRUE)
                 set(SDL2_INCLUDE_DIRS "${SDL2_DOWNLOAD_DIR}/include/SDL2")
@@ -117,9 +125,10 @@ if(NOT SDL2_FOUND)
     if(NOT SDL2_FOUND)
         message(FATAL_ERROR
             "SDL2 not found!\n"
-            "  Linux:         sudo apt install libsdl2-dev:i386  (Debian/Ubuntu)\n"
-            "                 sudo dnf install SDL2-devel.i686   (Fedora)\n"
-            "  Windows/MSYS2: pacman -S mingw-w64-i686-SDL2\n"
+            "  macOS:         brew install sdl2\n"
+            "  Linux:         sudo apt install libsdl2-dev  (Debian/Ubuntu)\n"
+            "                 sudo dnf install SDL2-devel   (Fedora)\n"
+            "  Windows: install mingw-w64-x86_64-SDL2, then run build_pc.bat\n"
             "  Or download SDL2 development libraries to ${CMAKE_CURRENT_SOURCE_DIR}/lib/SDL2")
     endif()
 endif()
@@ -267,6 +276,7 @@ list(FILTER GAME_CXX_SOURCES EXCLUDE REGEX ".*/jsyswrapper_main\\.cpp$")
 # =============================================================================
 set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_main.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_network_config.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_tev.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_gx_texture.c
@@ -298,6 +308,8 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_stubs_cpp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_assets.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_disc.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_bc7.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/bc7decomp.cpp
 )
 
 # =============================================================================
@@ -370,15 +382,24 @@ set_source_files_properties(
     PROPERTIES LANGUAGE CXX
 )
 
-# jaudio_NES C files use nullptr: define it as NULL for C compilation on PC.
-# Generator expression ensures this only applies to C files (C++ has nullptr natively).
-add_compile_options($<$<COMPILE_LANGUAGE:C>:-Dnullptr=NULL>)
-
 # =============================================================================
 # Per-source warning settings
 # =============================================================================
 # Decomp code: suppress all warnings (fires heavily on decompiled code)
-set(DECOMP_WARN_FLAGS "-w;-fpermissive")
+# Clang treats some decomp patterns as errors even with -w:
+# -Wno-return-type: missing return values in non-void functions
+# -Wno-initializer-overrides: GBI macros use designated initializers with overlapping fields
+set(DECOMP_WARN_FLAGS "-w;-fpermissive;-Wno-return-type;-Wno-error=return-type")
+if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    list(APPEND DECOMP_WARN_FLAGS "-Wno-c99-designator" "-Wno-initializer-overrides")
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        message(FATAL_ERROR
+            "64-bit builds require GCC (Clang rejects pointer-to-u32 truncation in GBI static initializers).\n"
+            "  macOS:  brew install gcc && cmake .. -DCMAKE_C_COMPILER=gcc-15 -DCMAKE_CXX_COMPILER=g++-15\n"
+            "          (adjust version number to match installed GCC, e.g. gcc-14/g++-14)\n"
+            "  Linux:  GCC is typically the default compiler.")
+    endif()
+endif()
 set_source_files_properties(${GAME_C_SOURCES} ${GAME_CXX_SOURCES}
     PROPERTIES COMPILE_OPTIONS "${DECOMP_WARN_FLAGS}"
 )
@@ -390,7 +411,10 @@ set(PC_CXX_SOURCES ${PC_SOURCES})
 list(FILTER PC_CXX_SOURCES INCLUDE REGEX "\\.cpp$")
 # Note: -Wno-comment/-Wno-unused-function/-Wno-builtin-declaration-mismatch suppress
 # warnings from decomp headers (types.h, gfxprint.h, OSRtc.h, libultra.h) that we can't modify.
-set(PC_WARN_SUPPRESS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-comment;-Wno-unused-function;-Wno-builtin-declaration-mismatch")
+set(PC_WARN_SUPPRESS "-Wno-unused-parameter;-Wno-sign-compare;-Wno-comment;-Wno-unused-function")
+if(NOT CMAKE_C_COMPILER_ID MATCHES "Clang")
+    list(APPEND PC_WARN_SUPPRESS "-Wno-builtin-declaration-mismatch")
+endif()
 set_source_files_properties(${PC_C_SOURCES}
     PROPERTIES COMPILE_OPTIONS "-Wall;-Wextra;${PC_WARN_SUPPRESS}"
 )
@@ -416,6 +440,76 @@ add_executable(ac_pc
     ${RC_FILE}
 )
 
+if(NETCODE_ENABLED)
+    target_compile_definitions(ac_pc PRIVATE NETCODE_ENABLED)
+    add_library(acnet_client STATIC
+        ${DECOMP_ROOT}/net/src/protocol.cpp
+        ${DECOMP_ROOT}/net/src/crypto.cpp
+        ${DECOMP_ROOT}/net/src/fragmentation.cpp
+        ${DECOMP_ROOT}/net/src/messages.cpp
+        ${DECOMP_ROOT}/net/src/entity_registry.cpp
+        ${DECOMP_ROOT}/net/src/interpolation.cpp
+        ${DECOMP_ROOT}/net/src/reliability.cpp
+        ${DECOMP_ROOT}/net/src/transport.cpp
+        ${DECOMP_ROOT}/net/src/movement.cpp
+        ${DECOMP_ROOT}/net/src/world.cpp
+        ${DECOMP_ROOT}/net/src/economy.cpp
+        ${DECOMP_ROOT}/net/src/encounter.cpp
+        ${DECOMP_ROOT}/net/src/npc.cpp
+        ${DECOMP_ROOT}/net/src/zone.cpp
+        ${DECOMP_ROOT}/net/src/housing.cpp
+        ${DECOMP_ROOT}/net/src/player_query.cpp
+        ${DECOMP_ROOT}/net/src/replication.cpp
+        ${DECOMP_ROOT}/net/src/client.cpp
+        ${DECOMP_ROOT}/net/src/c_api.cpp
+    )
+    target_include_directories(acnet_client PUBLIC ${DECOMP_ROOT}/net/include)
+    target_compile_features(acnet_client PUBLIC cxx_std_17)
+    target_compile_options(acnet_client PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    target_link_libraries(ac_pc acnet_client)
+
+    add_library(acserver_core STATIC
+        ${DECOMP_ROOT}/net/src/protocol.cpp
+        ${DECOMP_ROOT}/net/src/crypto.cpp
+        ${DECOMP_ROOT}/net/src/fragmentation.cpp
+        ${DECOMP_ROOT}/net/src/messages.cpp
+        ${DECOMP_ROOT}/net/src/entity_registry.cpp
+        ${DECOMP_ROOT}/net/src/session.cpp
+        ${DECOMP_ROOT}/net/src/interpolation.cpp
+        ${DECOMP_ROOT}/net/src/reliability.cpp
+        ${DECOMP_ROOT}/net/src/transport.cpp
+        ${DECOMP_ROOT}/net/src/movement.cpp
+        ${DECOMP_ROOT}/net/src/world.cpp
+        ${DECOMP_ROOT}/net/src/economy.cpp
+        ${DECOMP_ROOT}/net/src/encounter.cpp
+        ${DECOMP_ROOT}/net/src/npc.cpp
+        ${DECOMP_ROOT}/net/src/zone.cpp
+        ${DECOMP_ROOT}/net/src/housing.cpp
+        ${DECOMP_ROOT}/net/src/player_query.cpp
+        ${DECOMP_ROOT}/net/src/replication.cpp
+        ${DECOMP_ROOT}/server/src/persistence.cpp
+        ${DECOMP_ROOT}/server/src/gci.cpp
+        ${DECOMP_ROOT}/server/src/database.cpp
+        ${DECOMP_ROOT}/server/src/config.cpp
+        ${DECOMP_ROOT}/server/src/town_clock.cpp
+        ${DECOMP_ROOT}/server/src/town_runtime.cpp
+        ${DECOMP_ROOT}/server/src/town_state.cpp
+    )
+    target_include_directories(acserver_core PUBLIC
+        ${DECOMP_ROOT}/net/include
+        ${DECOMP_ROOT}/server/include
+    )
+    target_compile_features(acserver_core PUBLIC cxx_std_17)
+    target_compile_definitions(acserver_core PRIVATE TARGET_SERVER NETCODE_ENABLED)
+    target_compile_options(acserver_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_executable(ac_server ${DECOMP_ROOT}/server/src/main.cpp)
+    target_link_libraries(ac_server PRIVATE acserver_core)
+    set_target_properties(ac_server PROPERTIES
+        OUTPUT_NAME "AnimalCrossingServer"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+    )
+endif()
+
 # Link SDL2 without SDL2main (we define SDL_MAIN_HANDLED)
 if(TARGET SDL2::SDL2)
     target_link_libraries(ac_pc glad SDL2::SDL2)
@@ -426,9 +520,22 @@ endif()
 
 if(WIN32)
     target_link_libraries(ac_pc opengl32 winmm imm32 version setupapi)
+    if(NETCODE_ENABLED)
+        target_link_libraries(acnet_client ws2_32 bcrypt)
+        target_link_libraries(acserver_core PUBLIC ws2_32 bcrypt)
+    endif()
+elseif(APPLE)
+    find_package(OpenGL REQUIRED)
+    target_link_libraries(ac_pc OpenGL::GL "-framework Cocoa" "-framework IOKit" pthread m)
+    if(NETCODE_ENABLED)
+        target_link_libraries(acserver_core PUBLIC pthread)
+    endif()
 else()
     find_package(OpenGL REQUIRED)
     target_link_libraries(ac_pc OpenGL::GL dl pthread m)
+    if(NETCODE_ENABLED)
+        target_link_libraries(acserver_core PUBLIC dl pthread)
+    endif()
 endif()
 
 set_target_properties(ac_pc PROPERTIES
@@ -461,12 +568,26 @@ if(WIN32)
             COMMENT "Copying SDL2.dll to bin/"
         )
     endif()
+    if(NETCODE_ENABLED)
+        find_file(SQLITE3_RUNTIME_DLL NAMES sqlite3.dll libsqlite3-0.dll PATHS
+            "${MINGW64}/bin"
+            "$ENV{MINGW_PREFIX}/bin"
+        )
+        if(NOT SQLITE3_RUNTIME_DLL)
+            message(FATAL_ERROR "SQLite 3 runtime DLL not found; install mingw-w64-x86_64-sqlite3")
+        endif()
+        add_custom_command(TARGET ac_server POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${SQLITE3_RUNTIME_DLL}" "${CMAKE_BINARY_DIR}/bin/"
+            COMMENT "Copying SQLite runtime next to dedicated server"
+        )
+    endif()
 endif()
 
 # Static link MinGW runtime (no libgcc_s_dw2-1.dll, libstdc++-6.dll, libwinpthread-1.dll)
 # Strip version.o from winpthread to prevent its version resource from overriding app.rc
 if(MINGW)
-    find_file(WINPTHREAD_LIB libwinpthread.a PATHS ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES} /mingw32/lib NO_DEFAULT_PATH)
+    find_file(WINPTHREAD_LIB libwinpthread.a PATHS ${CMAKE_C_IMPLICIT_LINK_DIRECTORIES} /mingw64/lib NO_DEFAULT_PATH)
     if(NOT WINPTHREAD_LIB)
         find_file(WINPTHREAD_LIB libwinpthread.a)
     endif()
@@ -477,6 +598,9 @@ if(MINGW)
         message(STATUS "Stripped version.o from winpthread: ${WINPTHREAD_STRIPPED}")
     endif()
     target_link_options(ac_pc PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive "${WINPTHREAD_STRIPPED}" -Wl,-Bdynamic,--no-whole-archive)
+    if(NETCODE_ENABLED)
+        target_link_options(ac_server PRIVATE -static-libgcc -static-libstdc++ -Wl,-Bstatic,--whole-archive "${WINPTHREAD_STRIPPED}" -Wl,-Bdynamic,--no-whole-archive)
+    endif()
 endif()
 
 # Hide console window on Windows (GUI subsystem)
@@ -488,7 +612,11 @@ endif()
 # =============================================================================
 # Install rules (cmake --install . --prefix <dest>)
 # =============================================================================
-install(TARGETS ac_pc RUNTIME DESTINATION bin)
+if(NETCODE_ENABLED)
+    install(TARGETS ac_pc ac_server RUNTIME DESTINATION bin)
+else()
+    install(TARGETS ac_pc RUNTIME DESTINATION bin)
+endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
     DESTINATION bin/shaders
     FILES_MATCHING PATTERN "*.vert" PATTERN "*.frag"

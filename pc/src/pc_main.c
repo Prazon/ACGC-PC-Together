@@ -1,4 +1,7 @@
-/* pc_main.c - PC entry point: SDL2/GL init and boot sequence */
+/* pc_main.c - PC entry point: SDL2/GL init, crash protection, boot sequence */
+#ifndef _WIN32
+#define _GNU_SOURCE  /* needed for dladdr */
+#endif
 #include "pc_platform.h"
 #include "pc_gx_internal.h"
 #include "pc_texture_pack.h"
@@ -10,7 +13,12 @@
 #include "pc_pause_menu.h"
 #include "pc_settings_menu.h"
 #include "pc_profiler.h"
+#include "pc_network_config.h"
 #include "m_kankyo.h"
+#ifdef NETCODE_ENABLED
+#include "acnet/c_api.h"
+extern int Net_ConfigureQuickstart(const char* name, int gender);
+#endif
 
 /* prefer discrete GPU on laptops */
 #ifdef _WIN32
@@ -21,8 +29,8 @@ __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 SDL_Window*   g_pc_window = NULL;
 SDL_GLContext  g_pc_gl_context = NULL;
 int           g_pc_running = 1;
-int           g_pc_frame_limit_override = -1;
-int           g_pc_speedhack_enabled = 0;
+int           g_pc_no_framelimit = 0;
+int           g_pc_fast_forward = 0;
 int           g_pc_verbose = 0;
 int           g_pc_time_override = -1; /* -1=system clock, 0-23=override hour */
 int           g_pc_min_override = -1; /* -1=system clock, 0-59=override minute */
@@ -35,10 +43,93 @@ int           g_pc_weather_intensity_override = mEnv_WEATHER_INTENSITY_HEAVY;
 int           g_pc_window_w = PC_SCREEN_WIDTH;
 int           g_pc_window_h = PC_SCREEN_HEIGHT;
 int           g_pc_widescreen_stretch = 0;
+#ifdef NETCODE_ENABLED
+static int      g_pc_online_enabled = 0;
+static char     g_pc_online_host[256] = "127.0.0.1";
+static int      g_pc_online_port = 24680;
+static uint64_t g_pc_online_town = 1;
+static uint64_t g_pc_online_account = 1;
+static char     g_pc_online_invite_key[128] = "";
+static const char* g_pc_online_quickstart_name = NULL;
+static int      g_pc_online_quickstart_gender = 0;
+#endif
 
-/* exe image range -- used by seg2k0 to distinguish pointers from segment addresses */
-unsigned int pc_image_base = 0;
-unsigned int pc_image_end  = 0;
+/* exe image range — used by seg2k0 to distinguish pointers from segment addresses */
+uintptr_t pc_image_base = 0;
+uintptr_t pc_image_end  = 0;
+
+static jmp_buf* pc_active_jmpbuf = NULL;
+static volatile uintptr_t pc_last_crash_addr = 0;
+
+static volatile uintptr_t pc_last_crash_data_addr = 0;
+
+#ifdef _WIN32
+/* longjmp from VEH is technically UB, but works on x86 MinGW (no SEH to corrupt).
+ * GCC doesn't have __try/__except and checking every pointer in emu64 is impractical. */
+static LONG WINAPI pc_veh_handler(PEXCEPTION_POINTERS ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (pc_active_jmpbuf != NULL &&
+        (code == EXCEPTION_ACCESS_VIOLATION ||
+         code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+         code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
+         code == EXCEPTION_PRIV_INSTRUCTION)) {
+        pc_last_crash_addr = (uintptr_t)ep->ExceptionRecord->ExceptionAddress;
+        if (code == EXCEPTION_ACCESS_VIOLATION)
+            pc_last_crash_data_addr = (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1];
+        else
+            pc_last_crash_data_addr = 0;
+        jmp_buf* buf = pc_active_jmpbuf;
+        pc_active_jmpbuf = NULL;
+        longjmp(*buf, 1);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#else
+/* POSIX equivalent of VEH — longjmp from signal handler (POSIX-defined for program faults) */
+static void pc_signal_handler(int sig, siginfo_t* info, void* ucontext) {
+    (void)ucontext;
+    if (pc_active_jmpbuf != NULL) {
+        pc_last_crash_addr = (uintptr_t)info->si_addr;
+        pc_last_crash_data_addr = (sig == SIGSEGV) ?
+            (uintptr_t)info->si_addr : 0;
+        jmp_buf* buf = pc_active_jmpbuf;
+        pc_active_jmpbuf = NULL;
+        longjmp(*buf, 1);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+#endif
+
+uintptr_t pc_crash_get_data_addr(void) {
+    return pc_last_crash_data_addr;
+}
+
+void pc_crash_protection_init(void) {
+    static int installed = 0;
+    if (!installed) {
+#ifdef _WIN32
+        AddVectoredExceptionHandler(1, pc_veh_handler);
+#else
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_sigaction = pc_signal_handler;
+        sa.sa_flags = SA_SIGINFO;
+        sigaction(SIGSEGV, &sa, NULL);
+        sigaction(SIGILL, &sa, NULL);
+        sigaction(SIGFPE, &sa, NULL);
+#endif
+        installed = 1;
+    }
+}
+
+void pc_crash_set_jmpbuf(jmp_buf* buf) {
+    pc_active_jmpbuf = buf;
+}
+
+uintptr_t pc_crash_get_addr(void) {
+    return pc_last_crash_addr;
+}
 
 void pc_platform_init(void) {
 #ifdef _WIN32
@@ -53,6 +144,11 @@ void pc_platform_init(void) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+#ifdef __APPLE__
+    /* macOS requires forward-compatible flag for Core Profile contexts */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG);
+#endif
+    SDL_GL_SetAttribute(SDL_GL_ACCELERATED_VISUAL, 1);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
 #ifdef PC_ENHANCEMENTS
@@ -99,6 +195,35 @@ void pc_platform_init(void) {
         exit(1);
     }
 
+    if (g_pc_verbose) {
+        const char* vendor = (const char*)glGetString(GL_VENDOR);
+        const char* renderer = (const char*)glGetString(GL_RENDERER);
+        const char* version = (const char*)glGetString(GL_VERSION);
+        const char* glsl = (const char*)glGetString(GL_SHADING_LANGUAGE_VERSION);
+        printf("[GL] Vendor: %s\n", vendor ? vendor : "Unknown");
+        printf("[GL] Renderer: %s\n", renderer ? renderer : "Unknown");
+        printf("[GL] Version: %s\n", version ? version : "Unknown");
+        printf("[GL] GLSL: %s\n", glsl ? glsl : "Unknown");
+        const char* sdl_driver = SDL_GetCurrentVideoDriver();
+        printf("[SDL] Video Driver: %s\n", sdl_driver ? sdl_driver : "Unknown");
+    }
+
+#ifndef _WIN32
+    {
+        const char* renderer = (const char*)glGetString(GL_RENDERER);
+        if (renderer && (strstr(renderer, "llvmpipe") || strstr(renderer, "softpipe"))) {
+            const char* sdl_driver = SDL_GetCurrentVideoDriver();
+            fprintf(stderr, "\n--- WARNING ---\n"
+                            "Game is running on software renderer (llvmpipe/softpipe).\n"
+                            "This usually means a hardware OpenGL driver was not loaded.\n");
+            if (sdl_driver && strcmp(sdl_driver, "wayland") == 0) {
+                fprintf(stderr, "On Wayland, verify EGL/Wayland support or try SDL_VIDEODRIVER=x11.\n");
+            }
+            fprintf(stderr, "----------------\n\n");
+        }
+    }
+#endif
+
     SDL_GL_SetSwapInterval(g_pc_settings.vsync);
 
     pc_platform_update_window_size();
@@ -121,13 +246,10 @@ void pc_platform_init(void) {
 extern void PADCleanup(void);
 
 static void pc_speedhack_toggle(void) {
-    g_pc_speedhack_enabled = !g_pc_speedhack_enabled;
-    if (g_pc_window != NULL) {
-        SDL_SetWindowTitle(g_pc_window, g_pc_speedhack_enabled ? "Animal Crossing [5x]" : PC_WINDOW_TITLE);
-    }
+    g_pc_fast_forward ^= 1;
 
     if (g_pc_verbose) {
-        printf("[PC] speedhack %s\n", g_pc_speedhack_enabled ? "5x" : "off");
+        printf("[PC] fast-forward %s\n", g_pc_fast_forward ? "on (2x)" : "off");
     }
 }
 
@@ -185,6 +307,10 @@ int pc_platform_poll_events(void) {
                 if (event.key.keysym.sym == SDLK_F3 && !event.key.repeat) {
                     pc_speedhack_toggle();
                     break;
+                }
+                if (event.key.keysym.sym == SDLK_F4 && !event.key.repeat) {
+                    g_pc_fast_forward ^= 1;
+                    printf("[PC] Fast forward %s (2x)\n", g_pc_fast_forward ? "ON" : "OFF");
                 }
                 if (event.key.keysym.sym == SDLK_ESCAPE && !event.key.repeat) {
                     if (g_pc_paused) {
@@ -258,6 +384,66 @@ static int pc_parse_rain_intensity(const char* text) {
 }
 
 int main(int argc, char* argv[]) {
+#ifdef NETCODE_ENABLED
+    {
+        pc_network_config_t network_config;
+        const char* network_config_path = "network.ini";
+        int explicit_network_config = 0;
+        int network_config_found = 0;
+        char network_error[256] = "";
+        int arg_index;
+        for (arg_index = 1; arg_index < argc; arg_index++) {
+            if (strcmp(argv[arg_index], "--network-config") == 0 && arg_index + 1 < argc) {
+                network_config_path = argv[++arg_index];
+                explicit_network_config = 1;
+            }
+        }
+        pc_network_config_defaults(&network_config);
+        if (!pc_network_config_load(network_config_path, &network_config,
+                                    &network_config_found, network_error, sizeof(network_error))) {
+            fprintf(stderr, "Network configuration failed: %s\n", network_error);
+            return 2;
+        }
+        if (!network_config_found) {
+            if (explicit_network_config) {
+                fprintf(stderr, "Network configuration does not exist: %s\n", network_config_path);
+                return 2;
+            }
+            if (!pc_network_config_write_default(network_config_path, network_error, sizeof(network_error))) {
+                fprintf(stderr, "Network configuration creation failed: %s\n", network_error);
+                return 2;
+            }
+        }
+        g_pc_online_enabled = network_config.enabled;
+        memcpy(g_pc_online_host, network_config.host, sizeof(g_pc_online_host));
+        g_pc_online_host[sizeof(g_pc_online_host) - 1] = '\0';
+        g_pc_online_port = network_config.port;
+        g_pc_online_town = network_config.town_id;
+        g_pc_online_account = network_config.account_id;
+        memcpy(g_pc_online_invite_key, network_config.invite_key, sizeof(g_pc_online_invite_key));
+        g_pc_online_invite_key[sizeof(g_pc_online_invite_key) - 1] = '\0';
+    }
+#endif
+#ifndef _WIN32
+    /* prefer discrete GPU on Linux (NVIDIA PRIME and AMD) while respecting user overrides */
+    setenv("__NV_PRIME_RENDER_OFFLOAD", "1", 0);
+    setenv("__GLX_VENDOR_LIBRARY_NAME", "nvidia", 0);
+    setenv("__VK_LAYER_NV_optimus", "NVIDIA_only", 0);
+    setenv("DRI_PRIME", "1", 0);
+
+    const char* wayland_display = getenv("WAYLAND_DISPLAY");
+    const char* x11_display = getenv("DISPLAY");
+
+    const char* sdl_vid_drv = getenv("SDL_VIDEODRIVER");
+    if (sdl_vid_drv != NULL && strcmp(sdl_vid_drv, "x11") == 0) {
+        /* prefer GLX on X11 to prevent EGL fallback issues on some discrete drivers */
+        setenv("SDL_VIDEO_GL_DRIVER", "libGL.so.1", 0);
+    } else if (sdl_vid_drv == NULL && x11_display != NULL && wayland_display == NULL) {
+        /* No driver set, and only X11 is available - safe to prefer GLX */
+        setenv("SDL_VIDEO_GL_DRIVER", "libGL.so.1", 0);
+    }
+#endif
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
             printf("Usage: AnimalCrossing [options]\n");
@@ -270,20 +456,30 @@ int main(int argc, char* argv[]) {
             printf("  --date M/D[/Y]      Override in-game date (e.g. 7/4, 12/24/2026)\n");
             printf("  --rain [intensity]  Force rainy weather; intensity is light, normal, or heavy\n");
             printf("  --uber-shader       Disable shader specialization (single uber shader)\n");
+#ifdef NETCODE_ENABLED
+            printf("  --online HOST[:PORT] Connect to a dedicated town server\n");
+            printf("  --town N             Dedicated-server town ID (default 1)\n");
+            printf("  --account N          Local online account ID (default 1)\n");
+            printf("  --invite-key KEY     Dedicated-town invitation key\n");
+            printf("  --network-config F   Load connection settings from F (default network.ini)\n");
+            printf("  --offline            Ignore an enabled network.ini for this launch\n");
+            printf("  --quickstart NAME    Skip title/K.K. and prefill Rover's name prompt\n");
+            printf("  --quickstart-gender G  Reserved launch default: male or female\n");
+#endif
             printf("  --help, -h          Show this help message\n");
             return 0;
         } else if (strcmp(argv[i], "--framelimit") == 0) {
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 int v = atoi(argv[i + 1]);
                 if (v > 0) {
-                    g_pc_frame_limit_override = v;
-                } else if (v == 0) {
-                    g_pc_frame_limit_override = 0;
+                    g_pc_settings.max_fps = v;
+
+
                 }
                 i++;
             }
         } else if (strcmp(argv[i], "--no-framelimit") == 0) {
-            g_pc_frame_limit_override = 0;
+            g_pc_no_framelimit = 1;
         } else if (strcmp(argv[i], "--uber-shader") == 0) {
             extern int g_pc_uber_shader_only;
             g_pc_uber_shader_only = 1;
@@ -328,8 +524,54 @@ int main(int argc, char* argv[]) {
                     i++;
                 }
             }
+#ifdef NETCODE_ENABLED
+        } else if (strcmp(argv[i], "--online") == 0 && i + 1 < argc) {
+            const char* endpoint = argv[++i];
+            uint16_t port = (uint16_t)g_pc_online_port;
+            char endpoint_error[128] = "";
+            if (!pc_network_parse_endpoint(endpoint, g_pc_online_host, sizeof(g_pc_online_host),
+                                           &port, endpoint_error, sizeof(endpoint_error))) {
+                fprintf(stderr, "Invalid --online endpoint: %s\n", endpoint_error);
+                return 2;
+            }
+            g_pc_online_port = port;
+            g_pc_online_enabled = 1;
+        } else if (strcmp(argv[i], "--offline") == 0) {
+            g_pc_online_enabled = 0;
+        } else if (strcmp(argv[i], "--network-config") == 0 && i + 1 < argc) {
+            i++; /* Loaded before option processing so command-line values win. */
+        } else if (strcmp(argv[i], "--town") == 0 && i + 1 < argc) {
+            g_pc_online_town = (uint64_t)strtoull(argv[++i], NULL, 10);
+            if (g_pc_online_town == 0) return 2;
+        } else if (strcmp(argv[i], "--account") == 0 && i + 1 < argc) {
+            g_pc_online_account = (uint64_t)strtoull(argv[++i], NULL, 10);
+            if (g_pc_online_account == 0) return 2;
+        } else if (strcmp(argv[i], "--invite-key") == 0 && i + 1 < argc) {
+            size_t key_len = strlen(argv[++i]);
+            if (key_len == 0 || key_len >= sizeof(g_pc_online_invite_key)) return 2;
+            memcpy(g_pc_online_invite_key, argv[i], key_len + 1);
+        } else if (strcmp(argv[i], "--quickstart") == 0 && i + 1 < argc) {
+            g_pc_online_quickstart_name = argv[++i];
+        } else if (strcmp(argv[i], "--quickstart-gender") == 0 && i + 1 < argc) {
+            const char* gender = argv[++i];
+            if (strcmp(gender, "male") == 0) g_pc_online_quickstart_gender = 0;
+            else if (strcmp(gender, "female") == 0) g_pc_online_quickstart_gender = 1;
+            else {
+                fprintf(stderr, "Invalid quickstart gender: %s\n", gender);
+                return 2;
+            }
+#endif
         }
     }
+
+#ifdef NETCODE_ENABLED
+    if (g_pc_online_quickstart_name != NULL &&
+        (!g_pc_online_enabled ||
+         !Net_ConfigureQuickstart(g_pc_online_quickstart_name, g_pc_online_quickstart_gender))) {
+        fprintf(stderr, "Quickstart requires online mode and a 1-8 character alphanumeric name\n");
+        return 2;
+    }
+#endif
 
     /* Redirect stdout/stderr to NUL unless verbose — unbuffered terminal writes
      * are extremely slow on Windows and tank FPS. */
@@ -352,20 +594,32 @@ int main(int argc, char* argv[]) {
         HMODULE exe = GetModuleHandle(NULL);
         IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)exe;
         IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)exe + dos->e_lfanew);
-        pc_image_base = (unsigned int)(uintptr_t)exe;
+        pc_image_base = (uintptr_t)exe;
         pc_image_end = pc_image_base + nt->OptionalHeader.SizeOfImage;
+    }
+#elif defined(__APPLE__)
+    {
+        /* macOS: use dladdr — no ELF headers available */
+        Dl_info dl;
+        if (dladdr((void*)main, &dl) && dl.dli_fbase) {
+            pc_image_base = (uintptr_t)dl.dli_fbase;
+            /* Estimate image end — on 64-bit, seg2k0 uses threshold check
+             * instead of image range, so this is defense-in-depth only. */
+            pc_image_end = pc_image_base + 0x10000000;
+        }
     }
 #else
     {
         Dl_info dl;
         if (dladdr((void*)main, &dl) && dl.dli_fbase) {
-            pc_image_base = (unsigned int)(uintptr_t)dl.dli_fbase;
-            Elf32_Ehdr* ehdr = (Elf32_Ehdr*)dl.dli_fbase;
-            Elf32_Phdr* phdr = (Elf32_Phdr*)((char*)dl.dli_fbase + ehdr->e_phoff);
-            unsigned int max_end = 0;
+            pc_image_base = (uintptr_t)dl.dli_fbase;
+            /* 64-bit ELF */
+            Elf64_Ehdr* ehdr = (Elf64_Ehdr*)dl.dli_fbase;
+            Elf64_Phdr* phdr = (Elf64_Phdr*)((char*)dl.dli_fbase + ehdr->e_phoff);
+            uintptr_t max_end = 0;
             for (int i = 0; i < ehdr->e_phnum; i++) {
                 if (phdr[i].p_type == PT_LOAD) {
-                    unsigned int seg_end = phdr[i].p_vaddr + phdr[i].p_memsz;
+                    uintptr_t seg_end = phdr[i].p_vaddr + phdr[i].p_memsz;
                     if (seg_end > max_end) max_end = seg_end;
                 }
             }
@@ -396,9 +650,54 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+#ifdef NETCODE_ENABLED
+    if (g_pc_verbose && g_pc_online_enabled) {
+        printf("[NET] configured server=%s:%d town=%llu account=%llu source=network.ini/CLI\n",
+               g_pc_online_host, g_pc_online_port,
+               (unsigned long long)g_pc_online_town,
+               (unsigned long long)g_pc_online_account);
+    }
+    if (g_pc_online_enabled &&
+        !acnet_client_start(g_pc_online_host,
+                            (uint16_t)g_pc_online_port,
+                            g_pc_online_town,
+                            g_pc_online_account,
+                            0,
+                            g_pc_online_invite_key)) {
+        fprintf(stderr, "[NET] Unable to start online client: %s\n", acnet_client_last_error());
+        pc_disc_shutdown();
+        pc_platform_shutdown();
+        return 1;
+    }
+    if (g_pc_online_enabled) {
+        const Uint32 connect_started = SDL_GetTicks();
+        while (acnet_client_status() == ACNET_CONNECTING && SDL_GetTicks() - connect_started < 10000U) {
+            if (!acnet_client_poll()) break;
+            SDL_Delay(10);
+        }
+        if (acnet_client_status() != ACNET_CONNECTED) {
+            fprintf(stderr, "[NET] Could not connect before game boot: %s\n", acnet_client_last_error());
+            acnet_client_stop();
+            pc_disc_shutdown();
+            pc_platform_shutdown();
+            return 1;
+        }
+        if (g_pc_verbose) {
+            uint8_t town_name[9] = {0};
+            acnet_client_town_name(town_name, 8);
+            printf("[NET] joined town='%.*s' resident_slot=%u seed=%u initialized=%d\n",
+                   8, (const char*)town_name, (unsigned)acnet_client_resident_slot(),
+                   (unsigned)acnet_client_town_seed(), acnet_client_town_initialized());
+        }
+    }
+#endif
+
     ac_entry();                         /* sets HotStartEntry = &entry */
     boot_main(argc, (const char**)argv); /* full init → HotStartEntry → game loop */
 
+#ifdef NETCODE_ENABLED
+    acnet_client_stop();
+#endif
     pc_disc_shutdown();
     pc_platform_shutdown();
     return 0;

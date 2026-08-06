@@ -55,6 +55,12 @@ static void Player_actor_setup_main_Pickup(ACTOR* actorx, GAME* game) {
 #ifdef PC_ENHANCEMENTS
     /* bells go straight to wallet when the whole amount fits; otherwise the bag is picked up normally */
     {
+#ifdef NETCODE_ENABLED
+        if (Net_IsConnected()) {
+            Player_actor_putin_item(slot_idx, item, target_pos_p);
+        } else
+#endif
+        {
         u32 bell_amount = mPr_GetAmountForMoneyItem(item);
         if (bell_amount > 0 && mPr_GivePossessionBells(bell_amount)) {
             sAdo_SysTrgStart(SE_REGISTER);
@@ -64,6 +70,7 @@ static void Player_actor_setup_main_Pickup(ACTOR* actorx, GAME* game) {
             putaway_money = TRUE;
         } else {
             Player_actor_putin_item(slot_idx, item, target_pos_p);
+        }
         }
     }
 #else

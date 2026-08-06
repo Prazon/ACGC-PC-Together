@@ -120,6 +120,11 @@ static void Player_actor_Put_Hole_Dig_scoop(ACTOR* actor) {
             xyz_t* pos = &main_scoop->target_pos;
             mActor_name_t item = main_scoop->item;
 
+            if (Net_IsConnected()) {
+                (void)Net_RequestDig(pos);
+                return;
+            }
+
             if (Common_Get(clip).bg_item_clip->dig_hole_effect_entry_proc(item, pos, 12, 0)) {
                 mCoBG_RegistDecalCircle(pos, 0.0f, 19.0f, 12);
                 if (item != EMPTY_NO) {

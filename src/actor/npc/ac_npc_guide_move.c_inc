@@ -305,7 +305,7 @@ static void aNGD_approach(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
 }
 
 static void aNGD_set_talk_info_talk_start_wait(ACTOR* actorx) {
-    mDemo_Set_msg_num(0x2AC6);
+    mDemo_Set_msg_num(Net_IsConnected() ? MSG_PC_ONLINE_TOWN_TIME : 0x2AC6);
     aNGD_set_default_talk_info();
     ((NPC_GUIDE_ACTOR*)actorx)->obj_look_type = aNGD_OBJ_LOOK_TYPE_TALK;
 }
@@ -327,6 +327,10 @@ static void aNGD_talk_start_wait(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
 
 static void aNGD_time_check(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
     if (mMsg_CHECK_MAINNORMALCONTINUE() == TRUE) {
+        if (Net_IsConnected()) {
+            aNGD_setupAction(guide, play, aNGD_ACTION_WAIT_PERMISSION);
+            return;
+        }
         switch (mChoice_GET_CHOSENUM()) {
             case mChoice_CHOICE0:
                 aNGD_setupAction(guide, play, aNGD_ACTION_WAIT_PERMISSION);
@@ -434,7 +438,8 @@ static void aNGD_sitdown(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
     guide->npc_class.actor_class.shape_info.rotation.y = 0;
 
     /* Wait for the sit animation to finish before continuing */
-    if (guide->npc_class.draw.main_animation_state == cKF_STATE_STOPPED) {
+    guide->online_action_frames += (int)play->game.graph->dt_num_60fps_frames;
+    if (Net_IsConnected() || guide->npc_class.draw.main_animation_state == cKF_STATE_STOPPED) {
         mMsg_UNSET_LOCKCONTINUE();
         guide->next_action = aNGD_ACTION_PNAME_MENU_OPEN_WAIT;
         Common_Set(sunlight_flag, TRUE); // turn on the sunlight as we exit tunnel
@@ -447,6 +452,23 @@ static void aNGD_sitdown(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
 
 static void aNGD_sex_select_wait(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
     if (mMsg_CHECK_MAINNORMALCONTINUE() == TRUE) {
+        if (Net_IsConnected()) {
+            switch (mChoice_GET_CHOSENUM()) {
+                case mChoice_CHOICE0:
+                    Now_Private->gender = mPr_SEX_MALE;
+                    break;
+                case mChoice_CHOICE1:
+                    Now_Private->gender = mPr_SEX_FEMALE;
+                    break;
+                default:
+                    guide->next_action = aNGD_ACTION_PNAME_MENU_OPEN_WAIT;
+                    aNGD_setupAction(guide, play, aNGD_ACTION_SDON_AND_PB_WAIT);
+                    return;
+            }
+            Net_ApplyTownIdentity();
+            aNGD_setupAction(guide, play, aNGD_ACTION_SCENE_CHANGE_WAIT);
+            return;
+        }
         switch (mChoice_GET_CHOSENUM()) {
             case mChoice_CHOICE0: // male
             case mChoice_CHOICE1: // female
@@ -475,7 +497,9 @@ static void aNGD_sex_select_wait2(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
                         break;
                 }
 
-                guide->next_action = aNGD_ACTION_CNAME_MENU_OPEN_WAIT;
+                Net_ApplyTownIdentity();
+                guide->next_action = Net_IsConnected() ? aNGD_ACTION_STANDUP_START_WAIT
+                                                       : aNGD_ACTION_CNAME_MENU_OPEN_WAIT;
                 aNGD_setupAction(guide, play, aNGD_ACTION_SDON_AND_PB_WAIT);
                 break;
             case mChoice_CHOICE1: // female
@@ -502,7 +526,9 @@ static void aNGD_sex_select_after(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
     if (order != 0 && mMsg_Check_MainNormalContinue(msg_p)) {
         mMsg_Set_continue_msg_num(msg_p, 0x2AD8);
         mMsg_Set_ForceNext(msg_p);
-        guide->next_action = aNGD_ACTION_CNAME_MENU_OPEN_WAIT;
+        Net_ApplyTownIdentity();
+        guide->next_action = Net_IsConnected() ? aNGD_ACTION_STANDUP_START_WAIT
+                                               : aNGD_ACTION_CNAME_MENU_OPEN_WAIT;
         aNGD_setupAction(guide, play, aNGD_ACTION_SDON_AND_PB_WAIT);
         mDemo_Set_OrderValue(mDemo_ORDER_NPC0, 9, 0);
     }
@@ -765,12 +791,16 @@ static void aNGD_last_talk_end_wait_init(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play
     guide->npc_class.right_hand.item_actor_p = NULL;
 }
 
-static void aNGD_scene_change_wait_init(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
+static void aNGD_scene_change_wait(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play) {
     u8 term;
     int town_day;
 
-    /* Init next scene transition */
-    goto_next_scene(play, 0, 1);
+    /* The actor constructor can run before the train scene's door table is
+     * installed. Retry from actor movement until the real transition can be
+     * accepted; doing this once in the constructor leaves Rover frozen. */
+    if (goto_next_scene(play, 0, 1) != TRUE) {
+        return;
+    }
     play->fb_wipe_type = WIPE_TYPE_FADE_BLACK;
     Common_Get(transition).wipe_type = WIPE_TYPE_CIRCLE_LEFT;
 
@@ -826,6 +856,10 @@ static void aNGD_scene_change_wait_init(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play)
     mCD_calendar_wellcome_on();
     mNpc_SetParentNameAllAnimal();
     aNGD_set_pl_face_type(guide);
+    Net_RandomizeInitialAppearance();
+    /* The generated foreground becomes the server's canonical initial town.
+     * Existing servers accept this only as a presentation/profile refresh. */
+    if (Net_IsConnected()) (void)Net_SubmitInitialTown();
     Common_Set(submenu_disabled, TRUE);
     mRmTp_SetDefaultLightSwitchData(1);
     mBGMPsComp_make_ps_wipe(0x41C2);
@@ -869,7 +903,7 @@ static void aNGD_init_proc(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play, int action) 
         &aNGD_sitdown2_start_wait_init,
         &aNGD_sitdown2_init,
         &aNGD_last_talk_end_wait_init,
-        &aNGD_scene_change_wait_init,
+        (aNGD_INIT_PROC)&none_proc1,
     };
 
     (*init_proc[action])(guide, play);
@@ -910,11 +944,12 @@ static void aNGD_setupAction(NPC_GUIDE_ACTOR* guide, GAME_PLAY* play, int action
         &aNGD_sitdown2_start_wait,
         &aNGD_sitdown2,
         &aNGD_last_talk_end_wait,
-        (aNGD_PROC)&none_proc1,
+        &aNGD_scene_change_wait,
     };
 
     guide->action = action;
     guide->proc = process[action];
+    guide->online_action_frames = 0;
     aNGD_set_animation(guide, action);
     aNGD_init_proc(guide, play, action);
 }

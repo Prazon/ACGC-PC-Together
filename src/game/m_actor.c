@@ -1,4 +1,5 @@
 #include "m_actor.h"
+#include "m_net_hooks.h"
 
 #include "m_play.h"
 #include "m_player_lib.h"
@@ -286,20 +287,21 @@ extern int Actor_draw_actor_no_culling_check(ACTOR* actor) {
 }
 
 extern int Actor_draw_actor_no_culling_check2(ACTOR* actor, xyz_t* camera_pos, f32 camera_w) {
+#ifdef TARGET_PC
+    /* PC port: the GC projection matrix produced clip-space values in a range the
+     * original culling thresholds were tuned for.  The PC/OpenGL projection produces
+     * values in a different range, causing false-negative culling.  Disable software
+     * frustum culling on PC — the GPU clips out-of-frustum geometry anyway.
+     * TODO: properly recalibrate the clip-space thresholds for the PC projection. */
+    (void)camera_pos;
+    (void)camera_w;
+    return TRUE;
+#else
     int res = FALSE;
 
     if (-actor->cull_radius < camera_pos->z && camera_pos->z < actor->cull_distance + actor->cull_radius) {
         f32 m = camera_w < 1.0f ? 1.0f : 1.0f / camera_w;
-#ifdef PC_ENHANCEMENTS
-        /* Widescreen hor+ widens the rendered frustum.  The projection matrix
-         * used to compute camera_pos is the original 4:3 one, so the NDC X
-         * edge (1.0) is too narrow.  Extend by the aspect ratio correction. */
-        f32 x_edge = (f32)g_pc_window_w / (f32)g_pc_window_h
-                   / ((f32)PC_GC_WIDTH / (f32)PC_GC_HEIGHT);
-        if (x_edge < 1.0f) x_edge = 1.0f;
-#else
         f32 x_edge = 1.0f;
-#endif
         int width_OK = (m * (fabsf(camera_pos->x) - actor->cull_width)) < x_edge;
 
         if (width_OK &&
@@ -309,6 +311,7 @@ extern int Actor_draw_actor_no_culling_check2(ACTOR* actor, xyz_t* camera_pos, f
     }
 
     return res;
+#endif
 }
 
 static void Actor_cull_check(ACTOR* actor) {
@@ -437,7 +440,7 @@ extern void Actor_info_dt(Actor_info* actor_info, GAME_PLAY* play) {
     actor_dlftbls_cleanup();
 }
 
-extern void Actor_info_call_actor(GAME_PLAY* play, Actor_info* actor_info) {
+static void Actor_info_call_actor_impl(GAME_PLAY* play, Actor_info* actor_info, int skip_player) {
     // GAME* game = (GAME*)play;
     PLAYER_ACTOR* player_actor = get_player_actor_withoutCheck(play);
     ACTOR* actor;
@@ -448,6 +451,7 @@ extern void Actor_info_call_actor(GAME_PLAY* play, Actor_info* actor_info) {
 
     for (i = 0; i < ACTOR_PART_NUM; i++) {
         ACTOR* next;
+        if (skip_player && i == ACTOR_PART_PLAYER) continue;
         actor = actor_info->list[i].actor;
 
         while (actor != NULL) {
@@ -513,6 +517,18 @@ extern void Actor_info_call_actor(GAME_PLAY* play, Actor_info* actor_info) {
     }
 
     play->game.doing_point_specific = 163;
+}
+
+extern void Actor_info_call_actor(GAME_PLAY* play, Actor_info* actor_info) {
+    Actor_info_call_actor_impl(play, actor_info, FALSE);
+}
+
+/* Submenu code temporarily owns the player overlay. Online towns still need
+ * every other actor (including network remotes) to advance, but calling the
+ * local player's wrapper here would swap that overlay out from under the
+ * menu. Keep the player frozen and tick the rest of the world. */
+extern void Actor_info_call_actor_except_player(GAME_PLAY* play, Actor_info* actor_info) {
+    Actor_info_call_actor_impl(play, actor_info, TRUE);
 }
 
 extern void Actor_info_draw_actor(GAME_PLAY* play, Actor_info* actor_info) {
@@ -763,6 +779,8 @@ extern ACTOR* Actor_info_make_actor(Actor_info* actor_info, GAME* game, s16 prof
     mNpc_SetNpcinfo(actor, npc_info_idx);
     Actor_ct(actor, game);
 
+    Net_OnActorCreated(actor);
+
     return actor;
 }
 
@@ -864,6 +882,7 @@ extern ACTOR* Actor_info_delete(Actor_info* actor_info, ACTOR* actor, GAME* game
     restore_fgdata_one(actor, (GAME_PLAY*)game);
     Actor_dt(actor, game);
     next_actor = Actor_info_part_delete(actor_info, actor);
+    Net_OnActorDestroyed(actor);
 
     switch (ITEM_NAME_GET_TYPE(name_id)) {
         case NAME_TYPE_SPNPC:

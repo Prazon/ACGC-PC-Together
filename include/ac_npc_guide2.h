@@ -37,6 +37,7 @@ struct npc_guide2_actor_s {
     int obj_look_type;
     f32 obj_dist_ground;
     int camera_eyes_flag;
+    int online_action_frames;
 };
 
 extern ACTOR_PROFILE Npc_Guide2_Profile;

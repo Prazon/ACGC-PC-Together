@@ -245,6 +245,9 @@
 #include "ac_windmill.h"
 #include "ac_yatai.h"
 #include "ac_weather.h"
+#ifdef NETCODE_ENABLED
+#include "ac_net_remote_player.h"
+#endif
 
 #define MAKE_ACTOR_DLF(actor)\
   {0,0,NULL,NULL,NULL,&actor##_Profile, 0,0,0,0}
@@ -500,12 +503,15 @@ ACTOR_DLFTBL actor_dlftbls[] = {
   MAKE_ACTOR_DLF(Tent),
   MAKE_ACTOR_DLF(Pterminal),
   MAKE_ACTOR_DLF(Mscore_Control)
+#ifdef NETCODE_ENABLED
+  ,MAKE_ACTOR_DLF(Net_Remote_Player)
+#endif
 };
 
 int actor_dlftbls_num;
 
 extern void actor_dlftbls_init() {
-  actor_dlftbls_num = 246;
+  actor_dlftbls_num = mAc_PROFILE_NUM;
 }
 
 extern void actor_dlftbls_cleanup() {

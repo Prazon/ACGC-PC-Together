@@ -11,6 +11,7 @@
 #include "libultra/libultra.h"
 #include "m_bgm.h"
 #include "m_soncho.h"
+#include "m_net_hooks.h"
 
 enum {
     aNGD_ACTION_ENTER,
@@ -114,7 +115,21 @@ static void aNGD_actor_ct(ACTOR* actorx, GAME* game) {
         player->actor_class.state_bitfield |= ACTOR_STATE_INVISIBLE;
     }
 
-    aNGD_setupAction(guide, play, aNGD_ACTION_ENTER);
+    /* Quickstart skips the title/K.K. presentation, not Rover. Keep Rover's
+     * short online name/gender flow and merely prefill the requested name. */
+    (void)Net_PrefillQuickstartName();
+    if (Net_IsConnected()) {
+        /* PC online onboarding must not depend on the original train-entry
+         * animation reaching STOPPED (that state can remain latched). Place
+         * Rover at the conversation point and begin the short flow directly. */
+        guide->npc_class.actor_class.world.position.x = 100.0f;
+        guide->npc_class.actor_class.world.position.z = 290.0f;
+        guide->npc_class.actor_class.shape_info.rotation.y = 0;
+        guide->camera_eyes_flag = FALSE;
+        aNGD_setupAction(guide, play, aNGD_ACTION_TALK_START_WAIT);
+    } else {
+        aNGD_setupAction(guide, play, aNGD_ACTION_ENTER);
+    }
 
     /* Play train noises sfx repeatedly */
     sAdo_SysLevStart(NA_SE_TRAIN_RIDE);

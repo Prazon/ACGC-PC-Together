@@ -1,4 +1,4 @@
-/* In game pause menu, because at this point it feels weird to not have it. */
+/* In-game system menu. It pauses offline play; connected towns stay live. */
 #ifndef PC_PAUSE_MENU_H
 #define PC_PAUSE_MENU_H
 

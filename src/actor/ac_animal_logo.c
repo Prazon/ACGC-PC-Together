@@ -21,6 +21,7 @@
 #include "m_font.h"
 #include "libultra/libultra.h"
 #include "m_flashrom.h"
+#include "m_net_hooks.h"
 #ifdef PC_ENHANCEMENTS
 #include "pc_settings.h"
 #include "pc_settings_menu.h"
@@ -220,7 +221,10 @@ static void aAL_logo_in(ANIMAL_LOGO_ACTOR* actor, GAME* game) {
   int cros_done;
   int sing_done;
     
-  if (aAL_chk_start_key2(actor, game) == FALSE) {
+  if (Net_QuickstartEnabled()) {
+    aAL_setupAction(actor, game, aAL_ACTION_START_KEY_CHK_START);
+  }
+  else if (aAL_chk_start_key2(actor, game) == FALSE) {
     animal_done = cKF_SkeletonInfo_R_play(&actor->animal.skeleton);
     cros_done = cKF_SkeletonInfo_R_play(&actor->cros.skeleton);
     sing_done = cKF_SkeletonInfo_R_play(&actor->sing.skeleton);
@@ -245,7 +249,8 @@ static void aAL_back_fadein(ANIMAL_LOGO_ACTOR* actor, GAME* game) {
 }
 
 static void aAL_start_key_chk_start_wait(ANIMAL_LOGO_ACTOR* actor, GAME* game) {
-  if (padmgr_isConnectedController(PAD0) && actor->title_timer <= 0 && famicom_mount_archive_end_check()) {
+  if ((Net_QuickstartEnabled() || padmgr_isConnectedController(PAD0)) &&
+      actor->title_timer <= 0 && famicom_mount_archive_end_check()) {
     aAL_setupAction(actor, game, aAL_ACTION_GAME_START);
   }
 }
@@ -274,7 +279,8 @@ static void aAL_game_start_wait(ANIMAL_LOGO_ACTOR* actor, GAME* game) {
     aAL_setupAction(actor, game, aAL_ACTION_6);
   }
   else if (
-     ((gamePT->pads[PAD0].on.button & BUTTON_START) == BUTTON_START || (gamePT->pads[PAD0].on.button & BUTTON_A) == BUTTON_A) &&
+     (Net_QuickstartEnabled() ||
+      (gamePT->pads[PAD0].on.button & (BUTTON_START | BUTTON_A)) != 0) &&
      mLd_CheckStartFlag() == TRUE &&
      aAL_wipe_end_check(game) == TRUE &&
      mTD_tdemo_button_ok_check()
@@ -346,6 +352,15 @@ static void aAL_pc_game_start_wait(ANIMAL_LOGO_ACTOR* actor, GAME* game) {
 
   if (play->fb_fade_type == FADE_TYPE_SELECT_END) {
     aAL_setupAction(actor, game, aAL_ACTION_6);
+    return;
+  }
+
+  if (Net_QuickstartEnabled()) {
+    if (mLd_CheckStartFlag() == TRUE &&
+        aAL_wipe_end_check(game) == TRUE &&
+        mTD_tdemo_button_ok_check()) {
+      aAL_setupAction(actor, game, aAL_ACTION_FADE_OUT_START);
+    }
     return;
   }
 
@@ -443,7 +458,7 @@ static void aAL_setupAction(ANIMAL_LOGO_ACTOR* actor, GAME* game, int action) {
     &aAL_back_fadein,
     &aAL_start_key_chk_start_wait,
 #ifdef PC_ENHANCEMENTS
-    &aAL_pc_game_start_wait,
+    (ANIMAL_LOGO_ACTION_PROC)&aAL_pc_game_start_wait,
 #else
     &aAL_game_start_wait,
 #endif
@@ -874,8 +889,6 @@ static void aAL_actor_draw(ACTOR* actor, GAME* game) {
       case aAL_ACTION_FADE_OUT_START:
       case aAL_ACTION_OUT:
 #ifdef PC_ENHANCEMENTS
-        { extern int g_pc_title_main_menu_visible;
-          g_pc_title_main_menu_visible = 1; }
         aAL_pc_menu_draw(logo_actor, game);
 #else
         aAL_press_start_draw(logo_actor, graph);

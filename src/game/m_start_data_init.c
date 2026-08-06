@@ -24,6 +24,24 @@
 #include "m_event.h"
 #include "m_common_data.h"
 #include "m_design_ovl.h"
+#ifdef NETCODE_ENABLED
+#include "acnet/c_api.h"
+#include "libc64/qrand.h"
+#include "m_net_hooks.h"
+#endif
+
+static void mSDI_OnlineTownGenerationBegin(void) {
+#ifdef NETCODE_ENABLED
+    u32 seed = acnet_client_town_seed();
+    if (Net_IsConnected() && seed != 0) sqrand(seed);
+#endif
+}
+
+static void mSDI_OnlineTownIdentityApply(void) {
+#ifdef NETCODE_ENABLED
+    Net_ApplyTownIdentity();
+#endif
+}
 
 static void famicom_emu_initial_common_data() {
     // stubbed
@@ -183,6 +201,7 @@ static int mSDI_StartInitNew(GAME* game, int player_no, int malloc_flag) {
     int ret = TRUE;
     GAME_PLAY* play = (GAME_PLAY*)game;
 
+    mSDI_OnlineTownGenerationBegin();
     Common_Set(scene_from_title_demo, SCENE_START_DEMO);
     lbRTC_GetTime(Common_GetPointer(time.rtc_time));
     osSyncPrintf("player no -- %d\n", player_no);
@@ -220,6 +239,7 @@ static int mSDI_StartInitNew(GAME* game, int player_no, int malloc_flag) {
     priv = Save_Get(private_data);
     mMld_SetDefaultMelody();
     mLd_LandDataInit();
+    mSDI_OnlineTownIdentityApply();
     mEv_ClearEventSaveInfo(Save_GetPointer(event_save_data));
     mEv_init(&play->event);
     mNpc_InitNpcAllInfo(malloc_flag);
@@ -292,6 +312,7 @@ static int mSDI_StartInitNew(GAME* game, int player_no, int malloc_flag) {
     GAME_PLAY* play = (GAME_PLAY*)game;
     GAME* g = NULL;
 
+    mSDI_OnlineTownGenerationBegin();
     Common_Set(scene_from_title_demo, SCENE_START_DEMO);
     lbRTC_GetTime(Common_GetPointer(time.rtc_time));
     osSyncPrintf("player no -- %d\n", player_no);
@@ -329,6 +350,7 @@ static int mSDI_StartInitNew(GAME* game, int player_no, int malloc_flag) {
 
     mMld_SetDefaultMelody();
     mLd_LandDataInit();
+    mSDI_OnlineTownIdentityApply();
     mEv_ClearEventSaveInfo(Save_GetPointer(event_save_data));
     mEv_init(&play->event);
     mNpc_InitNpcAllInfo(malloc_flag);

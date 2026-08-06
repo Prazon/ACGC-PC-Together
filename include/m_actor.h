@@ -1035,6 +1035,11 @@ enum actor_profile_table {
     mAc_PROFILE_PTERMINAL,
     mAc_PROFILE_MSCORE_CONTROL,
 
+#ifdef NETCODE_ENABLED
+    /* PC netcode presentation actor; appended to preserve original IDs. */
+    mAc_PROFILE_NET_REMOTE_PLAYER,
+#endif
+
     mAc_PROFILE_NUM
 };
 
@@ -1186,6 +1191,7 @@ extern int Actor_draw_actor_no_culling_check2(ACTOR* actor, xyz_t* camera_pos, f
 extern void Actor_info_ct(GAME* game, Actor_info* actor_info, Actor_data* player_data);
 extern void Actor_info_dt(Actor_info* actor_info, GAME_PLAY* play);
 extern void Actor_info_call_actor(GAME_PLAY* play, Actor_info* actor_info);
+extern void Actor_info_call_actor_except_player(GAME_PLAY* play, Actor_info* actor_info);
 extern void Actor_info_draw_actor(GAME_PLAY* play, Actor_info* actor_info);
 extern void Actor_free_overlay_area(ACTOR_DLFTBL* dlftbl);
 extern void Actor_get_overlay_area(ACTOR_DLFTBL* dlftbl, int unused, size_t alloc_size);

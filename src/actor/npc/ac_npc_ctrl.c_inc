@@ -520,7 +520,7 @@ static int aNPC_setupActor_proc(GAME_PLAY* play, mActor_name_t name, s8 idx, int
 
 #ifndef aNPC_NPC2
 #ifdef TARGET_PC
-#define aNPC_ACTOR_CLASS_SLOT_SIZE 0xA50
+#define aNPC_ACTOR_CLASS_SLOT_SIZE 0xC00
 #else
 #define aNPC_ACTOR_CLASS_SLOT_SIZE 0x9D0
 #endif
@@ -747,7 +747,7 @@ static void aNPC_keep_actor_class(void) {
     int i;
 
     for (i = 0; i < 9; i++) {
-        *actor = (NPC_ACTOR*)ALIGN_NEXT((u32)aNPC_n_actor_cl_tbl[i].buf, 16);
+        *actor = (NPC_ACTOR*)ALIGN_NEXT((uintptr_t)aNPC_n_actor_cl_tbl[i].buf, 16);
         *used = FALSE;
 
         actor++;

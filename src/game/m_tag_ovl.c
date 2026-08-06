@@ -26,6 +26,7 @@
 #include "sys_matrix.h"
 #include "m_roll_lib.h"
 #include "m_house.h"
+#include "m_net_hooks.h"
 
 static void mTG_mark_main_CLR(Submenu* submenu, const mSM_MenuInfo_c* menu_info);
 
@@ -3880,6 +3881,15 @@ static void mTG_plant_proc(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
     if (((Now_Private->equipment >= ITM_SHOVEL && Now_Private->equipment <= ITM_SHOVEL) ||
          (Now_Private->equipment >= ITM_GOLDEN_SHOVEL && Now_Private->equipment <= ITM_GOLDEN_SHOVEL)) &&
         inv_ovl->shovel_flag == TRUE) {
+        if (Net_IsConnected()) {
+            if (Net_RequestPlant(&inv_ovl->shovel_pos, plant_item, idx)) {
+                mTG_return_tag_init(submenu, mTG_TYPE_NONE, mTG_RETURN_CLOSE);
+                mTG_close_window(submenu, menu_info, TRUE);
+            } else {
+                mTG_open_warning_window(submenu, menu_info, mWR_WARNING_PUT_PLANT);
+            }
+            return;
+        }
         mTG_island_check_plant_plant(plant_item);
         mTG_island_check_fruit_plant(plant_item);
         mPlib_request_main_putin_scoop_from_submenu(&inv_ovl->shovel_pos, Now_Private->inventory.pockets[idx], FALSE);
@@ -3892,6 +3902,16 @@ static void mTG_plant_proc(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
                                FALSE)) {
             mActor_name_t item = Now_Private->inventory.pockets[idx];
             mActor_name_t throw_item;
+
+            if (Net_IsConnected()) {
+                if (Net_RequestPlant(&pos, item, idx)) {
+                    mTG_return_tag_init(submenu, mTG_TYPE_NONE, mTG_RETURN_CLOSE);
+                    mTG_close_window(submenu, menu_info, FALSE);
+                    return;
+                }
+                mTG_open_warning_window(submenu, menu_info, mWR_WARNING_PUT_PLANT);
+                return;
+            }
 
             mTG_island_check_plant_plant(item);
             if (item == ITM_SAPLING) {
@@ -4887,6 +4907,15 @@ static void mTG_bury_proc(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
     if (!mFI_CheckInIsland() ||
         (!mSP_SearchItemCategoryPriority(item, mSP_KIND_FURNITURE, mSP_LISTTYPE_HOMEPAGE, NULL) &&
          !mSP_SearchItemCategoryPriority(item, mSP_KIND_FURNITURE, mSP_LISTTYPE_SPECIALPRESENT, NULL))) {
+        if (Net_IsConnected()) {
+            if (Net_RequestBury(&inv_ovl->shovel_pos, item, idx)) {
+                mTG_return_tag_init(submenu, mTG_TYPE_NONE, mTG_RETURN_CLOSE);
+                mTG_close_window(submenu, menu_info, TRUE);
+            } else {
+                mTG_open_warning_window(submenu, menu_info, mWR_WARNING_PUT_ITEM);
+            }
+            return;
+        }
         mPlib_request_main_putin_scoop_from_submenu(&inv_ovl->shovel_pos, item, FALSE);
         mPr_SetPossessionItem(Now_Private, idx, EMPTY_NO, mPr_ITEM_COND_NORMAL);
         mTG_return_tag_init(submenu, mTG_TYPE_NONE, mTG_RETURN_CLOSE);

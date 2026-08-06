@@ -16,7 +16,83 @@ static void aID_check_set_first_field_bgm(INTRO_DEMO_ACTOR* intro_demo) {
     }
 }
 
+/* Online towns assign each resident a stable slot before the save is created.
+ * Complete the vanilla house/first-job bookkeeping at the station exit so an
+ * online resident gets control immediately without Tom Nook's onboarding. */
+static void aID_finish_online_intro(INTRO_DEMO_ACTOR* intro_demo, GAME_PLAY* play) {
+    int player_no = Common_Get(player_no);
+    int house_idx;
+    int card_channel;
+    int resident_slot;
+    mQst_errand_c* errand;
+    PLAYER_ACTOR* player = GET_PLAYER_ACTOR(play);
+    xyz_t spawn;
+
+    if (player_no < 0 || player_no >= PLAYER_NUM || Now_Private == NULL || player == NULL) {
+        return;
+    }
+
+    house_idx = mHS_get_arrange_idx(player_no);
+    if (mPr_NullCheckPersonalID(&Save_Get(homes[house_idx]).ownerID) == TRUE) {
+        (void)mHS_set_use(player_no, house_idx);
+    }
+
+    mPr_SetItemCollectBit(Now_Private->cloth.item);
+    mPr_SetItemCollectBit(FTR_START(FTR_SUM_CASSE01));
+    mPr_SetItemCollectBit(ITM_CARPET_START + Save_Get(homes[house_idx]).floors[0].wall_floor.flooring_idx);
+    mPr_SetItemCollectBit(ITM_WALL_START + Save_Get(homes[house_idx]).floors[0].wall_floor.wallpaper_idx);
+    mHm_SetNowHome();
+
+    Now_Private->inventory.loan = mPlayer_DEBT0;
+    errand = mQst_GetFirstJobData();
+    if (errand != NULL) {
+        mQst_ClearErrand(errand, 1);
+    }
+    mEv_UnSetFirstIntro();
+    mEv_UnSetFirstJob();
+    mTM_off_renew_time(1);
+
+    /* The vanilla intro starts on the train tracks and normally walks the
+     * player outside before releasing control. Online onboarding skips that
+     * cutscene, so place each resident on a distinct station-exit tile. */
+    resident_slot = Net_ResidentSlot();
+    if (resident_slot < 0 || resident_slot >= PLAYER_NUM) resident_slot = player_no;
+    spawn.x = 2200.0f + (resident_slot & 1) * 40.0f;
+    spawn.z = 1000.0f + (resident_slot >> 1) * 40.0f;
+    spawn.y = mCoBG_GetBgY_OnlyCenter_FromWpos2(spawn, 0.0f);
+    player->actor_class.world.position = spawn;
+    player->actor_class.last_world_position = spawn;
+    player->actor_class.home.position = spawn;
+    player->actor_class.ground_y = spawn.y;
+    if (play->player_data != NULL) {
+        play->player_data->position.x = (s16)spawn.x;
+        play->player_data->position.y = (s16)spawn.y;
+        play->player_data->position.z = (s16)spawn.z;
+    }
+
+    mPlib_request_main_wait_type3(&play->game);
+    player->actor_class.state_bitfield &= ~ACTOR_STATE_INVISIBLE;
+    mPlib_Set_unable_wade(FALSE);
+    mCoBG_ChangeBlockBgCheckMode(0);
+    Common_Set(submenu_disabled, FALSE);
+    Common_Set(complete_payment_type, mPlayer_COMPLETE_PAYMENT_TYPE_NONE);
+    play->event.day = 0;
+    if (mCD_SaveHome_bg(0, &card_channel) != 0) {
+        OSReport("[NET] Quickstart resident save failed on card channel %d\n", card_channel);
+    } else {
+        OSReport("[NET] Online resident initialized and saved on card channel %d\n", card_channel);
+    }
+    Actor_delete(&intro_demo->actor_class);
+}
+
 static void aID_first_set(INTRO_DEMO_ACTOR* intro_demo, GAME_PLAY* play) {
+    if (Net_IsConnected()) {
+        /* Rover already completed online onboarding. Do not leave a resident
+         * trapped in the train/station demo: finalize housing and hand over
+         * control as soon as the foreground player actor exists. */
+        aID_finish_online_intro(intro_demo, play);
+        return;
+    }
     Common_Set(train_coming_flag, 3);
     aID_change_player_demo_standing_train(&play->game);
     aID_setupAction(intro_demo, play, aID_ACT_TRAIN_BIRTH_WAIT);
@@ -44,6 +120,11 @@ static void aID_ride_train(INTRO_DEMO_ACTOR* intro_demo, GAME_PLAY* play) {
 
 static void aID_ride_off_player(INTRO_DEMO_ACTOR* intro_demo, GAME_PLAY* play) {
     ACTOR* station_master = intro_demo->station_master_actor_p;
+
+    if (Net_QuickstartEnabled()) {
+        aID_setupAction(intro_demo, play, aID_ACT_WALK_ONE_UNIT);
+        return;
+    }
 
     if (intro_demo->_1A0 == 0) {
         /* Wait for the station master to speak to the player */
@@ -78,6 +159,10 @@ static void aID_go_out_of_station(INTRO_DEMO_ACTOR* intro_demo, GAME_PLAY* play)
     if (player != NULL) {
         if (player->actor_class.world.position.z >= aID_OUT_OF_STATION_Z_POS) {
             mPlib_request_main_demo_wait_type1(&play->game, 0, NULL);
+            if (Net_IsConnected()) {
+                aID_finish_online_intro(intro_demo, play);
+                return;
+            }
             intro_demo->next_action = aID_ACT_FIRST_TALK_END_WAIT;
             aID_setupAction(intro_demo, play, aID_ACT_BIRTH_RCN_GUIDE);
         }

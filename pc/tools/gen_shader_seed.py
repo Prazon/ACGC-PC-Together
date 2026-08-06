@@ -6,7 +6,7 @@ precompiles them at boot instead of hitching on first encounter mid-game.
 Regenerate after a thorough play session (the game appends newly seen keys
 to shader_cache.bin next to the exe):
 
-    python pc/tools/gen_shader_seed.py pc/build32/bin/shader_cache.bin
+    python pc/tools/gen_shader_seed.py pc/build64/bin/shader_cache.bin
 
 The runtime cache only records keys NOT already covered by the built-in
 seed, so this tool merges: existing pc_shader_seed.h keys + new cache keys.

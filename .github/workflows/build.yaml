@@ -1,0 +1,81 @@
+name: 64-bit build and test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  netcode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and run unit/integration tests
+        run: make -j2 test
+      - name: Fuzz bounded protocol parsers
+        run: make -j2 build/netcode/protocol_fuzz && build/netcode/protocol_fuzz 200000
+      - name: Eight-client encrypted load smoke
+        run: make -j2 build/netcode/town_load && build/netcode/town_load 8 1200
+      - name: Encrypted loss/jitter/reorder/reconnect chaos
+        run: make -j2 chaos
+      - name: Accelerated month and crash recovery
+        run: make -j2 month-soak
+      - name: Headless server smoke
+        run: make -j2 smoke
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Address/undefined behavior sanitizers
+        run: make -j2 sanitize
+
+  windows-x64-game:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-sqlite3
+      - name: Build 64-bit game with native CMake and Ninja
+        shell: cmd
+        run: build_pc.bat
+      - name: Verify PE32+ output
+        shell: msys2 {0}
+        run: |
+          file pc/build64/bin/AnimalCrossing.exe | grep -q 'PE32+.*x86-64'
+          file pc/build64/bin/AnimalCrossingServer.exe | grep -q 'PE32+.*x86-64'
+      - name: Windows dedicated-server smoke
+        shell: pwsh
+        run: pc/build64/bin/AnimalCrossingServer.exe --smoke --ticks 120 --data pc/build64/server-smoke
+      - name: Build asset-free release package
+        shell: pwsh
+        run: scripts/package_windows.ps1 -Version ci
+      - uses: actions/upload-artifact@v7
+        with:
+          name: AnimalCrossing-Windows-x86_64
+          path: dist/ACGC-PC-Port-ci-Windows-x86_64.zip
+
+  linux-x64-game:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install 64-bit dependencies
+        run: sudo apt-get update && sudo apt-get install -y g++ cmake ninja-build libsdl2-dev libgl-dev libsqlite3-0
+      - name: Configure and build 64-bit game
+        run: cmake -S pc -B pc/build64-linux -G Ninja -DNETCODE_ENABLED=ON && cmake --build pc/build64-linux --parallel 2
+      - name: Verify ELF64 output
+        run: |
+          file pc/build64-linux/bin/AnimalCrossing | grep -q 'ELF 64-bit'
+          file pc/build64-linux/bin/AnimalCrossingServer | grep -q 'ELF 64-bit'

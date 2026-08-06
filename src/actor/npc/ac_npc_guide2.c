@@ -11,6 +11,7 @@
 #include "libultra/libultra.h"
 #include "m_bgm.h"
 #include "m_soncho.h"
+#include "m_net_hooks.h"
 
 enum {
     aNG2_ACTION_ENTER,
@@ -109,7 +110,17 @@ static void aNG2_actor_ct(ACTOR* actorx, GAME* game) {
         player->actor_class.state_bitfield |= ACTOR_STATE_INVISIBLE;
     }
 
-    aNG2_setupAction(guide2, play, aNG2_ACTION_ENTER);
+    /* Keep Rover's online name/gender flow; quickstart only prefills NAME. */
+    (void)Net_PrefillQuickstartName();
+    if (Net_IsConnected()) {
+        guide2->npc_class.actor_class.world.position.x = 100.0f;
+        guide2->npc_class.actor_class.world.position.z = 290.0f;
+        guide2->npc_class.actor_class.shape_info.rotation.y = 0;
+        guide2->camera_eyes_flag = FALSE;
+        aNG2_setupAction(guide2, play, aNG2_ACTION_TALK_START_WAIT);
+    } else {
+        aNG2_setupAction(guide2, play, aNG2_ACTION_ENTER);
+    }
 
     /* Play train noises sfx repeatedly */
     sAdo_SysLevStart(NA_SE_TRAIN_RIDE);

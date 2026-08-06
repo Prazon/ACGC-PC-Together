@@ -39,7 +39,7 @@ FORESTA_SYMBOLS = DECOMP_ROOT / "config" / "GAFE01_00" / "foresta" / "symbols.tx
 DOL_SYMBOLS = DECOMP_ROOT / "config" / "GAFE01_00" / "symbols.txt"
 OUTPUT_ASSETS_C = DECOMP_ROOT / "pc" / "src" / "pc_assets.c"
 OUTPUT_ASSETS_H = DECOMP_ROOT / "pc" / "include" / "pc_assets.h"
-RUNTIME_BIN_DIR = DECOMP_ROOT / "pc" / "build32" / "bin" / "assets"
+RUNTIME_BIN_DIR = DECOMP_ROOT / "pc" / "build64" / "bin" / "assets"
 
 SCAN_DIRS = [DECOMP_ROOT / "src"]
 

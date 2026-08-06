@@ -20,7 +20,7 @@ orig/*/*
 
 # Build files
 build/
-build32/
+build64/
 .ninja_*
 build.ninja
 
@@ -36,6 +36,16 @@ compile_commands.json
 /*.txt
 !requirements.txt
 *.exe
+
+# Packaged release output
+dist/
+
+# User-supplied content (never redistribute)
+# HD texture packs are third-party community work derived from game textures;
+# the disc image and live town data are supplied by the user at runtime.
+texture_pack/
+rom/
+towns/
 
 # For saving work files into (like IDB)
 temp/
