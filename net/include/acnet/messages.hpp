@@ -16,6 +16,10 @@
 namespace acnet {
 
 constexpr std::size_t kTownBootstrapTileCount = 5U * 6U * 16U * 16U;
+/* Two 16x16 island acres; see kIslandTileCount in zone.hpp. */
+constexpr std::size_t kIslandBootstrapTileCount = 2U * 16U * 16U;
+/* Field grid width; an island acre index must fall inside it. */
+constexpr std::uint8_t kFieldBlockXCount = 7;
 
 struct TownBootstrapTile {
     std::uint16_t item = 0;
@@ -27,13 +31,31 @@ struct TownBootstrap {
     std::uint16_t land_id = 0;
     std::array<std::uint8_t, 8> town_name{};
     PlayerAppearance appearance;
+    CustomPattern pattern;
     std::vector<TownBootstrapTile> tiles;
+    /* Acre x indices of the island's two blocks within the 7-wide field grid,
+     * which the client discovers from the acre kinds rather than a constant.
+     * The island tile list is empty when the client could not read the field
+     * layout yet; the server then keeps waiting rather than installing a wrong
+     * island, and a later login supplies it. */
+    std::array<std::uint8_t, 2> island_block_x{};
+    std::vector<TownBootstrapTile> island_tiles;
 };
 
 struct TownBootstrapResult {
     ResultCode code = ResultCode::Ok;
     Revision revision = 0;
     bool initialized = false;
+};
+
+struct AppearanceUpdate {
+    PlayerAppearance appearance;
+    CustomPattern pattern;
+};
+
+struct AppearanceResult {
+    ResultCode code = ResultCode::Ok;
+    Revision revision = 0;
 };
 
 enum class TradeAction : std::uint8_t { Create, UpdateOffer, Confirm, Cancel };
@@ -74,6 +96,10 @@ bool encode(const TownBootstrap& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, TownBootstrap& value);
 bool encode(const TownBootstrapResult& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, TownBootstrapResult& value);
+bool encode(const AppearanceUpdate& value, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, AppearanceUpdate& value);
+bool encode(const AppearanceResult& value, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, AppearanceResult& value);
 bool encode(const EconomyRequest& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, EconomyRequest& value);
 bool encode(const EconomyResult& value, std::vector<std::uint8_t>& output);

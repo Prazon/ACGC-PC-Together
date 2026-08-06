@@ -58,28 +58,56 @@ bool result(ByteReader& reader, ResultCode& value) {
     return true;
 }
 
-bool appearance(ByteWriter& writer, const PlayerAppearance& value) {
-    return value.gender <= 2 && value.face < 8 &&
-           writer.bytes(value.name.data(), value.name.size()) && writer.u8(value.gender) &&
-           writer.u8(value.face) && writer.u16(value.clothing) && writer.u16(value.equipped_item);
+bool valid_appearance(const PlayerAppearance& value, const CustomPattern& pattern) {
+    if (value.gender > 2 || value.face >= 8 || pattern.palette >= 16) return false;
+    return pattern.present ? value.clothing_index >= 0x100 && value.clothing_index < 0x108
+                           : value.clothing_index < 0x100;
 }
 
-bool appearance(ByteReader& reader, PlayerAppearance& value) {
-    return reader.bytes(value.name.data(), value.name.size()) && reader.u8(value.gender) &&
-           reader.u8(value.face) && reader.u16(value.clothing) && reader.u16(value.equipped_item) &&
-           value.gender <= 2 && value.face < 8;
+bool appearance(ByteWriter& writer, const PlayerAppearance& value, const CustomPattern& pattern) {
+    if (!valid_appearance(value, pattern) ||
+        !writer.bytes(value.name.data(), value.name.size()) || !writer.u8(value.gender) ||
+        !writer.u8(value.face) || !writer.u16(value.clothing) || !writer.u16(value.equipped_item) ||
+        !writer.u16(value.clothing_index) || !writer.u32(value.revision) ||
+        !writer.u8(pattern.present ? 1 : 0) || !writer.u8(pattern.palette)) return false;
+    return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
+}
+
+bool appearance(ByteReader& reader, PlayerAppearance& value, CustomPattern& pattern) {
+    std::uint8_t present;
+    pattern = {};
+    if (!reader.bytes(value.name.data(), value.name.size()) || !reader.u8(value.gender) ||
+        !reader.u8(value.face) || !reader.u16(value.clothing) || !reader.u16(value.equipped_item) ||
+        !reader.u16(value.clothing_index) || !reader.u32(value.revision) || !reader.u8(present) ||
+        !reader.u8(pattern.palette) || present > 1) return false;
+    pattern.present = present != 0;
+    return (!pattern.present || reader.bytes(pattern.texture.data(), pattern.texture.size())) &&
+           valid_appearance(value, pattern);
 }
 
 } // namespace
 
+bool valid_island_bootstrap(const TownBootstrap& value) {
+    if (value.island_tiles.empty()) return true;
+    return value.island_tiles.size() == kIslandBootstrapTileCount &&
+           value.island_block_x[0] < kFieldBlockXCount && value.island_block_x[1] < kFieldBlockXCount &&
+           value.island_block_x[0] < value.island_block_x[1];
+}
+
 bool encode(const TownBootstrap& value, std::vector<std::uint8_t>& output) {
     if (value.town_seed == 0 || (value.land_id & 0xFF00U) != 0x3000U ||
-        value.tiles.size() != kTownBootstrapTileCount) return false;
+        value.tiles.size() != kTownBootstrapTileCount || !valid_island_bootstrap(value)) return false;
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u32(value.town_seed) || !writer.u16(value.land_id) ||
-        !writer.bytes(value.town_name.data(), value.town_name.size()) || !appearance(writer, value.appearance) ||
+        !writer.bytes(value.town_name.data(), value.town_name.size()) ||
+        !appearance(writer, value.appearance, value.pattern) ||
         !writer.u32(static_cast<std::uint32_t>(value.tiles.size()))) return false;
     for (const TownBootstrapTile& tile_value : value.tiles) {
+        if (!writer.u16(tile_value.item) || !writer.u8(tile_value.buried ? 1 : 0)) return false;
+    }
+    if (!writer.u8(value.island_block_x[0]) || !writer.u8(value.island_block_x[1]) ||
+        !writer.u32(static_cast<std::uint32_t>(value.island_tiles.size()))) return false;
+    for (const TownBootstrapTile& tile_value : value.island_tiles) {
         if (!writer.u16(tile_value.item) || !writer.u8(tile_value.buried ? 1 : 0)) return false;
     }
     output = writer.data();
@@ -91,7 +119,8 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrap& value) {
     ByteReader reader(input);
     std::uint32_t count;
     if (!reader.u32(value.town_seed) || !reader.u16(value.land_id) ||
-        !reader.bytes(value.town_name.data(), value.town_name.size()) || !appearance(reader, value.appearance) ||
+        !reader.bytes(value.town_name.data(), value.town_name.size()) ||
+        !appearance(reader, value.appearance, value.pattern) ||
         !reader.u32(count) || value.town_seed == 0 || (value.land_id & 0xFF00U) != 0x3000U ||
         count != kTownBootstrapTileCount) return false;
     value.tiles.clear();
@@ -101,7 +130,18 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrap& value) {
         if (!reader.u16(tile_value.item) || !reader.u8(buried) || buried > 1) return false;
         tile_value.buried = buried != 0;
     }
-    return reader.finished();
+    std::uint32_t island_count;
+    if (!reader.u8(value.island_block_x[0]) || !reader.u8(value.island_block_x[1]) ||
+        !reader.u32(island_count) ||
+        (island_count != 0 && island_count != kIslandBootstrapTileCount)) return false;
+    value.island_tiles.clear();
+    value.island_tiles.resize(island_count);
+    for (TownBootstrapTile& tile_value : value.island_tiles) {
+        std::uint8_t buried;
+        if (!reader.u16(tile_value.item) || !reader.u8(buried) || buried > 1) return false;
+        tile_value.buried = buried != 0;
+    }
+    return valid_island_bootstrap(value) && reader.finished();
 }
 
 bool encode(const TownBootstrapResult& value, std::vector<std::uint8_t>& output) {
@@ -119,6 +159,30 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrapResult& value) 
         initialized > 1 || !reader.finished()) return false;
     value.initialized = initialized != 0;
     return true;
+}
+
+bool encode(const AppearanceUpdate& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!appearance(writer, value.appearance, value.pattern)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, AppearanceUpdate& value) {
+    ByteReader reader(input);
+    return appearance(reader, value.appearance, value.pattern) && reader.finished();
+}
+
+bool encode(const AppearanceResult& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!result(writer, value.code) || !writer.u32(value.revision)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, AppearanceResult& value) {
+    ByteReader reader(input);
+    return result(reader, value.code) && reader.u32(value.revision) && reader.finished();
 }
 
 bool encode(const WorldOperation& value, std::vector<std::uint8_t>& output) {

@@ -15,6 +15,7 @@
 #include "sys_matrix.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 static void Net_Remote_Player_ct(ACTOR* actor, GAME* game);
@@ -38,6 +39,9 @@ typedef struct net_remote_render_data_s {
     u8 loaded_gender;
     u8 loaded_face;
     u16 loaded_clothing;
+    u32 loaded_appearance_revision;
+    u8 loaded_pattern_present;
+    u8 loaded_pattern_palette;
     s8 animation_mode;
     u8 initialized;
 } NET_REMOTE_RENDER_DATA;
@@ -49,7 +53,8 @@ enum {
     NET_REMOTE_ANIM_PULL
 };
 
-static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote) {
+static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
+                                                const AcNetRemotePlayer* state) {
     NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
     mPr_cloth_c cloth;
     int gender;
@@ -59,11 +64,35 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote) {
     gender = remote->gender == mPr_SEX_FEMALE ? mPr_SEX_FEMALE : mPr_SEX_MALE;
     face = remote->face < mPr_FACE_TYPE_NUM ? remote->face : 0;
     if (render->initialized && render->loaded_gender == gender &&
-        render->loaded_face == face && render->loaded_clothing == remote->clothing) return TRUE;
+        render->loaded_face == face && render->loaded_clothing == remote->clothing &&
+        render->loaded_appearance_revision == remote->appearance_revision &&
+        render->loaded_pattern_present == state->pattern_present &&
+        render->loaded_pattern_palette == state->pattern_palette) return TRUE;
 
-    memset(&cloth, 0, sizeof(cloth));
-    mPlib_change_player_cloth_info(&cloth, remote->clothing);
-    mPlib_Load_PlayerTexAndPallet(render->clothing_texture, render->clothing_palette, cloth.idx);
+    if (state->pattern_present && state->clothing_index >= (CLOTH_NUM + 1) &&
+        state->clothing_index < (CLOTH_NUM + 1 + mPr_ORIGINAL_DESIGN_COUNT) &&
+        state->pattern_palette < mNW_PALETTE_NUM) {
+        memcpy(render->clothing_texture, state->pattern_texture, sizeof(render->clothing_texture));
+        memcpy(render->clothing_palette, mNW_PaletteIdx2Palette(state->pattern_palette),
+               sizeof(render->clothing_palette));
+        DCStoreRangeNoSync(render->clothing_texture, sizeof(render->clothing_texture));
+        DCStoreRangeNoSync(render->clothing_palette, sizeof(render->clothing_palette));
+        {
+            extern int g_pc_verbose;
+            if (g_pc_verbose) {
+                printf("[NET] remote pattern loaded account=%llu revision=%u index=%u\n",
+                       (unsigned long long)remote->account_id,
+                       remote->appearance_revision,
+                       remote->clothing_index);
+                fflush(stdout);
+            }
+        }
+    } else {
+        memset(&cloth, 0, sizeof(cloth));
+        mPlib_change_player_cloth_info(&cloth, remote->clothing);
+        cloth.idx = state->clothing_index < (CLOTH_NUM + 1) ? state->clothing_index : cloth.idx;
+        mPlib_Load_PlayerTexAndPallet(render->clothing_texture, render->clothing_palette, cloth.idx);
+    }
     if (!mPlib_Load_PlayerFaceTexAndPallet(render->face_texture, render->face_palette, gender, face)) return FALSE;
 
     cKF_SkeletonInfo_R_dt(&render->keyframe);
@@ -73,6 +102,9 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote) {
     render->loaded_gender = (u8)gender;
     render->loaded_face = (u8)face;
     render->loaded_clothing = remote->clothing;
+    render->loaded_appearance_revision = remote->appearance_revision;
+    render->loaded_pattern_present = state->pattern_present;
+    render->loaded_pattern_palette = state->pattern_palette;
     render->animation_mode = NET_REMOTE_ANIM_WAIT;
     render->initialized = TRUE;
     return TRUE;
@@ -113,6 +145,9 @@ static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
         render->loaded_gender = 0xFF;
         render->loaded_face = 0xFF;
         render->loaded_clothing = 0xFFFF;
+        render->loaded_appearance_revision = 0;
+        render->loaded_pattern_present = 0xFF;
+        render->loaded_pattern_palette = 0xFF;
         render->animation_mode = -1;
     }
     remote->render_data = render;
@@ -190,8 +225,12 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
             remote->face = states[i].face;
             remote->clothing = states[i].clothing;
             remote->equipped_item = states[i].equipped_item;
+            remote->clothing_index = states[i].clothing_index;
+            remote->appearance_revision = states[i].appearance_revision;
+            remote->pattern_present = states[i].pattern_present;
+            remote->pattern_palette = states[i].pattern_palette;
             remote->missing_frames = 0;
-            if (Net_Remote_Player_refresh_appearance(remote)) {
+            if (Net_Remote_Player_refresh_appearance(remote, &states[i])) {
                 NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
                 const f32 speed_squared = actor->position_speed.x * actor->position_speed.x +
                                           actor->position_speed.z * actor->position_speed.z;

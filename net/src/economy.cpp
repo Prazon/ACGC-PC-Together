@@ -12,6 +12,12 @@ std::size_t hash_mix(std::size_t seed, std::uint64_t value) {
     return seed ^ static_cast<std::size_t>(value + 0x9E3779B97F4A7C15ULL + (seed << 6) + (seed >> 2));
 }
 
+/* Every operation whose auxiliary revision is the account's mail revision. */
+bool mail_operation(EconomyOpType type) {
+    return type == EconomyOpType::AttachMail || type == EconomyOpType::ClaimMail ||
+           type == EconomyOpType::TakeMail || type == EconomyOpType::DiscardMail;
+}
+
 } // namespace
 
 std::size_t EconomyAuthority::OperationKeyHash::operator()(const OperationKey& value) const {
@@ -60,10 +66,13 @@ std::vector<MailRecord> EconomyAuthority::mail_for(AccountId account) const {
     std::vector<MailRecord> letters;
     const MailboxState* box = mailbox(account);
     if (box == nullptr) return letters;
-    letters.reserve(box->mail.size());
-    for (std::uint64_t id : box->mail) {
-        const auto found = mail_.find(id);
-        if (found != mail_.end()) letters.push_back(found->second);
+    letters.reserve(box->mail.size() + box->carried.size());
+    /* Mailbox first, then carried: both halves in their authoritative order. */
+    for (const std::vector<std::uint64_t>* list : {&box->mail, &box->carried}) {
+        for (std::uint64_t id : *list) {
+            const auto found = mail_.find(id);
+            if (found != mail_.end()) letters.push_back(found->second);
+        }
     }
     return letters;
 }
@@ -77,19 +86,24 @@ bool EconomyAuthority::restore_mail(const MailRecord& record) {
     if (record.id == 0 || record.recipient == 0 || record.revision == 0) return false;
     if (mail_.find(record.id) != mail_.end()) return false;
     MailboxState& box = mailbox_for(record.recipient);
-    if (box.mail.size() >= kMailboxCapacity) return false;
+    const bool carried = record.location == MailLocation::Carried;
+    std::vector<std::uint64_t>& list = carried ? box.carried : box.mail;
+    if (list.size() >= (carried ? kCarriedMailCapacity : kMailboxCapacity)) return false;
     mail_[record.id] = record;
     /* Replay restores letters in identifier order, so appending preserves
-     * delivery order without persisting the list itself. */
-    box.mail.push_back(record.id);
-    std::sort(box.mail.begin(), box.mail.end());
+     * delivery order without persisting the lists themselves. */
+    list.push_back(record.id);
+    std::sort(list.begin(), list.end());
     if (record.id >= next_mail_id_) next_mail_id_ = record.id + 1;
     return next_mail_id_ != 0;
 }
 
 void EconomyAuthority::clear_mail() {
     mail_.clear();
-    for (auto& entry : mailboxes_) entry.second.mail.clear();
+    for (auto& entry : mailboxes_) {
+        entry.second.mail.clear();
+        entry.second.carried.clear();
+    }
     /* next_mail_id_ deliberately keeps climbing: an identifier is never reused
      * within a process lifetime, even across a re-decode. */
 }
@@ -103,7 +117,7 @@ bool EconomyAuthority::restore_mailbox_revision(AccountId account, Revision revi
 std::uint64_t EconomyAuthority::deliver_mail(AccountId sender,
                                              AccountId recipient,
                                              std::uint16_t attachment,
-                                             const std::array<std::uint8_t, kMailTextBytes>& text) {
+                                             const MailContent& content) {
     MailboxState& box = mailbox_for(recipient);
     MailRecord record;
     record.id = next_mail_id_;
@@ -111,7 +125,8 @@ std::uint64_t EconomyAuthority::deliver_mail(AccountId sender,
     record.recipient = recipient;
     record.attachment = attachment;
     record.revision = 1;
-    record.text = text;
+    record.location = MailLocation::Mailbox;
+    record.content = content;
     mail_[record.id] = record;
     box.mail.push_back(record.id);
     box.revision = next_revision(box.revision);
@@ -151,7 +166,7 @@ EconomyResult EconomyAuthority::reject(const EconomyRequest& request, ResultCode
     }
     /* A rejected mail operation still reports the mailbox the client observed
      * against, so a stale claim can be retried without a fresh baseline. */
-    if (request.type == EconomyOpType::AttachMail || request.type == EconomyOpType::ClaimMail) {
+    if (mail_operation(request.type)) {
         const MailboxState* box = mailbox(request.account);
         result.auxiliary_revision = box == nullptr ? 0 : box->revision;
         result.mail_id = request.mail_id;
@@ -210,8 +225,10 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
      * mailbox grows, a claim names the letter that leaves this account's. */
     AccountId mail_recipient = 0;
     std::uint16_t mail_attachment = 0;
-    std::array<std::uint8_t, kMailTextBytes> mail_text{};
+    MailContent mail_content;
+    std::uint64_t taken_mail = 0;
     std::uint64_t claimed_mail = 0;
+    std::uint64_t discarded_mail = 0;
 
     switch (request.type) {
         case EconomyOpType::Buy: {
@@ -336,7 +353,62 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
             inventory_changed = true;
             break;
         }
+        case EconomyOpType::TakeMail: {
+            const auto letter = mail_.find(request.mail_id);
+            if (request.mail_id == 0 || letter == mail_.end() || letter->second.recipient != request.account ||
+                letter->second.location != MailLocation::Mailbox) {
+                result.code = ResultCode::NotFound;
+                break;
+            }
+            const MailboxState& box = mailbox_for(request.account);
+            if (request.expected_aux_revision != box.revision) {
+                result.code = ResultCode::StaleRevision;
+                break;
+            }
+            if (box.carried.size() >= kCarriedMailCapacity) {
+                result.code = ResultCode::Capacity;
+                break;
+            }
+            taken_mail = letter->second.id;
+            result.item = letter->second.attachment;
+            result.mail_id = letter->second.id;
+            break;
+        }
         case EconomyOpType::ClaimMail: {
+            /* Only a carried letter gives up its present, exactly as in the
+             * original: the letter itself survives with an empty attachment. */
+            const auto letter = mail_.find(request.mail_id);
+            if (request.mail_id == 0 || letter == mail_.end() || letter->second.recipient != request.account ||
+                letter->second.location != MailLocation::Carried) {
+                result.code = ResultCode::NotFound;
+                break;
+            }
+            const MailboxState& box = mailbox_for(request.account);
+            if (request.expected_aux_revision != box.revision) {
+                result.code = ResultCode::StaleRevision;
+                break;
+            }
+            if (letter->second.attachment == 0) {
+                result.code = ResultCode::InvalidState;
+                break;
+            }
+            const auto slot = empty_slot(inventory);
+            if (!slot.has_value()) {
+                result.code = ResultCode::Capacity;
+                break;
+            }
+            inventory.slots[*slot].item = letter->second.attachment;
+            inventory.slots[*slot].condition = 0;
+            result.item = letter->second.attachment;
+            result.inventory_slot = *slot;
+            inventory_changed = true;
+            claimed_mail = letter->second.id;
+            result.mail_id = letter->second.id;
+            break;
+        }
+        case EconomyOpType::DiscardMail: {
+            /* Without this a full pocket of letters is a dead end: the player
+             * could never take another one out of the mailbox. */
             const auto letter = mail_.find(request.mail_id);
             if (request.mail_id == 0 || letter == mail_.end() || letter->second.recipient != request.account) {
                 result.code = ResultCode::NotFound;
@@ -347,19 +419,12 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
                 result.code = ResultCode::StaleRevision;
                 break;
             }
+            /* A letter still holding a present would take the item with it. */
             if (letter->second.attachment != 0) {
-                const auto slot = empty_slot(inventory);
-                if (!slot.has_value()) {
-                    result.code = ResultCode::Capacity;
-                    break;
-                }
-                inventory.slots[*slot].item = letter->second.attachment;
-                inventory.slots[*slot].condition = 0;
-                result.item = letter->second.attachment;
-                result.inventory_slot = *slot;
-                inventory_changed = true;
+                result.code = ResultCode::InvalidState;
+                break;
             }
-            claimed_mail = letter->second.id;
+            discarded_mail = letter->second.id;
             result.mail_id = letter->second.id;
             break;
         }
@@ -385,11 +450,13 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
     result.balance = account.bank_balance;
     result.debt = account.debt;
     result.bells = inventory.bells;
-    /* A mail operation reports the acting account's own mailbox: the sender's
-     * is untouched by a delivery, the claimer's is one letter shorter. */
-    if (request.type == EconomyOpType::AttachMail || request.type == EconomyOpType::ClaimMail) {
+    /* A mail operation reports the acting account's own mail revision. A
+     * delivery leaves the sender's untouched; taking, claiming, and discarding
+     * all move the actor's own letters. */
+    if (mail_operation(request.type)) {
         MailboxState& box = mailbox_for(request.account);
-        result.auxiliary_revision = claimed_mail != 0 ? next_revision(box.revision) : box.revision;
+        const bool own_mail_changed = taken_mail != 0 || claimed_mail != 0 || discarded_mail != 0;
+        result.auxiliary_revision = own_mail_changed ? next_revision(box.revision) : box.revision;
     }
 
     if (commit_hook_ && !commit_hook_(request, result, inventory)) {
@@ -400,14 +467,31 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
     shop_ = std::move(shop);
     museum_ = std::move(museum);
     if (mail_recipient != 0) {
-        const std::uint64_t delivered = deliver_mail(request.account, mail_recipient, mail_attachment, mail_text);
+        const std::uint64_t delivered = deliver_mail(request.account, mail_recipient, mail_attachment, mail_content);
         result.mail_id = delivered;
+    }
+    if (taken_mail != 0) {
+        MailboxState& box = mailbox_for(request.account);
+        box.mail.erase(std::remove(box.mail.begin(), box.mail.end(), taken_mail), box.mail.end());
+        box.carried.push_back(taken_mail);
+        MailRecord& letter = mail_[taken_mail];
+        letter.location = MailLocation::Carried;
+        letter.revision = next_revision(letter.revision);
+        box.revision = next_revision(box.revision);
     }
     if (claimed_mail != 0) {
         MailboxState& box = mailbox_for(request.account);
-        box.mail.erase(std::remove(box.mail.begin(), box.mail.end(), claimed_mail), box.mail.end());
+        MailRecord& letter = mail_[claimed_mail];
+        letter.attachment = 0;
+        letter.revision = next_revision(letter.revision);
         box.revision = next_revision(box.revision);
-        mail_.erase(claimed_mail);
+    }
+    if (discarded_mail != 0) {
+        MailboxState& box = mailbox_for(request.account);
+        box.mail.erase(std::remove(box.mail.begin(), box.mail.end(), discarded_mail), box.mail.end());
+        box.carried.erase(std::remove(box.carried.begin(), box.carried.end(), discarded_mail), box.carried.end());
+        box.revision = next_revision(box.revision);
+        mail_.erase(discarded_mail);
     }
     idempotency_[key] = result;
     return result;
@@ -443,7 +527,7 @@ EconomyResult EconomyAuthority::admin_grant_bank_bells(AccountId account, std::u
 
 EconomyResult EconomyAuthority::admin_send_mail(AccountId recipient,
                                                 std::uint16_t attachment,
-                                                const std::array<std::uint8_t, kMailTextBytes>& text) {
+                                                const MailContent& content) {
     EconomyRequest request;
     request.type = EconomyOpType::AdminSendMail;
     request.account = recipient;
@@ -456,7 +540,7 @@ EconomyResult EconomyAuthority::admin_send_mail(AccountId recipient,
     result.code = ResultCode::Ok;
     result.type = EconomyOpType::AdminSendMail;
     result.item = attachment;
-    result.mail_id = deliver_mail(kAdministratorAccount, recipient, attachment, text);
+    result.mail_id = deliver_mail(kAdministratorAccount, recipient, attachment, content);
     result.auxiliary_revision = mailbox_for(recipient).revision;
     const AccountLedger* account = ledger(recipient);
     if (account != nullptr) {
@@ -485,7 +569,9 @@ bool EconomyAuthority::validate_context(const EconomyRequest& request) const {
         case EconomyOpType::AttachMail:
             required_zone = config_.post_office_zone;
             break;
+        case EconomyOpType::TakeMail:
         case EconomyOpType::ClaimMail:
+        case EconomyOpType::DiscardMail:
             required_zone = config_.mailbox_zone;
             break;
         case EconomyOpType::AdminGrantBells:

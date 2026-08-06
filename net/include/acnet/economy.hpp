@@ -27,18 +27,34 @@ enum class EconomyOpType : std::uint8_t {
     Donate,
     AttachMail,
     ClaimMail,
+    TakeMail,
+    DiscardMail,
     AdminGrantBells,
     AdminSendMail,
 };
 
-constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::ClaimMail);
-constexpr std::uint8_t kMaximumEconomyOp = static_cast<std::uint8_t>(EconomyOpType::AdminSendMail);
+constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::DiscardMail);
 
-/* One mailbox holds ten pending letters, matching the original game's mailbox
- * capacity, and a letter carries a bounded body so an administrative gift can
- * explain itself. */
+/* The original game moves a letter in two steps: the house mailbox holds ten,
+ * the player then carries up to ten in their pockets, and only a carried letter
+ * gives up its present. Both halves are server-owned, so the same two steps are
+ * two transactions -- TakeMail then ClaimMail -- and the capacities match the
+ * original arrays (HOME_MAILBOX_SIZE and mPr_INVENTORY_MAIL_COUNT). */
+enum class MailLocation : std::uint8_t {
+    Mailbox,
+    Carried,
+};
+
 constexpr std::size_t kMailboxCapacity = 10;
-constexpr std::size_t kMailTextBytes = 96;
+constexpr std::size_t kCarriedMailCapacity = 10;
+
+/* A letter is carried whole so the original UI can render it unchanged: the
+ * text is opaque bytes in the game's own font encoding, sized to the fields of
+ * Mail_c (MAIL_HEADER_LEN, MAIL_BODY_LEN, MAIL_FOOTER_LEN, Mail_nm_c). */
+constexpr std::size_t kMailNameBytes = 22;
+constexpr std::size_t kMailHeaderBytes = 24;
+constexpr std::size_t kMailBodyBytes = 192;
+constexpr std::size_t kMailFooterBytes = 32;
 
 /* Sender sentinel for letters the town operator posts. No account is ever 0. */
 constexpr AccountId kAdministratorAccount = 0;
@@ -65,21 +81,35 @@ struct MuseumState {
     std::unordered_set<std::uint16_t> donated_items;
 };
 
+struct MailContent {
+    std::uint8_t font = 0;        /* mMl_FONT_* */
+    std::uint8_t mail_type = 0;
+    std::uint8_t paper_type = 0;
+    std::uint8_t header_back_start = 0;
+    std::array<std::uint8_t, kMailNameBytes> sender_name{};
+    std::array<std::uint8_t, kMailHeaderBytes> header{};
+    std::array<std::uint8_t, kMailBodyBytes> body{};
+    std::array<std::uint8_t, kMailFooterBytes> footer{};
+};
+
 struct MailRecord {
     std::uint64_t id = 0;
     AccountId sender = 0; // kAdministratorAccount when the town operator posted it
     AccountId recipient = 0;
     std::uint16_t attachment = 0;
     Revision revision = 1;
-    std::array<std::uint8_t, kMailTextBytes> text{};
+    MailLocation location = MailLocation::Mailbox;
+    MailContent content;
 };
 
-/* Pending letters for one account, oldest first.  The identifiers are the
- * authoritative ordering; the revision changes whenever a letter is delivered
- * or claimed so a client cannot claim against a stale view. */
+/* One account's letters, oldest first in each list. The identifiers are the
+ * authoritative ordering, and a single revision covers both lists: every
+ * delivery, take, claim, and discard bumps it, so a client always quotes one
+ * observed value and cannot act on a stale view of either half. */
 struct MailboxState {
     Revision revision = 1;
     std::vector<std::uint64_t> mail;
+    std::vector<std::uint64_t> carried;
 };
 
 struct EconomyRequest {
@@ -195,9 +225,7 @@ public:
      * in the post office -- but they commit through the same ledger, mailbox,
      * and revision rules, so the caller still journals the result. */
     EconomyResult admin_grant_bank_bells(AccountId account, std::uint64_t amount);
-    EconomyResult admin_send_mail(AccountId recipient,
-                                  std::uint16_t attachment,
-                                  const std::array<std::uint8_t, kMailTextBytes>& text);
+    EconomyResult admin_send_mail(AccountId recipient, std::uint16_t attachment, const MailContent& content);
 
     TradeResult create_trade(std::uint64_t trade_id, AccountId first, AccountId second);
     TradeResult update_trade_offer(std::uint64_t trade_id,
@@ -229,7 +257,7 @@ private:
     std::uint64_t deliver_mail(AccountId sender,
                                AccountId recipient,
                                std::uint16_t attachment,
-                               const std::array<std::uint8_t, kMailTextBytes>& text);
+                               const MailContent& content);
     EconomyResult reject(const EconomyRequest& request, ResultCode code) const;
     TradeOffer* offer_for(TradeSession& trade, AccountId account);
     const TradeOffer* offer_for(const TradeSession& trade, AccountId account) const;

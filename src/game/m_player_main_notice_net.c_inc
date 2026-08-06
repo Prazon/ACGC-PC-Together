@@ -52,7 +52,7 @@ static void Player_actor_setup_main_Notice_net(ACTOR* actor, GAME* game) {
 
             if (free_space >= 0) {
                 if (Net_IsConnected()) {
-                    main_notice->not_full_pocket = Net_RequestEncounter(1);
+                    main_notice->not_full_pocket = Net_RequestEncounter(1, item);
                 } else {
                     Player_actor_putin_item(free_space, item, NULL);
                     main_notice->not_full_pocket = TRUE;
@@ -61,7 +61,9 @@ static void Player_actor_setup_main_Notice_net(ACTOR* actor, GAME* game) {
                 main_notice->not_full_pocket = FALSE;
             }
 
-            if (idx != aINS_INSECT_TYPE_SPIRIT) {
+            /* See the fishing path: online the encyclopedia entry waits for the
+             * server to accept the catch. */
+            if (idx != aINS_INSECT_TYPE_SPIRIT && !Net_EncounterRecordsPending()) {
                 mSM_COLLECT_INSECT_SET(idx);
             }
 

@@ -48,6 +48,7 @@ struct RemotePresentation {
     ZoneId zone = 0;
     Transform transform;
     PlayerAppearance appearance;
+    CustomPattern pattern;
     DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
     std::uint32_t transition_door = 0;
     Tick transition_expires_tick = 0;
@@ -98,6 +99,7 @@ public:
     const std::vector<MailRecord>& mail() const { return baseline_.mail; }
 
     bool submit_town_bootstrap(TownBootstrap bootstrap, std::uint64_t now_ms, std::string& error);
+    bool update_appearance(AppearanceUpdate update, std::uint64_t now_ms, std::string& error);
     bool request(WorldOperation operation, std::uint64_t now_ms, std::string& error);
     bool request(EconomyRequest request, std::uint64_t now_ms, std::string& error);
     bool request(TradeRequest request, std::uint64_t now_ms, std::string& error);
@@ -126,6 +128,7 @@ private:
         Tick last_tick = 0;
         TransformHistory history{32};
         PlayerAppearance appearance;
+        CustomPattern pattern;
         DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
         std::uint32_t transition_door = 0;
         Tick transition_expires_tick = 0;

@@ -189,8 +189,14 @@ void transaction_messages_round_trip() {
     acnet::MailDelta mail_delta;
     mail_delta.account = 99;
     mail_delta.mailbox_revision = 4;
-    mail_delta.record = {77, 45, 99, 0x2203, 1, {}};
-    mail_delta.record.text[0] = 'H';
+    mail_delta.record.id = 77;
+    mail_delta.record.sender = 45;
+    mail_delta.record.recipient = 99;
+    mail_delta.record.attachment = 0x2203;
+    mail_delta.record.revision = 1;
+    mail_delta.record.location = acnet::MailLocation::Carried;
+    mail_delta.record.content.font = 3;
+    mail_delta.record.content.body[0] = 'H';
     CHECK(acnet::encode_mail_delta(mail_delta, bytes));
     acnet::MailDelta decoded_mail_delta;
     CHECK(acnet::decode_mail_delta(bytes, decoded_mail_delta));
@@ -198,7 +204,9 @@ void transaction_messages_round_trip() {
     CHECK(decoded_mail_delta.record.attachment == 0x2203);
     CHECK(decoded_mail_delta.mailbox_revision == 4);
     CHECK(!decoded_mail_delta.removed);
-    CHECK(decoded_mail_delta.record.text[0] == 'H');
+    CHECK(decoded_mail_delta.record.content.body[0] == 'H');
+    CHECK(decoded_mail_delta.record.content.font == 3);
+    CHECK(decoded_mail_delta.record.location == acnet::MailLocation::Carried);
     acnet::MailDelta mismatched = mail_delta;
     mismatched.account = 100; // a letter must belong to the mailbox it changes
     CHECK(!acnet::encode_mail_delta(mismatched, bytes));
@@ -603,8 +611,13 @@ void town_bootstrap_messages_are_bounded_and_round_trip() {
     original.appearance.name = {{'R', 'e', 's', 'i', 'd', 'e', 'n', 't'}};
     original.appearance.gender = 1;
     original.appearance.face = 6;
-    original.appearance.clothing = 0x2401;
+    original.appearance.clothing = 0xFE20;
     original.appearance.equipped_item = 0x2001;
+    original.appearance.clothing_index = 0x103;
+    original.pattern.present = true;
+    original.pattern.palette = 5;
+    for (std::size_t i = 0; i < original.pattern.texture.size(); ++i)
+        original.pattern.texture[i] = static_cast<std::uint8_t>(i * 37U);
     original.tiles.resize(acnet::kTownBootstrapTileCount);
     for (std::size_t i = 0; i < original.tiles.size(); ++i) {
         original.tiles[i].item = static_cast<std::uint16_t>(i & 0x7FFFU);
@@ -620,9 +633,43 @@ void town_bootstrap_messages_are_bounded_and_round_trip() {
     CHECK(decoded.town_name == original.town_name);
     CHECK(decoded.appearance.name == original.appearance.name);
     CHECK(decoded.appearance.clothing == original.appearance.clothing);
+    CHECK(decoded.appearance.clothing_index == 0x103);
+    CHECK(decoded.pattern.present);
+    CHECK(decoded.pattern.palette == 5);
+    CHECK(decoded.pattern.texture == original.pattern.texture);
     CHECK(decoded.tiles.size() == acnet::kTownBootstrapTileCount);
     CHECK(decoded.tiles[17].buried);
     CHECK(decoded.tiles[1234].item == original.tiles[1234].item);
+    /* A client that could not read the acre layout sends no island section at
+     * all, and that has to survive the round trip as "no island reported"
+     * rather than as an island at acre zero. */
+    CHECK(decoded.island_tiles.empty());
+
+    original.island_block_x = {{4, 5}};
+    original.island_tiles.resize(acnet::kIslandBootstrapTileCount);
+    for (std::size_t i = 0; i < original.island_tiles.size(); ++i) {
+        original.island_tiles[i].item = static_cast<std::uint16_t>(0x4000U + i);
+        original.island_tiles[i].buried = (i % 5U) == 0;
+    }
+    CHECK(acnet::encode(original, payload));
+    CHECK(acnet::decode(payload, decoded));
+    CHECK(decoded.island_tiles.size() == acnet::kIslandBootstrapTileCount);
+    CHECK(decoded.island_block_x[0] == 4 && decoded.island_block_x[1] == 5);
+    CHECK(decoded.island_tiles[10].item == original.island_tiles[10].item);
+    CHECK(decoded.island_tiles[5].buried);
+
+    /* A partial island, an out-of-range acre, or acres in the wrong order are
+     * all refused: the server would otherwise install an island somewhere the
+     * client's field does not have one. */
+    acnet::TownBootstrap malformed = original;
+    malformed.island_tiles.pop_back();
+    CHECK(!acnet::encode(malformed, payload));
+    malformed = original;
+    malformed.island_block_x = {{4, acnet::kFieldBlockXCount}};
+    CHECK(!acnet::encode(malformed, payload));
+    malformed = original;
+    malformed.island_block_x = {{5, 4}};
+    CHECK(!acnet::encode(malformed, payload));
 
     original.tiles.pop_back();
     CHECK(!acnet::encode(original, payload));
@@ -723,7 +770,7 @@ void snapshot_round_trip() {
     original.server_tick = 500;
     original.baseline_revision = 17;
     original.house_light_mask = 0x5;
-    for (std::uint64_t i = 0; i < 8; ++i) {
+    for (std::uint64_t i = 0; i < acnet::kMaxPlayersPerZone; ++i) {
         acnet::PlayerSnapshot player;
         player.entity = 0x100000001ULL + i;
         player.account = 100 + i;
@@ -733,6 +780,13 @@ void snapshot_round_trip() {
         player.transform.velocity = {0.1F, 0.0F, -0.2F};
         player.transform.yaw = static_cast<std::int16_t>(i * 100);
         player.transform.action = static_cast<std::uint16_t>(120 + i);
+        player.appearance.clothing_index = i == 3 ? 0x103 : 3;
+        player.appearance.revision = 9;
+        if (i == 3) {
+            player.pattern.present = true;
+            player.pattern.palette = 5;
+            player.pattern.texture.fill(0xA5);
+        }
         if (i == 7) {
             player.transition_phase = acnet::DoorTransitionPhase::Arriving;
             player.transition_door = 202;
@@ -744,13 +798,19 @@ void snapshot_round_trip() {
     CHECK(acnet::encode(original, bytes));
     acnet::TransformSnapshot decoded;
     CHECK(acnet::decode(bytes, decoded));
-    CHECK(decoded.players.size() == 8);
+    CHECK(decoded.players.size() == acnet::kMaxPlayersPerZone);
     CHECK(decoded.players[7].account == 107);
     CHECK(decoded.house_light_mask == 0x5);
     CHECK(decoded.players[7].transition_phase == acnet::DoorTransitionPhase::Arriving);
     CHECK(decoded.players[7].transition_door == 202);
     CHECK(same_float(decoded.players[7].transform.position.z, 21.0F));
     CHECK(decoded.players[7].transform.action == 127);
+    CHECK(decoded.players[3].appearance.clothing_index == 0);
+    CHECK(decoded.players[3].appearance.revision == 9);
+    /* The 512-byte bitmap rides reliable baselines/appearance updates, never
+     * the high-rate transform stream. */
+    CHECK(!decoded.players[3].pattern.present);
+    CHECK(bytes.size() <= acnet::kMaxPlaintextPayloadBytes);
 }
 
 void entity_ids_are_stable_and_not_reused() {
@@ -1374,42 +1434,94 @@ void mail_and_banking_are_server_authoritative() {
     self_mail.recipient = 2;
     CHECK(economy.apply(self_mail).code != acnet::ResultCode::Ok);
 
-    /* Only the addressee may claim, only against the current mailbox revision,
-     * and only once. */
-    acnet::EconomyRequest wrong_claimant;
-    wrong_claimant.type = acnet::EconomyOpType::ClaimMail;
-    wrong_claimant.account = 1;
-    wrong_claimant.idempotency = {73, 1};
-    wrong_claimant.expected_inventory_revision = world.inventory(1)->revision;
-    wrong_claimant.expected_aux_revision = economy.mailbox(1)->revision;
-    wrong_claimant.mail_id = attached.mail_id;
-    CHECK(economy.apply(wrong_claimant).code == acnet::ResultCode::NotFound);
+    /* A letter gives up its present only once it is carried, exactly as in the
+     * original game: claiming straight out of the mailbox is refused. */
+    acnet::EconomyRequest premature_claim;
+    premature_claim.type = acnet::EconomyOpType::ClaimMail;
+    premature_claim.account = 2;
+    premature_claim.idempotency = {73, 0};
+    premature_claim.expected_inventory_revision = world.inventory(2)->revision;
+    premature_claim.expected_aux_revision = economy.mailbox(2)->revision;
+    premature_claim.mail_id = attached.mail_id;
+    CHECK(economy.apply(premature_claim).code == acnet::ResultCode::NotFound);
 
-    acnet::EconomyRequest stale_claim;
-    stale_claim.type = acnet::EconomyOpType::ClaimMail;
-    stale_claim.account = 2;
-    stale_claim.idempotency = {73, 2};
-    stale_claim.expected_inventory_revision = world.inventory(2)->revision;
-    stale_claim.expected_aux_revision = 1; // pre-delivery mailbox revision
-    stale_claim.mail_id = attached.mail_id;
-    const acnet::EconomyResult stale_claimed = economy.apply(stale_claim);
-    CHECK(stale_claimed.code == acnet::ResultCode::StaleRevision);
-    CHECK(stale_claimed.auxiliary_revision == economy.mailbox(2)->revision);
+    /* Only the addressee may take, only against the current mail revision. */
+    acnet::EconomyRequest wrong_taker;
+    wrong_taker.type = acnet::EconomyOpType::TakeMail;
+    wrong_taker.account = 1;
+    wrong_taker.idempotency = {73, 1};
+    wrong_taker.expected_inventory_revision = world.inventory(1)->revision;
+    wrong_taker.expected_aux_revision = economy.mailbox(1)->revision;
+    wrong_taker.mail_id = attached.mail_id;
+    CHECK(economy.apply(wrong_taker).code == acnet::ResultCode::NotFound);
 
-    acnet::EconomyRequest claim = stale_claim;
-    claim.idempotency = {73, 3};
+    acnet::EconomyRequest stale_take;
+    stale_take.type = acnet::EconomyOpType::TakeMail;
+    stale_take.account = 2;
+    stale_take.idempotency = {73, 2};
+    stale_take.expected_inventory_revision = world.inventory(2)->revision;
+    stale_take.expected_aux_revision = 1; // pre-delivery mail revision
+    stale_take.mail_id = attached.mail_id;
+    const acnet::EconomyResult stale_taken = economy.apply(stale_take);
+    CHECK(stale_taken.code == acnet::ResultCode::StaleRevision);
+    CHECK(stale_taken.auxiliary_revision == economy.mailbox(2)->revision);
+
+    acnet::EconomyRequest take = stale_take;
+    take.idempotency = {73, 3};
+    take.expected_aux_revision = economy.mailbox(2)->revision;
+    const acnet::EconomyResult taken = economy.apply(take);
+    CHECK(taken.code == acnet::ResultCode::Ok);
+    CHECK(taken.type == acnet::EconomyOpType::TakeMail);
+    CHECK(economy.mailbox(2)->mail.empty());
+    CHECK(economy.mailbox(2)->carried.size() == 1);
+    CHECK(economy.mail(attached.mail_id)->location == acnet::MailLocation::Carried);
+    CHECK(taken.auxiliary_revision == economy.mailbox(2)->revision);
+    /* Taking a letter moves no item: the present is still inside it. */
+    CHECK(economy.total_item_units() == initial_items);
+    CHECK(economy.apply(take).replayed);
+
+    acnet::EconomyRequest claim;
+    claim.type = acnet::EconomyOpType::ClaimMail;
+    claim.account = 2;
+    claim.idempotency = {73, 4};
+    claim.expected_inventory_revision = world.inventory(2)->revision;
     claim.expected_aux_revision = economy.mailbox(2)->revision;
+    claim.mail_id = attached.mail_id;
     const acnet::EconomyResult claimed = economy.apply(claim);
     CHECK(claimed.code == acnet::ResultCode::Ok);
     CHECK(claimed.type == acnet::EconomyOpType::ClaimMail);
     CHECK(claimed.item == 0x1000);
     CHECK(world.inventory(2)->slots[claimed.inventory_slot].item == 0x1000);
-    CHECK(economy.mailbox(2)->mail.empty());
-    CHECK(economy.mail(attached.mail_id) == nullptr);
+    /* The letter itself survives with an empty present, still carried. */
+    CHECK(economy.mail(attached.mail_id) != nullptr);
+    CHECK(economy.mail(attached.mail_id)->attachment == 0);
+    CHECK(economy.mailbox(2)->carried.size() == 1);
     CHECK(claimed.auxiliary_revision == economy.mailbox(2)->revision);
     CHECK(economy.total_item_units() == initial_items);
     const acnet::EconomyResult claim_replay = economy.apply(claim);
     CHECK(claim_replay.replayed);
+    CHECK(economy.total_item_units() == initial_items);
+
+    /* A second claim on an emptied letter is refused rather than duplicating. */
+    acnet::EconomyRequest reclaim = claim;
+    reclaim.idempotency = {73, 5};
+    reclaim.expected_inventory_revision = world.inventory(2)->revision;
+    reclaim.expected_aux_revision = economy.mailbox(2)->revision;
+    CHECK(economy.apply(reclaim).code == acnet::ResultCode::InvalidState);
+
+    /* Discarding frees the pocket slot; a letter still holding a present may
+     * not be discarded, because that would destroy the item. */
+    acnet::EconomyRequest discard;
+    discard.type = acnet::EconomyOpType::DiscardMail;
+    discard.account = 2;
+    discard.idempotency = {73, 6};
+    discard.expected_inventory_revision = world.inventory(2)->revision;
+    discard.expected_aux_revision = economy.mailbox(2)->revision;
+    discard.mail_id = attached.mail_id;
+    const acnet::EconomyResult discarded = economy.apply(discard);
+    CHECK(discarded.code == acnet::ResultCode::Ok);
+    CHECK(economy.mail(attached.mail_id) == nullptr);
+    CHECK(economy.mailbox(2)->carried.empty());
     CHECK(economy.total_item_units() == initial_items);
 
     /* Operator gifts commit through the same authority. Bells appear in the
@@ -1424,27 +1536,27 @@ void mail_and_banking_are_server_authoritative() {
     CHECK(granted.auxiliary_revision != ledger_revision);
     CHECK(economy.total_bells() == initial_bells + 12345);
 
-    std::array<std::uint8_t, acnet::kMailTextBytes> body{};
+    acnet::MailContent gift;
     const std::string message = "Thanks for playing!";
-    std::copy(message.begin(), message.end(), body.begin());
-    const acnet::EconomyResult posted = economy.admin_send_mail(2, 0x2203, body);
+    std::copy(message.begin(), message.end(), gift.body.begin());
+    const acnet::EconomyResult posted = economy.admin_send_mail(2, 0x2203, gift);
     CHECK(posted.code == acnet::ResultCode::Ok);
     const acnet::MailRecord* letter = economy.mail(posted.mail_id);
     CHECK(letter != nullptr);
     CHECK(letter->sender == acnet::kAdministratorAccount);
     CHECK(letter->recipient == 2);
     CHECK(letter->attachment == 0x2203);
-    CHECK(std::equal(message.begin(), message.end(), letter->text.begin()));
+    CHECK(std::equal(message.begin(), message.end(), letter->content.body.begin()));
     CHECK(economy.mailbox(2)->mail.size() == 1);
-    CHECK(economy.admin_send_mail(999, 0, body).code == acnet::ResultCode::NotFound);
+    CHECK(economy.admin_send_mail(999, 0, gift).code == acnet::ResultCode::NotFound);
 
     /* The mailbox is bounded, and a full one refuses both a player letter and
      * an operator letter rather than silently dropping either. */
     for (std::size_t i = economy.mailbox(2)->mail.size(); i < acnet::kMailboxCapacity; ++i) {
-        CHECK(economy.admin_send_mail(2, 0, body).code == acnet::ResultCode::Ok);
+        CHECK(economy.admin_send_mail(2, 0, gift).code == acnet::ResultCode::Ok);
     }
     CHECK(economy.mailbox(2)->mail.size() == acnet::kMailboxCapacity);
-    CHECK(economy.admin_send_mail(2, 0, body).code == acnet::ResultCode::Capacity);
+    CHECK(economy.admin_send_mail(2, 0, gift).code == acnet::ResultCode::Capacity);
     acnet::InventoryState refilled = *world.inventory(1);
     refilled.slots[0].item = 0x1001;
     refilled.revision = 50;
@@ -1458,6 +1570,67 @@ void mail_and_banking_are_server_authoritative() {
     overflow.recipient = 2;
     CHECK(economy.apply(overflow).code == acnet::ResultCode::Capacity);
     CHECK(world.inventory(1)->slots[0].item == 0x1001); // the item never left the pocket
+
+    /* A full pocket of letters must not be a dead end: taking is refused, and
+     * discarding one is what makes room again. This is the whole reason
+     * DiscardMail exists. The mailbox is full at this point, so emptying it
+     * into the pocket fills the pocket exactly. */
+    {
+        std::size_t taken_count = 0;
+        while (!economy.mailbox(2)->mail.empty()) {
+            acnet::EconomyRequest fill;
+            fill.type = acnet::EconomyOpType::TakeMail;
+            fill.account = 2;
+            fill.idempotency = {76, static_cast<std::uint64_t>(taken_count + 1)};
+            fill.expected_inventory_revision = world.inventory(2)->revision;
+            fill.expected_aux_revision = economy.mailbox(2)->revision;
+            fill.mail_id = economy.mailbox(2)->mail.front();
+            CHECK(economy.apply(fill).code == acnet::ResultCode::Ok);
+            ++taken_count;
+        }
+        CHECK(taken_count == acnet::kMailboxCapacity);
+        CHECK(economy.mailbox(2)->carried.size() == acnet::kCarriedMailCapacity);
+
+        CHECK(economy.admin_send_mail(2, 0, gift).code == acnet::ResultCode::Ok);
+        const std::uint64_t blocked = economy.mailbox(2)->mail.back();
+        acnet::EconomyRequest overflow_take;
+        overflow_take.type = acnet::EconomyOpType::TakeMail;
+        overflow_take.account = 2;
+        overflow_take.idempotency = {77, 1};
+        overflow_take.expected_inventory_revision = world.inventory(2)->revision;
+        overflow_take.expected_aux_revision = economy.mailbox(2)->revision;
+        overflow_take.mail_id = blocked;
+        CHECK(economy.apply(overflow_take).code == acnet::ResultCode::Capacity);
+
+        /* The oldest carried letter is the one still holding a present, and
+         * throwing that away would destroy the item, so it is refused. */
+        acnet::EconomyRequest discard_present;
+        discard_present.type = acnet::EconomyOpType::DiscardMail;
+        discard_present.account = 2;
+        discard_present.idempotency = {77, 4};
+        discard_present.expected_inventory_revision = world.inventory(2)->revision;
+        discard_present.expected_aux_revision = economy.mailbox(2)->revision;
+        discard_present.mail_id = economy.mailbox(2)->carried.front();
+        CHECK(economy.mail(discard_present.mail_id)->attachment != 0);
+        CHECK(economy.apply(discard_present).code == acnet::ResultCode::InvalidState);
+
+        acnet::EconomyRequest free_slot;
+        free_slot.type = acnet::EconomyOpType::DiscardMail;
+        free_slot.account = 2;
+        free_slot.idempotency = {77, 2};
+        free_slot.expected_inventory_revision = world.inventory(2)->revision;
+        free_slot.expected_aux_revision = economy.mailbox(2)->revision;
+        free_slot.mail_id = economy.mailbox(2)->carried.back();
+        CHECK(economy.mail(free_slot.mail_id)->attachment == 0);
+        CHECK(economy.apply(free_slot).code == acnet::ResultCode::Ok);
+        CHECK(economy.mailbox(2)->carried.size() == acnet::kCarriedMailCapacity - 1);
+
+        acnet::EconomyRequest retry = overflow_take;
+        retry.idempotency = {77, 3};
+        retry.expected_aux_revision = economy.mailbox(2)->revision;
+        CHECK(economy.apply(retry).code == acnet::ResultCode::Ok);
+        CHECK(economy.mailbox(2)->carried.size() == acnet::kCarriedMailCapacity);
+    }
 
     /* Administrative operations are not reachable through the request path even
      * when a request is built locally rather than decoded from the wire. */
@@ -1532,14 +1705,42 @@ void operator_gifts_survive_a_restart() {
         CHECK(client.mail()[0].attachment == 0x2203);
         CHECK(client.mailbox().mail.size() == 1);
 
-        /* Claiming moves the gift into the pocket exactly once. */
+        /* The original two steps, both server transactions: take the letter out
+         * of the mailbox, then take its present out of the carried letter. */
+        const acnet::Revision ledger_revision_before = client.baseline()->ledger.revision;
+        acnet::EconomyRequest take;
+        take.type = acnet::EconomyOpType::TakeMail;
+        take.account = account;
+        take.idempotency = {91, 6};
+        take.expected_inventory_revision = client.baseline()->inventory.revision;
+        take.expected_aux_revision = client.mailbox().revision;
+        take.mail_id = client.mail()[0].id;
+        const std::uint64_t gift_mail_id = take.mail_id;
+        CHECK(client.request(take, 1600, error));
+        std::optional<acnet::EconomyResult> taken;
+        for (std::uint64_t i = 0; i < 200 && !taken.has_value(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1600 + i, wall, error));
+            CHECK(client.poll(1600 + i, error));
+            taken = client.take_economy_result();
+        }
+        CHECK(taken.has_value());
+        CHECK(taken->code == acnet::ResultCode::Ok);
+        for (std::uint64_t i = 0; i < 200 && client.mailbox().carried.empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1650 + i, wall, error));
+            CHECK(client.poll(1650 + i, error));
+        }
+        CHECK(client.mailbox().mail.empty());
+        CHECK(client.mailbox().carried.size() == 1);
+
         acnet::EconomyRequest claim;
         claim.type = acnet::EconomyOpType::ClaimMail;
         claim.account = account;
         claim.idempotency = {91, 7};
         claim.expected_inventory_revision = client.baseline()->inventory.revision;
         claim.expected_aux_revision = client.mailbox().revision;
-        claim.mail_id = client.mail()[0].id;
+        claim.mail_id = gift_mail_id;
         CHECK(client.request(claim, 1700, error));
         std::optional<acnet::EconomyResult> claimed;
         for (std::uint64_t i = 0; i < 200 && !claimed.has_value(); ++i) {
@@ -1551,12 +1752,24 @@ void operator_gifts_survive_a_restart() {
         CHECK(claimed.has_value());
         CHECK(claimed->code == acnet::ResultCode::Ok);
         CHECK(claimed->item == 0x2203);
-        for (std::uint64_t i = 0; i < 200 && !client.mail().empty(); ++i) {
+        /* A result's auxiliary_revision belongs to the authority its operation
+         * touched. A mail claim must land on the mailbox mirror and leave the
+         * bank mirror alone, or the next deposit would quote a mailbox revision
+         * and be rejected as stale. */
+        CHECK(claimed->type == acnet::EconomyOpType::ClaimMail);
+        CHECK(client.mailbox().revision == claimed->auxiliary_revision);
+        CHECK(client.baseline()->ledger.revision == ledger_revision_before);
+        CHECK(client.baseline()->ledger.bank_balance == balance_before + 30000);
+        /* The letter stays in the pocket with its present gone, as in the
+         * original -- the player still has something to read. */
+        for (std::uint64_t i = 0; i < 200 && client.mail()[0].attachment != 0; ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             CHECK(server.step(1900 + i, wall, error));
             CHECK(client.poll(1900 + i, error));
         }
-        CHECK(client.mail().empty());
+        CHECK(client.mail().size() == 1);
+        CHECK(client.mail()[0].attachment == 0);
+        CHECK(client.mailbox().carried.size() == 1);
         CHECK(server.shutdown(error));
     }
 
@@ -1568,6 +1781,7 @@ void operator_gifts_survive_a_restart() {
     CHECK(summaries.size() == 1);
     CHECK(summaries[0].bank_balance >= 30000);
     CHECK(summaries[0].pending_mail == 0);
+    CHECK(summaries[0].carried_mail == 1); /* the read letter survived the restart */
     CHECK(restarted.send_mail(account, 0x2204, "A second gift", error));
     summaries = restarted.account_summaries();
     CHECK(summaries[0].pending_mail == 1);
@@ -2074,6 +2288,12 @@ void clock_jobs_and_replication_survive_empty_time() {
     player.entity = 101;
     player.zone = 1;
     player.transform.position = {20.0F, 0.0F, 20.0F};
+    player.appearance.clothing = 0xFE20;
+    player.appearance.clothing_index = 0x104;
+    player.appearance.revision = 7;
+    player.pattern.present = true;
+    player.pattern.palette = 11;
+    player.pattern.texture.fill(0x5A);
     CHECK(players.upsert(player));
     acnet::WorldAuthority world(&players);
     CHECK(world.register_inventory(1));
@@ -2099,6 +2319,11 @@ void clock_jobs_and_replication_survive_empty_time() {
     CHECK(decoded.tiles.size() == 1);
     CHECK(decoded.tiles[0].second.item == 777);
     CHECK(decoded.players.size() == 1);
+    CHECK(decoded.players[0].appearance.clothing_index == 0x104);
+    CHECK(decoded.players[0].appearance.revision == 7);
+    CHECK(decoded.players[0].pattern.present);
+    CHECK(decoded.players[0].pattern.palette == 11);
+    CHECK(decoded.players[0].pattern.texture == player.pattern.texture);
     CHECK(decoded.npcs.size() == 1);
     /* Town-wide occupancy travels with the baseline and is independent of the
      * interest set above (one visible player, three in town). */
@@ -2462,6 +2687,34 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(std::fabs(second_remotes[0].transform.position.x - first_local.position.x) < 0.01F);
     CHECK(first_remotes[0].transform.yaw == second_local.yaw);
     CHECK(second_remotes[0].transform.yaw == first_local.yaw);
+
+    acnet::AppearanceUpdate patterned;
+    patterned.appearance.name = {{'P', 'a', 't', 't', 'e', 'r', 'n', ' '}};
+    patterned.appearance.gender = 0;
+    patterned.appearance.face = 2;
+    patterned.appearance.clothing = 0xFE20;
+    patterned.appearance.equipped_item = 0x2203;
+    patterned.appearance.clothing_index = 0x106;
+    patterned.pattern.present = true;
+    patterned.pattern.palette = 13;
+    for (std::size_t i = 0; i < patterned.pattern.texture.size(); ++i)
+        patterned.pattern.texture[i] = static_cast<std::uint8_t>(i ^ 0xA5U);
+    CHECK(first.update_appearance(patterned, ++settle_now, error));
+    bool pattern_converged = false;
+    for (std::uint64_t i = 0; i < 200 && !pattern_converged; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        CHECK(server.step(++settle_now, wall + 5, error));
+        CHECK(first.poll(settle_now, error));
+        CHECK(second.poll(settle_now, error));
+        second_remotes = second.remote_players();
+        pattern_converged = second_remotes.size() == 1 &&
+                            second_remotes[0].appearance.clothing_index == 0x106 &&
+                            second_remotes[0].appearance.revision != 0 &&
+                            second_remotes[0].pattern.present &&
+                            second_remotes[0].pattern.palette == 13 &&
+                            second_remotes[0].pattern.texture == patterned.pattern.texture;
+    }
+    CHECK(pattern_converged);
 
     bool actions_converged = false;
     for (std::uint64_t i = 0; i < 120 && !actions_converged; ++i) {
@@ -2907,6 +3160,281 @@ void canonical_town_bootstrap_survives_clients_and_restart() {
     CHECK(restarted.shutdown(error));
 }
 
+void island_is_an_authoritative_shared_zone() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-island-runtime-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup{root};
+
+    acserver::TownRuntimeConfig server_config;
+    server_config.port = 0;
+    server_config.data_directory = root / "town";
+    server_config.connection_timeout_ms = 60000;
+    server_config.allow_unauthenticated = true;
+    server_config.town_name = "IsleTown";
+    server_config.town_seed = 77;
+    constexpr std::int64_t wall = 1700000000;
+    std::string error;
+
+    /* Island acres 4 and 5 of row kIslandBlockZ, which is the layout the
+     * original field generator produces; the client reports it rather than the
+     * server assuming it. */
+    constexpr std::uint8_t kLeftAcre = 4;
+    constexpr std::uint8_t kRightAcre = 5;
+    const auto make_bootstrap = [&](bool with_island) {
+        acnet::TownBootstrap bootstrap;
+        bootstrap.town_seed = server_config.town_seed;
+        bootstrap.land_id = 0x304D;
+        bootstrap.town_name = {{'I', 's', 'l', 'e', 'T', 'o', 'w', 'n'}};
+        bootstrap.appearance.name = {{'P', 'l', 'a', 'y', 'e', 'r', ' ', ' '}};
+        bootstrap.appearance.clothing = 0x2401;
+        bootstrap.tiles.resize(acnet::kTownBootstrapTileCount);
+        if (with_island) {
+            bootstrap.island_block_x = {{kLeftAcre, kRightAcre}};
+            bootstrap.island_tiles.resize(acnet::kIslandBootstrapTileCount);
+            /* A coconut palm in the left acre, unit (2,3). */
+            bootstrap.island_tiles[(3U * 16U) + 2U].item = 0x1234;
+        }
+        return bootstrap;
+    };
+
+    acserver::TownRuntime server(server_config);
+    CHECK(server.initialize(wall, error));
+    /* Before any client reports the acre layout the island has no tiles, and
+     * the console must say so rather than claim an empty island is ready. */
+    CHECK(!server.island_status().terrain_ready);
+
+    acnet::ClientConfig first_config;
+    first_config.server_port = server.bound_port();
+    first_config.account = 9201;
+    acnet::ClientConfig second_config = first_config;
+    second_config.account = 9202;
+    acnet::ClientRuntime first(first_config);
+    acnet::ClientRuntime second(second_config);
+    CHECK(first.start(1000, error));
+    CHECK(second.start(1000, error));
+    std::uint64_t now = 1000;
+    const auto pump = [&](std::uint64_t iterations) {
+        for (std::uint64_t i = 0; i < iterations; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            ++now;
+            CHECK(server.step(now, wall, error));
+            CHECK(first.poll(now, error));
+            CHECK(second.poll(now, error));
+        }
+    };
+    for (std::uint64_t i = 0; i < 300 &&
+         (first.state() != acnet::ClientConnectionState::Connected ||
+          second.state() != acnet::ClientConnectionState::Connected); ++i) pump(1);
+    CHECK(first.state() == acnet::ClientConnectionState::Connected);
+    CHECK(second.state() == acnet::ClientConnectionState::Connected);
+
+    /* A first login that could not read the field layout still creates the
+     * town; the island simply stays empty until one can. */
+    CHECK(first.submit_town_bootstrap(make_bootstrap(false), ++now, error));
+    std::optional<acnet::TownBootstrapResult> result;
+    for (std::uint64_t i = 0; i < 800 && !result.has_value(); ++i) {
+        pump(1);
+        result = first.take_town_bootstrap_result();
+    }
+    CHECK(result.has_value());
+    CHECK(result->code == acnet::ResultCode::Ok);
+    CHECK(server.town_initialized());
+    CHECK(!server.island_status().terrain_ready);
+
+    /* The next login that can read it is adopted, even though the town itself
+     * is already bootstrapped -- this is the path a town created before island
+     * support takes. */
+    CHECK(second.submit_town_bootstrap(make_bootstrap(true), ++now, error));
+    result.reset();
+    for (std::uint64_t i = 0; i < 800 && !result.has_value(); ++i) {
+        pump(1);
+        result = second.take_town_bootstrap_result();
+    }
+    CHECK(result.has_value());
+    CHECK(result->code == acnet::ResultCode::Ok);
+    acserver::TownRuntime::IslandStatus island = server.island_status();
+    CHECK(island.terrain_ready);
+    CHECK(island.tiles == acnet::kIslandTileCount);
+    CHECK(island.islander_present);
+    CHECK(island.outdoor_players == 0);
+
+    /* Island tiles keep global unit coordinates, so the palm is at the acre's
+     * own offset in the shared grid rather than at an island-local origin. */
+    const auto* palm = server.tile(acnet::kIslandZone,
+                                   static_cast<std::int16_t>(kLeftAcre * 16 + 2),
+                                   static_cast<std::int16_t>(acnet::kIslandBlockZ * 16 + 3));
+    CHECK(palm != nullptr);
+    CHECK(palm->item == 0x1234);
+    /* A town tile at the same coordinates does not exist: the island acres sit
+     * outside the town rectangle, so the two zones cannot collide. */
+    CHECK(server.tile(1, static_cast<std::int16_t>(kLeftAcre * 16 + 2),
+                      static_cast<std::int16_t>(acnet::kIslandBlockZ * 16 + 3)) == nullptr);
+
+    first.stop(++now);
+    second.stop(++now);
+    for (std::uint64_t i = 0; i < 20 && server.connected_clients() != 0; ++i)
+        CHECK(server.step(++now, wall, error));
+    CHECK(server.shutdown(error));
+
+    /* The island survives a restart on the same journal/checkpoint path the
+     * town does -- its tiles carry their zone, so nothing special is needed. */
+    acserver::TownRuntime restarted(server_config);
+    CHECK(restarted.initialize(wall + 30, error));
+    island = restarted.island_status();
+    CHECK(island.terrain_ready);
+    CHECK(island.tiles == acnet::kIslandTileCount);
+    palm = restarted.tile(acnet::kIslandZone, static_cast<std::int16_t>(kLeftAcre * 16 + 2),
+                          static_cast<std::int16_t>(acnet::kIslandBlockZ * 16 + 3));
+    CHECK(palm != nullptr && palm->item == 0x1234);
+
+    /* A later login still reports its island every time it connects. That must
+     * not overwrite an island the town has already been played on, the same way
+     * a second town bootstrap cannot replace the world. */
+    acnet::ClientConfig returning_config;
+    returning_config.server_port = restarted.bound_port();
+    returning_config.account = 9201;
+    acnet::ClientRuntime returning(returning_config);
+    CHECK(returning.start(++now, error));
+    for (std::uint64_t i = 0; i < 500 && returning.state() != acnet::ClientConnectionState::Connected; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++now;
+        CHECK(restarted.step(now, wall + 30, error));
+        CHECK(returning.poll(now, error));
+    }
+    CHECK(returning.state() == acnet::ClientConnectionState::Connected);
+    auto overwrite = make_bootstrap(true);
+    overwrite.island_tiles[(3U * 16U) + 2U].item = 0x7777;
+    CHECK(returning.submit_town_bootstrap(std::move(overwrite), ++now, error));
+    result.reset();
+    for (std::uint64_t i = 0; i < 800 && !result.has_value(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++now;
+        CHECK(restarted.step(now, wall + 30, error));
+        CHECK(returning.poll(now, error));
+        result = returning.take_town_bootstrap_result();
+    }
+    CHECK(result.has_value());
+    CHECK(result->code == acnet::ResultCode::Ok);
+    palm = restarted.tile(acnet::kIslandZone, static_cast<std::int16_t>(kLeftAcre * 16 + 2),
+                          static_cast<std::int16_t>(acnet::kIslandBlockZ * 16 + 3));
+    CHECK(palm != nullptr && palm->item == 0x1234);
+    returning.stop(++now);
+    CHECK(restarted.shutdown(error));
+}
+
+void island_cabin_is_a_shared_room() {
+    acnet::PlayerDirectory players;
+    for (std::uint64_t account = 1; account <= 3; ++account) {
+        acnet::PlayerView player;
+        player.account = account;
+        player.entity = 300 + account;
+        player.zone = acnet::kIslandCabinZone;
+        player.interaction_eligible = true;
+        CHECK(players.upsert(player));
+    }
+    /* Account 3 is on the shore, not inside the cabin. */
+    players.by_account(3)->zone = acnet::kIslandZone;
+
+    acnet::WorldAuthority world(&players);
+    for (std::uint64_t account = 1; account <= 3; ++account) {
+        acnet::InventoryState inventory;
+        inventory.slots[0].item = 0x2001; /* a piece of furniture */
+        CHECK(world.set_inventory(account, inventory));
+    }
+    acnet::HousingAuthority housing(&world, &players);
+    CHECK(housing.register_shared_house(acnet::kIslandCabinHouseId, acnet::kIslandCabinZone));
+    /* Re-registering is the no-op a restart performs after restoring state. */
+    CHECK(housing.register_shared_house(acnet::kIslandCabinHouseId, acnet::kIslandCabinZone));
+    CHECK(housing.shared_house_in(acnet::kIslandCabinZone) != nullptr);
+    /* A shared house has no owner, so it must not answer an owner lookup and
+     * must not consume one of the four resident slots. */
+    CHECK(housing.house_for(1) == nullptr);
+    CHECK(housing.resident_count() == 0);
+
+    const acnet::HouseState* cabin = housing.house(acnet::kIslandCabinHouseId);
+    CHECK(cabin != nullptr && cabin->shared && cabin->owner == 0);
+    CHECK(cabin->original_slot == acnet::kSharedHouseSlot);
+
+    /* Anyone standing in the cabin may decorate it -- that presence is the
+     * whole authorization, because Save_t.island.cottage belongs to the town. */
+    acnet::FurnitureOperation place;
+    place.type = acnet::FurnitureOpType::Place;
+    place.account = 1;
+    place.idempotency = {5, 1};
+    place.house_id = acnet::kIslandCabinHouseId;
+    place.address = {4, 6, 0, 0};
+    place.expected_house_revision = cabin->revision;
+    place.expected_inventory_revision = world.inventory(1)->revision;
+    place.inventory_slot = 0;
+    place.expected_item = 0x2001;
+    const acnet::FurnitureResult placed = housing.apply(place);
+    CHECK(placed.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->slots[0].item == 0);
+    CHECK(housing.apply(place).replayed);
+
+    /* And a second occupant may take it straight back out again: it is not
+     * anybody's property. This is the behaviour that makes the cabin usable as
+     * shared storage, and it is also the reason presence is enforced. */
+    acnet::FurnitureOperation take;
+    take.type = acnet::FurnitureOpType::Remove;
+    take.account = 2;
+    take.idempotency = {5, 2};
+    take.house_id = acnet::kIslandCabinHouseId;
+    take.address = {4, 6, 0, 0};
+    take.expected_house_revision = housing.house(acnet::kIslandCabinHouseId)->revision;
+    take.expected_inventory_revision = world.inventory(2)->revision;
+    const acnet::FurnitureResult taken = housing.apply(take);
+    CHECK(taken.code == acnet::ResultCode::Ok);
+    CHECK(taken.item == 0x2001);
+
+    /* Someone outside the cabin cannot reach into it. */
+    acnet::FurnitureOperation remote = place;
+    remote.account = 3;
+    remote.idempotency = {5, 3};
+    remote.expected_house_revision = housing.house(acnet::kIslandCabinHouseId)->revision;
+    remote.expected_inventory_revision = world.inventory(3)->revision;
+    CHECK(housing.apply(remote).code == acnet::ResultCode::OutOfRange);
+
+    /* The cabin is one room. A floor index that only a resident house has is
+     * refused rather than silently written somewhere. */
+    acnet::FurnitureOperation upstairs = place;
+    upstairs.account = 1;
+    upstairs.idempotency = {5, 4};
+    upstairs.address = {4, 6, 1, 0};
+    upstairs.expected_house_revision = housing.house(acnet::kIslandCabinHouseId)->revision;
+    upstairs.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(housing.apply(upstairs).code == acnet::ResultCode::Unauthorized);
+
+    /* The baseline carries a shared house by its ownerless (owner, slot) pair,
+     * and the decoder has to reconstruct `shared` from it or the client would
+     * treat the cabin as a resident house it does not own. */
+    acnet::ZoneBaseline baseline;
+    baseline.zone = acnet::kIslandCabinZone;
+    baseline.revision = 4;
+    baseline.inventory.revision = 1;
+    baseline.ledger.revision = 1;
+    baseline.shop.revision = 1;
+    baseline.mailbox.revision = 1;
+    baseline.has_house = true;
+    baseline.house = *housing.house(acnet::kIslandCabinHouseId);
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_baseline(baseline, payload));
+    acnet::ZoneBaseline decoded;
+    CHECK(acnet::decode_baseline(payload, decoded));
+    CHECK(decoded.has_house);
+    CHECK(decoded.house.shared);
+    CHECK(decoded.house.owner == 0);
+    CHECK(decoded.house.original_slot == acnet::kSharedHouseSlot);
+    CHECK(decoded.house.house_id == acnet::kIslandCabinHouseId);
+}
+
 } // namespace
 
 int main() {
@@ -2945,6 +3473,8 @@ int main() {
         {"real runtime eight-bot smoke", real_runtime_serves_eight_moving_bots},
         {"production client loopback", production_clients_connect_move_and_render_each_other},
         {"canonical town bootstrap restart", canonical_town_bootstrap_survives_clients_and_restart},
+        {"island authoritative shared zone", island_is_an_authoritative_shared_zone},
+        {"island cabin shared room", island_cabin_is_a_shared_room},
     };
     std::size_t failures = 0;
     for (const auto& test : tests) {

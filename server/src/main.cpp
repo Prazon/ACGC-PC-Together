@@ -54,7 +54,7 @@ void usage() {
                  "    --grant-bells ACCOUNT=AMOUNT    deposit bells straight into a bank account\n"
                  "    --send-mail ACCOUNT             post a letter, with --mail-item and --mail-text\n"
                  "    --mail-item ITEM                attach item ITEM (decimal or 0x hex) to the letter\n"
-                 "    --mail-text TEXT                letter body, up to 96 bytes\n";
+                 "    --mail-text TEXT                letter body, up to 192 bytes\n";
 }
 
 /* ACCOUNT=AMOUNT, also accepting ACCOUNT:AMOUNT so a shell that eats '=' still
@@ -136,6 +136,10 @@ std::string shorten(std::string value, std::size_t maximum) {
  * itself is atomic. Both variable-length sections are padded to these counts. */
 constexpr std::size_t kVisitorRows = 4;
 constexpr std::size_t kEventRows = 8;
+/* Every separator in the frame is this wide, so no row may exceed it: a longer
+ * row wraps and pushes everything beneath it down a line, which reads as a
+ * corrupted dashboard rather than as a long value. */
+constexpr std::size_t kDashboardColumns = 80;
 
 class OperatorConsole {
 public:
@@ -143,17 +147,38 @@ public:
 #ifdef _WIN32
         const HANDLE standard_output = GetStdHandle(STD_OUTPUT_HANDLE);
         DWORD standard_output_mode = 0;
-        separate_log_stream_ = standard_output != nullptr && standard_output != INVALID_HANDLE_VALUE &&
-                               GetConsoleMode(standard_output, &standard_output_mode) == FALSE;
-        /* Start-Process, GUI launchers, and redirected automation may attach a
-         * CUI executable to no visible console (or to an invisible pseudo
-         * console). Give the operator an actual dashboard window in that case. */
-        HWND console_window = GetConsoleWindow();
-        if (console_window == nullptr || IsWindowVisible(console_window) == FALSE) {
+        const bool stdout_valid = standard_output != nullptr && standard_output != INVALID_HANDLE_VALUE;
+        const bool stdout_is_console =
+            stdout_valid && GetConsoleMode(standard_output, &standard_output_mode) != FALSE;
+        /* A redirected-but-real stdout still wants the plain log lines. No
+         * stdout at all wants nothing, as before. */
+        separate_log_stream_ = stdout_valid && !stdout_is_console;
+
+        /* Allocate a console only when this process genuinely has none.
+         *
+         * Window visibility must NOT be the test. Windows Terminal backs a
+         * console with a ConPTY whose host window is deliberately hidden, so
+         * IsWindowVisible(GetConsoleWindow()) is FALSE for a perfectly usable
+         * console. Treating that as "no console" and calling FreeConsole()
+         * detaches from the terminal the operator is actually watching and
+         * repaints into a brand new window, leaving the original blank. */
+        bool console_attached = stdout_is_console;
+        if (!console_attached) {
+            /* stdout may simply be redirected to a file while a console is
+             * still attached; CONOUT$ answers that directly. */
+            const HANDLE probe = CreateFileA("CONOUT$", GENERIC_WRITE,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                             OPEN_EXISTING, 0, nullptr);
+            console_attached = probe != INVALID_HANDLE_VALUE;
+            if (probe != INVALID_HANDLE_VALUE) CloseHandle(probe);
+        }
+        if (!console_attached) {
+            /* A GUI launcher or Start-Process -WindowStyle Hidden really did
+             * leave this process without one. Give the operator a window. */
             FreeConsole();
             AllocConsole();
-            console_window = GetConsoleWindow();
         }
+        const HWND console_window = GetConsoleWindow();
         if (console_window != nullptr) SetConsoleTitleA("Animal Crossing Dedicated Town Server");
         handle_ = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -208,6 +233,21 @@ public:
         const auto& clock = runtime.clock_state();
         const auto players = runtime.player_statuses();
         const auto events = runtime.recent_events();
+        const std::string world_status =
+            runtime.town_initialized() ? "READY" : "AWAITING FIRST RESIDENT";
+        /* The island is a separate readiness state from the town: its acre
+         * layout is discovered from the client, so a town can be READY while
+         * the island is still waiting for a login that could read it. */
+        const acserver::TownRuntime::IslandStatus island = runtime.island_status();
+        std::ostringstream island_row;
+        if (island.terrain_ready) {
+            island_row << "READY | " << island.tiles << " tiles | Present "
+                       << island.outdoor_players << " shore, " << island.cabin_players << " cabin, "
+                       << island.islander_house_players << " hut | Cabin " << island.cabin_furniture
+                       << " ftr | Islander " << (island.islander_present ? "yes" : "no");
+        } else {
+            island_row << "AWAITING ACRE LAYOUT FROM A RESIDENT LOGIN";
+        }
         std::ostringstream output;
         output << "================================================================================\n"
                << " ACGC DEDICATED TOWN SERVER     [ ONLINE ]     Uptime "
@@ -218,12 +258,27 @@ public:
                << " Town time  " << format_town_time(clock.town_unix_seconds)
                << "  | Weather " << weather_name(clock.weather)
                << " (intensity " << static_cast<unsigned>(clock.weather_intensity) << ")\n"
-               << " World      " << (runtime.town_initialized() ? "READY" : "AWAITING FIRST RESIDENT")
-               << "  | Data " << shorten(config.data_directory.string(), 43) << "\n"
+               << " World      " << world_status
+               /* Budget the path from what the rest of the row actually costs.
+                * A fixed 43 overflowed the 80-column frame whenever the status
+                * was the long one or the data directory was deep, and a wrapped
+                * row shifts every row under it, which reads as a corrupted or
+                * blank dashboard rather than a long path. */
+               << "  | Data " << shorten(config.data_directory.string(), kDashboardColumns - 21 -
+                                                                            world_status.size())
+               << "\n"
                << " Players    " << runtime.connected_clients() << '/' << config.capacity
                << " connected  | Residents " << runtime.connected_residents() << "/4 online, "
                << runtime.registered_residents() << "/4 registered  | Visitors "
                << runtime.connected_visitors() << "\n"
+               /* Its own row on purpose: the line above is already exactly the
+                * 80 columns the separators use, and anything wider wraps and
+                * drags every row below it out of place. A constant extra row is
+                * safe; a wider row is not. */
+               << " Villagers  " << runtime.villager_count() << " simulated\n"
+               /* Same rule as the row above: budgeted to the frame width so a
+                * busy island cannot wrap and shift everything below it. */
+               << " Island     " << shorten(island_row.str(), kDashboardColumns - 12) << "\n"
                << "--------------------------------------------------------------------------------\n"
                << " RESIDENT SLOTS\n";
 
@@ -386,7 +441,7 @@ void print_accounts(const acserver::TownRuntime& runtime) {
         std::cout << "No accounts yet: a town records an account the first time that player connects.\n";
         return;
     }
-    std::cout << "  ACCOUNT   ROLE       NAME                  WALLET       BANK        DEBT  MAIL\n";
+    std::cout << "  ACCOUNT   ROLE       NAME                  WALLET       BANK        DEBT  MAIL  HELD\n";
     for (const acserver::RuntimeAccountSummary& account : accounts) {
         std::ostringstream role;
         if (account.resident) role << "resident" << (account.resident_slot + 1U);
@@ -395,6 +450,7 @@ void print_accounts(const acserver::TownRuntime& runtime) {
                   << std::setw(22) << shorten(account.name.empty() ? "(unnamed)" : account.name, 21) << std::right
                   << std::setw(8) << account.bells << std::setw(12) << account.bank_balance << std::setw(12)
                   << account.debt << std::setw(6) << (std::to_string(account.pending_mail) + "/10")
+                  << std::setw(6) << (std::to_string(account.carried_mail) + "/10")
                   << (account.connected ? "  ONLINE" : "") << '\n';
     }
     std::cout << std::flush;
@@ -406,7 +462,7 @@ void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownR
     std::cout << "[TOWN] " << config.town_name
               << " | Players " << runtime.connected_clients() << '/' << config.capacity
               << " (residents " << runtime.connected_residents() << "/4, visitors "
-              << runtime.connected_visitors() << ')'
+              << runtime.connected_visitors() << ", villagers " << runtime.villager_count() << ')'
               << " | Time " << format_town_time(clock.town_unix_seconds)
               << " | Weather " << weather_name(clock.weather)
               << " | World " << (runtime.town_initialized() ? "ready" : "awaiting first resident")

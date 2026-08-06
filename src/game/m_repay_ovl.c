@@ -1,6 +1,7 @@
 #include "m_repay_ovl.h"
 
 #include "m_common_data.h"
+#include "m_net_hooks.h"
 #include "m_font.h"
 #include "m_name_table.h"
 #include "m_player_lib.h"
@@ -74,9 +75,19 @@ static void mRP_move_Play(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
   else if (repay_ovl->cursor_idx >= mRP_CURSOR_OK || (trigger & BUTTON_START)) {
     if ((trigger & BUTTON_A) || (trigger & BUTTON_START)) {
       if (repay_ovl->repay_amount != 0) {
+        /* The hand-over animation is presentation and runs either way. Online
+         * the loan and the wallet belong to the server, so the payment is a
+         * request and the accepted result is what moves them; mRP_money_repay
+         * is skipped because it also consumes money-sack items, which the
+         * overlay was clamped away from at open. */
         mPlib_request_main_give_from_submenu(ITM_MONEY_10000, mSM_OVL_REPAY, FALSE, TRUE);
-        Common_Get(now_private)->inventory.loan = repay_ovl->loan;
-        Common_Get(now_private)->inventory.wallet = mRP_money_repay(repay_ovl);
+        if (Net_BankingAuthoritative()) {
+          Net_RequestPayDebt(repay_ovl->repay_amount);
+        }
+        else {
+          Common_Get(now_private)->inventory.loan = repay_ovl->loan;
+          Common_Get(now_private)->inventory.wallet = mRP_money_repay(repay_ovl);
+        }
       }
 
       (*submenu->overlay->move_chg_base_proc)(menu_info, mSM_MOVE_OUT_TOP);
@@ -324,14 +335,18 @@ static void mRP_repay_ovl_init(Submenu* submenu) {
 
   repay_ovl->money = Common_Get(now_private)->inventory.wallet;
 
-  for (i = 0; i < mPr_POCKETS_SLOT_COUNT; i++, item_p++) {
-    if (mPr_GET_ITEM_COND(Common_Get(now_private)->inventory.item_conditions, i) == mPr_ITEM_COND_NORMAL) {
-      int j;
+  /* Online the payment only moves wallet bells, so money sacks are not offered
+   * as spendable -- see the commit in mRP_move_Play. */
+  if (!Net_BankingAuthoritative()) {
+    for (i = 0; i < mPr_POCKETS_SLOT_COUNT; i++, item_p++) {
+      if (mPr_GET_ITEM_COND(Common_Get(now_private)->inventory.item_conditions, i) == mPr_ITEM_COND_NORMAL) {
+        int j;
 
-      for (j = 0; j < MONEY_NUM; j++) {
-        if (*item_p == mRP_money_name[j]) {
-          repay_ovl->money += mRP_money_amount[j];
-          break;
+        for (j = 0; j < MONEY_NUM; j++) {
+          if (*item_p == mRP_money_name[j]) {
+            repay_ovl->money += mRP_money_amount[j];
+            break;
+          }
         }
       }
     }

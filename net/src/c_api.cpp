@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <string>
 
@@ -46,6 +47,21 @@ AcNetTransform to_c(const acnet::Transform& source) {
             source.velocity.z,
             source.yaw,
             source.action};
+}
+
+void appearance_from_c(const AcNetPlayerAppearance& source,
+                       acnet::PlayerAppearance& appearance,
+                       acnet::CustomPattern& pattern) {
+    std::copy(std::begin(source.name), std::end(source.name), appearance.name.begin());
+    appearance.gender = source.gender;
+    appearance.face = source.face;
+    appearance.clothing = source.clothing;
+    appearance.equipped_item = source.equipped_item;
+    appearance.clothing_index = source.clothing_index;
+    appearance.revision = source.appearance_revision;
+    pattern.present = source.pattern_present != 0;
+    pattern.palette = source.pattern_palette;
+    std::copy(std::begin(source.pattern_texture), std::end(source.pattern_texture), pattern.texture.begin());
 }
 
 void capture_exception() {
@@ -157,6 +173,12 @@ extern "C" size_t acnet_client_remote_players(AcNetRemotePlayer* output, size_t 
                 output[i].face = remotes[i].appearance.face;
                 output[i].clothing = remotes[i].appearance.clothing;
                 output[i].equipped_item = remotes[i].appearance.equipped_item;
+                output[i].clothing_index = remotes[i].appearance.clothing_index;
+                output[i].appearance_revision = remotes[i].appearance.revision;
+                output[i].pattern_present = remotes[i].pattern.present ? 1 : 0;
+                output[i].pattern_palette = remotes[i].pattern.palette;
+                std::copy(remotes[i].pattern.texture.begin(), remotes[i].pattern.texture.end(),
+                          output[i].pattern_texture);
                 output[i].transition_phase = static_cast<std::uint8_t>(remotes[i].transition_phase);
                 output[i].transition_door = remotes[i].transition_door;
                 output[i].transition_expires_tick = remotes[i].transition_expires_tick;
@@ -334,25 +356,50 @@ extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                                     uint16_t land_id,
                                                     const AcNetPlayerAppearance* appearance,
                                                     const AcNetTownBootstrapTile* tiles,
-                                                    size_t tile_count) {
+                                                    size_t tile_count,
+                                                    const AcNetTownBootstrapTile* island_tiles,
+                                                    size_t island_tile_count,
+                                                    uint8_t island_block_x0,
+                                                    uint8_t island_block_x1) {
     try {
         if (!client || town_name == nullptr || appearance == nullptr || tiles == nullptr ||
             tile_count != acnet::kTownBootstrapTileCount) return 0;
+        /* The island section is optional: a client that could not read the acre
+         * layout yet sends none and a later login supplies it. */
+        const bool has_island = island_tiles != nullptr &&
+                                island_tile_count == acnet::kIslandBootstrapTileCount &&
+                                island_block_x0 < acnet::kFieldBlockXCount &&
+                                island_block_x1 < acnet::kFieldBlockXCount &&
+                                island_block_x0 < island_block_x1;
         acnet::TownBootstrap bootstrap;
         bootstrap.town_seed = client->town_seed();
         bootstrap.land_id = land_id;
         std::copy(town_name, town_name + bootstrap.town_name.size(), bootstrap.town_name.begin());
-        std::copy(appearance->name, appearance->name + bootstrap.appearance.name.size(),
-                  bootstrap.appearance.name.begin());
-        bootstrap.appearance.gender = appearance->gender;
-        bootstrap.appearance.face = appearance->face;
-        bootstrap.appearance.clothing = appearance->clothing;
-        bootstrap.appearance.equipped_item = appearance->equipped_item;
+        appearance_from_c(*appearance, bootstrap.appearance, bootstrap.pattern);
         bootstrap.tiles.reserve(tile_count);
         for (std::size_t i = 0; i < tile_count; ++i)
             bootstrap.tiles.push_back({tiles[i].item, tiles[i].buried != 0});
+        if (has_island) {
+            bootstrap.island_block_x = {island_block_x0, island_block_x1};
+            bootstrap.island_tiles.reserve(island_tile_count);
+            for (std::size_t i = 0; i < island_tile_count; ++i)
+                bootstrap.island_tiles.push_back({island_tiles[i].item, island_tiles[i].buried != 0});
+        }
         return client->submit_town_bootstrap(std::move(bootstrap),
                                              acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_update_appearance(const AcNetPlayerAppearance* appearance) {
+    try {
+        if (!client || appearance == nullptr) return 0;
+        acnet::AppearanceUpdate update;
+        appearance_from_c(*appearance, update.appearance, update.pattern);
+        /* Revisions are assigned by the authority, never accepted from the
+         * presentation client. */
+        update.appearance.revision = 0;
+        return client->update_appearance(std::move(update), acnet::client_monotonic_milliseconds(),
+                                         last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }
 }
 
@@ -515,23 +562,52 @@ extern "C" size_t acnet_client_mail(AcNetMailRecord* output, size_t capacity) {
         const std::vector<acnet::MailRecord>& letters = client->mail();
         const std::size_t count = letters.size() < capacity ? letters.size() : capacity;
         for (std::size_t i = 0; i < count; ++i) {
+            const acnet::MailContent& content = letters[i].content;
             output[i].id = letters[i].id;
             output[i].sender = letters[i].sender;
             output[i].recipient = letters[i].recipient;
             output[i].attachment = letters[i].attachment;
             output[i].revision = letters[i].revision;
-            std::memcpy(output[i].text, letters[i].text.data(), letters[i].text.size());
+            output[i].location = static_cast<std::uint8_t>(letters[i].location);
+            output[i].font = content.font;
+            output[i].mail_type = content.mail_type;
+            output[i].paper_type = content.paper_type;
+            output[i].header_back_start = content.header_back_start;
+            std::memcpy(output[i].sender_name, content.sender_name.data(), content.sender_name.size());
+            std::memcpy(output[i].header, content.header.data(), content.header.size());
+            std::memcpy(output[i].body, content.body.data(), content.body.size());
+            std::memcpy(output[i].footer, content.footer.data(), content.footer.size());
         }
         return count;
     } catch (...) { capture_exception(); return 0; }
 }
 
+namespace {
+
+int request_mail_operation(acnet::EconomyOpType type, uint64_t mail_id) {
+    if (!client || client->baseline() == nullptr || mail_id == 0) return 0;
+    return acnet_client_request_economy_auto(static_cast<std::uint8_t>(type),
+                                             client->baseline()->inventory.revision,
+                                             client->mailbox().revision, 0, 0, 0, 0, 0, mail_id);
+}
+
+} // namespace
+
+extern "C" int acnet_client_take_mail(uint64_t mail_id) {
+    try {
+        return request_mail_operation(acnet::EconomyOpType::TakeMail, mail_id);
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" int acnet_client_claim_mail(uint64_t mail_id) {
     try {
-        if (!client || client->baseline() == nullptr || mail_id == 0) return 0;
-        return acnet_client_request_economy_auto(
-            static_cast<std::uint8_t>(acnet::EconomyOpType::ClaimMail),
-            client->baseline()->inventory.revision, client->mailbox().revision, 0, 0, 0, 0, 0, mail_id);
+        return request_mail_operation(acnet::EconomyOpType::ClaimMail, mail_id);
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_discard_mail(uint64_t mail_id) {
+    try {
+        return request_mail_operation(acnet::EconomyOpType::DiscardMail, mail_id);
     } catch (...) { capture_exception(); return 0; }
 }
 
@@ -593,6 +669,7 @@ extern "C" int acnet_client_take_conversation_result(AcNetConversationResult* ou
 }
 
 extern "C" int acnet_client_request_encounter(uint8_t kind,
+                                               uint16_t species,
                                                uint32_t expected_inventory_revision,
                                                uint8_t tool_slot,
                                                uint64_t idempotency_high,
@@ -601,6 +678,7 @@ extern "C" int acnet_client_request_encounter(uint8_t kind,
         if (!client || kind > static_cast<uint8_t>(acnet::EncounterKind::Insect)) return 0;
         acnet::EncounterRequest request;
         request.kind = static_cast<acnet::EncounterKind>(kind);
+        request.species = species;
         request.expected_inventory_revision = expected_inventory_revision;
         request.tool_slot = tool_slot;
         request.idempotency = {idempotency_high, idempotency_low};
@@ -609,11 +687,12 @@ extern "C" int acnet_client_request_encounter(uint8_t kind,
 }
 
 extern "C" int acnet_client_request_encounter_auto(uint8_t kind,
+                                                      uint16_t species,
                                                       uint32_t expected_inventory_revision,
                                                       uint8_t tool_slot) {
     try {
         const acnet::IdempotencyKey key = random_idempotency();
-        return key.valid() && acnet_client_request_encounter(kind, expected_inventory_revision, tool_slot,
+        return key.valid() && acnet_client_request_encounter(kind, species, expected_inventory_revision, tool_slot,
                                                               key.high, key.low);
     } catch (...) { capture_exception(); return 0; }
 }

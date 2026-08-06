@@ -17,6 +17,8 @@ typedef enum AcNetClientStatus {
     ACNET_FAILED = 5
 } AcNetClientStatus;
 
+#define ACNET_CUSTOM_PATTERN_TEXTURE_BYTES 512
+
 typedef struct AcNetTransform {
     float x;
     float y;
@@ -38,6 +40,11 @@ typedef struct AcNetRemotePlayer {
     uint8_t face;
     uint16_t clothing;
     uint16_t equipped_item;
+    uint16_t clothing_index;
+    uint32_t appearance_revision;
+    uint8_t pattern_present;
+    uint8_t pattern_palette;
+    uint8_t pattern_texture[ACNET_CUSTOM_PATTERN_TEXTURE_BYTES];
     uint8_t transition_phase;
     uint32_t transition_door;
     uint32_t transition_expires_tick;
@@ -101,6 +108,11 @@ typedef struct AcNetPlayerAppearance {
     uint8_t face;
     uint16_t clothing;
     uint16_t equipped_item;
+    uint16_t clothing_index;
+    uint32_t appearance_revision;
+    uint8_t pattern_present;
+    uint8_t pattern_palette;
+    uint8_t pattern_texture[ACNET_CUSTOM_PATTERN_TEXTURE_BYTES];
 } AcNetPlayerAppearance;
 
 typedef struct AcNetWorldResult {
@@ -127,9 +139,18 @@ typedef struct AcNetEncounterResult {
 } AcNetEncounterResult;
 
 /* Mirrors acnet::MailRecord. `sender` is 0 for a letter the town operator
- * posted; `text` is a fixed-size, not necessarily terminated body. */
-#define ACNET_MAIL_TEXT_BYTES 96
+ * posted. The text fields are opaque bytes in the game's own font encoding and
+ * are sized to the matching Mail_c fields, so a letter can be projected into
+ * the original UI without reinterpretation. `location` is 0 while the letter
+ * waits in the house mailbox and 1 once the player is carrying it. */
+#define ACNET_MAIL_NAME_BYTES 22
+#define ACNET_MAIL_HEADER_BYTES 24
+#define ACNET_MAIL_BODY_BYTES 192
+#define ACNET_MAIL_FOOTER_BYTES 32
 #define ACNET_MAILBOX_CAPACITY 10
+#define ACNET_CARRIED_MAIL_CAPACITY 10
+#define ACNET_MAIL_IN_MAILBOX 0
+#define ACNET_MAIL_CARRIED 1
 
 typedef struct AcNetMailRecord {
     uint64_t id;
@@ -137,7 +158,15 @@ typedef struct AcNetMailRecord {
     uint64_t recipient;
     uint16_t attachment;
     uint32_t revision;
-    uint8_t text[ACNET_MAIL_TEXT_BYTES];
+    uint8_t location;
+    uint8_t font;
+    uint8_t mail_type;
+    uint8_t paper_type;
+    uint8_t header_back_start;
+    uint8_t sender_name[ACNET_MAIL_NAME_BYTES];
+    uint8_t header[ACNET_MAIL_HEADER_BYTES];
+    uint8_t body[ACNET_MAIL_BODY_BYTES];
+    uint8_t footer[ACNET_MAIL_FOOTER_BYTES];
 } AcNetMailRecord;
 
 typedef struct AcNetEconomyResult {
@@ -233,14 +262,25 @@ size_t acnet_client_town_name(uint8_t* output, size_t capacity);
  * viewer's interest set. Returns 0 when the server has reported no population
  * yet, leaving the outputs untouched. */
 int acnet_client_town_population(uint8_t* population, uint8_t* capacity);
+/* `island_tiles` is the two island acres in acre-major order, or NULL when the
+ * client could not read the field's acre layout yet -- the server then leaves
+ * the island uninitialized and adopts it from a later login. `island_block_x0`
+ * and `island_block_x1` are the acre columns those two blocks occupy. */
 int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                        uint16_t land_id,
                                        const AcNetPlayerAppearance* appearance,
                                        const AcNetTownBootstrapTile* tiles,
-                                       size_t tile_count);
+                                       size_t tile_count,
+                                       const AcNetTownBootstrapTile* island_tiles,
+                                       size_t island_tile_count,
+                                       uint8_t island_block_x0,
+                                       uint8_t island_block_x1);
 int acnet_client_take_town_bootstrap_result(uint16_t* result_code,
                                             uint32_t* revision,
                                             uint8_t* initialized);
+/* Reliable cosmetic update. The authenticated server assigns the appearance
+ * revision and republishes the bounded pattern bytes in zone baselines. */
+int acnet_client_update_appearance(const AcNetPlayerAppearance* appearance);
 int acnet_client_request_world(uint8_t operation_type,
                                uint32_t zone_id,
                                int16_t x,
@@ -282,11 +322,19 @@ int acnet_client_take_economy_result(AcNetEconomyResult* output);
 /* The bank ledger revision a deposit, withdrawal, or debt payment must quote.
  * acnet_client_bank_balance()/acnet_client_debt() report the same ledger. */
 uint32_t acnet_client_bank_revision(void);
-/* Pending mail. The revision is what a claim must quote; the letters arrive in
- * the baseline and stay current through account-targeted mailbox deltas. */
+/* The account's letters, mailbox entries first then carried ones, as one list
+ * ordered the way the server holds them. The revision covers both halves and is
+ * what every mail request must quote; the letters arrive in the baseline and
+ * stay current through account-targeted mail deltas.
+ *
+ * The two steps match the original game: take a letter out of the mailbox, then
+ * take its present out of the carried letter. Discarding is only allowed once a
+ * letter no longer holds a present. */
 uint32_t acnet_client_mailbox_revision(void);
 size_t acnet_client_mail(AcNetMailRecord* output, size_t capacity);
+int acnet_client_take_mail(uint64_t mail_id);
 int acnet_client_claim_mail(uint64_t mail_id);
+int acnet_client_discard_mail(uint64_t mail_id);
 int acnet_client_request_trade(uint8_t action,
                                uint64_t trade_id,
                                uint64_t other_account,
@@ -299,12 +347,18 @@ int acnet_client_request_conversation(uint8_t action,
                                       uint32_t lease_id,
                                       uint16_t choice);
 int acnet_client_take_conversation_result(AcNetConversationResult* output);
+/* `species` is the item the client observed itself hooking or swinging at.
+ * Spawns are still simulated on the client, so the server treats it as a claim:
+ * it is committed only if that species can legally appear at the town's current
+ * month, hour, and weather. Pass 0 to let the server choose. */
 int acnet_client_request_encounter(uint8_t kind,
+                                   uint16_t species,
                                    uint32_t expected_inventory_revision,
                                    uint8_t tool_slot,
                                    uint64_t idempotency_high,
                                    uint64_t idempotency_low);
 int acnet_client_request_encounter_auto(uint8_t kind,
+                                        uint16_t species,
                                         uint32_t expected_inventory_revision,
                                         uint8_t tool_slot);
 int acnet_client_take_encounter_result(AcNetEncounterResult* output);

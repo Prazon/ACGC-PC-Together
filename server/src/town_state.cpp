@@ -9,7 +9,7 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 5;
+constexpr std::uint16_t kTownStateVersion = 7;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -25,14 +25,41 @@ bool read_transform(acnet::ByteReader& reader, acnet::Transform& value) {
            acnet::finite(value.velocity);
 }
 
-bool write_appearance(acnet::ByteWriter& writer, const acnet::PlayerAppearance& value) {
-    return writer.bytes(value.name.data(), value.name.size()) && writer.u8(value.gender) && writer.u8(value.face) &&
-           writer.u16(value.clothing) && writer.u16(value.equipped_item);
+bool write_appearance(acnet::ByteWriter& writer,
+                      const acnet::PlayerAppearance& value,
+                      const acnet::CustomPattern& pattern) {
+    if (value.gender > 2 || value.face >= 8 || value.clothing_index >= 0x108 || value.revision == 0 ||
+        pattern.palette >= 16 ||
+        (pattern.present ? value.clothing_index < 0x100 : value.clothing_index >= 0x100)) return false;
+    if (!writer.bytes(value.name.data(), value.name.size()) || !writer.u8(value.gender) || !writer.u8(value.face) ||
+        !writer.u16(value.clothing) || !writer.u16(value.equipped_item) ||
+        !writer.u16(value.clothing_index) || !writer.u32(value.revision) ||
+        !writer.u8(pattern.present ? 1 : 0) || !writer.u8(pattern.palette)) return false;
+    return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
-bool read_appearance(acnet::ByteReader& reader, acnet::PlayerAppearance& value) {
-    return reader.bytes(value.name.data(), value.name.size()) && reader.u8(value.gender) && reader.u8(value.face) &&
-           reader.u16(value.clothing) && reader.u16(value.equipped_item) && value.gender <= 2 && value.face < 8;
+bool read_appearance(acnet::ByteReader& reader,
+                     std::uint16_t version,
+                     acnet::PlayerAppearance& value,
+                     acnet::CustomPattern& pattern) {
+    if (!reader.bytes(value.name.data(), value.name.size()) || !reader.u8(value.gender) || !reader.u8(value.face) ||
+        !reader.u16(value.clothing) || !reader.u16(value.equipped_item) || value.gender > 2 || value.face >= 8)
+        return false;
+    pattern = {};
+    if (version < 7) {
+        value.clothing_index = value.clothing >= 0x2400 && value.clothing < 0x24FF
+                                   ? static_cast<std::uint16_t>(value.clothing - 0x2400)
+                                   : 0;
+        value.revision = 1;
+        return true;
+    }
+    std::uint8_t present;
+    if (!reader.u16(value.clothing_index) || !reader.u32(value.revision) || !reader.u8(present) ||
+        !reader.u8(pattern.palette) || present > 1 || value.clothing_index >= 0x108 ||
+        value.revision == 0 || pattern.palette >= 16) return false;
+    pattern.present = present != 0;
+    if (pattern.present ? value.clothing_index < 0x100 : value.clothing_index >= 0x100) return false;
+    return !pattern.present || reader.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
 acnet::PlayerAppearance legacy_appearance(acnet::AccountId account) {
@@ -41,6 +68,8 @@ acnet::PlayerAppearance legacy_appearance(acnet::AccountId account) {
     value.gender = static_cast<std::uint8_t>(account & 1U);
     value.face = static_cast<std::uint8_t>(account % 8U);
     value.clothing = static_cast<std::uint16_t>(0x2400U + account % 0xFFU);
+    value.clothing_index = static_cast<std::uint16_t>(value.clothing - 0x2400U);
+    value.revision = 1;
     return value;
 }
 
@@ -74,7 +103,7 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
         if (inventory == nullptr || ledger == nullptr || !writer.u64(account) || !writer.u64(state.entity) ||
             !writer.u8(static_cast<std::uint8_t>(state.kind)) || !writer.u32(state.zone) ||
             !write_transform(writer, state.transform) || !writer.u8(state.resident_slot) ||
-            !write_appearance(writer, state.appearance) ||
+            !write_appearance(writer, state.appearance, state.pattern) ||
             !writer.u32(inventory->revision) || !writer.u32(inventory->bells)) return {};
         for (const acnet::ItemSlot& slot : inventory->slots) {
             if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return {};
@@ -123,9 +152,16 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
         !writer.u32(static_cast<std::uint32_t>(mail.size()))) return {};
     for (std::uint64_t id : sorted_keys(mail)) {
         const acnet::MailRecord& record = mail.at(id);
+        const acnet::MailContent& content = record.content;
         if (!writer.u64(record.id) || !writer.u64(record.sender) || !writer.u64(record.recipient) ||
             !writer.u16(record.attachment) || !writer.u32(record.revision) ||
-            !writer.bytes(record.text.data(), record.text.size())) return {};
+            !writer.u8(static_cast<std::uint8_t>(record.location)) || !writer.u8(content.font) ||
+            !writer.u8(content.mail_type) || !writer.u8(content.paper_type) ||
+            !writer.u8(content.header_back_start) ||
+            !writer.bytes(content.sender_name.data(), content.sender_name.size()) ||
+            !writer.bytes(content.header.data(), content.header.size()) ||
+            !writer.bytes(content.body.data(), content.body.size()) ||
+            !writer.bytes(content.footer.data(), content.footer.size())) return {};
     }
 
     const auto& npcs = npcs_.all_npcs();
@@ -203,7 +239,7 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         if (!reader.u64(account) || !reader.u64(state.entity) || !reader.u8(kind) ||
             kind > static_cast<std::uint8_t>(acnet::PlayerKind::Visitor) || !reader.u32(state.zone) ||
             !read_transform(reader, state.transform) || !reader.u8(state.resident_slot) ||
-            (version >= 2 && !read_appearance(reader, state.appearance)) ||
+            (version >= 2 && !read_appearance(reader, version, state.appearance, state.pattern)) ||
             !reader.u32(inventory.revision) || !reader.u32(inventory.bells)) {
             error = "invalid account state"; return false;
         }
@@ -282,12 +318,28 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
     economy_.clear_mail();
     for (std::uint32_t i = 0; i < mail_count; ++i) {
         acnet::MailRecord mail;
+        acnet::MailContent& content = mail.content;
+        std::uint8_t location = 0;
+        /* v5 letters predate carried mail and the full letter body: they were
+         * all waiting in a mailbox and had only a 96-byte note, which maps onto
+         * the head of the body field. */
+        std::array<std::uint8_t, 96> legacy_text{};
         if (!reader.u64(mail.id) || !reader.u64(mail.sender) || !reader.u64(mail.recipient) ||
             !reader.u16(mail.attachment) || !reader.u32(mail.revision) ||
-            (version >= 5 && !reader.bytes(mail.text.data(), mail.text.size())) ||
-            !economy_.restore_mail(mail)) {
+            (version == 5 && !reader.bytes(legacy_text.data(), legacy_text.size())) ||
+            (version >= 6 &&
+             (!reader.u8(location) || location > static_cast<std::uint8_t>(acnet::MailLocation::Carried) ||
+              !reader.u8(content.font) || !reader.u8(content.mail_type) || !reader.u8(content.paper_type) ||
+              !reader.u8(content.header_back_start) ||
+              !reader.bytes(content.sender_name.data(), content.sender_name.size()) ||
+              !reader.bytes(content.header.data(), content.header.size()) ||
+              !reader.bytes(content.body.data(), content.body.size()) ||
+              !reader.bytes(content.footer.data(), content.footer.size())))) {
             error = "invalid mail state"; return false;
         }
+        if (version == 5) std::copy(legacy_text.begin(), legacy_text.end(), content.body.begin());
+        mail.location = static_cast<acnet::MailLocation>(location);
+        if (!economy_.restore_mail(mail)) { error = "invalid mail state"; return false; }
     }
 
     std::uint32_t npc_count;
@@ -303,7 +355,8 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
     }
 
     std::uint32_t house_count;
-    if (!reader.u32(house_count) || house_count > acnet::kOriginalResidentSlots) {
+    /* The four resident houses plus the town's shared island cabin. */
+    if (!reader.u32(house_count) || house_count > acnet::kOriginalResidentSlots + 1) {
         error = "invalid house count"; return false;
     }
     for (std::uint32_t i = 0; i < house_count; ++i) {
@@ -332,6 +385,10 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         house.initialized = initialized != 0;
         house.main_light_on = main_light != 0;
         house.basement_light_on = basement_light != 0;
+        /* Ownership is the record: a shared house is the ownerless one. Kept
+         * derived rather than stored so the two can never disagree, exactly as
+         * on the wire. */
+        house.shared = house.original_slot == acnet::kSharedHouseSlot;
         for (std::uint32_t j = 0; j < furniture_count; ++j) {
             acnet::FurnitureAddress address;
             acnet::ItemSlot item;

@@ -67,6 +67,8 @@ acnet::PlayerAppearance default_appearance(acnet::AccountId account) {
     appearance.face = static_cast<std::uint8_t>(account % 8U);
     appearance.clothing = static_cast<std::uint16_t>(0x2400U + account % 0xFFU);
     appearance.equipped_item = 0x2203;
+    appearance.clothing_index = static_cast<std::uint16_t>(appearance.clothing - 0x2400U);
+    appearance.revision = 1;
     return appearance;
 }
 
@@ -138,6 +140,26 @@ std::size_t TownRuntime::registered_residents() const {
     return static_cast<std::size_t>(std::count_if(accounts_.begin(), accounts_.end(), [](const auto& account) {
         return account.second.kind == acnet::PlayerKind::Resident;
     }));
+}
+
+TownRuntime::IslandStatus TownRuntime::island_status() const {
+    IslandStatus status;
+    status.tiles = world_.tiles_in_zone(acnet::kIslandZone).size();
+    status.terrain_ready = status.tiles != 0;
+    for (const auto& entry : connections_) {
+        const acnet::PlayerView* viewer = players_.by_account(entry.second.account);
+        if (viewer == nullptr) continue;
+        if (viewer->zone == acnet::kIslandZone) ++status.outdoor_players;
+        else if (viewer->zone == acnet::kIslandCabinZone) ++status.cabin_players;
+        else if (viewer->zone == acnet::kIslandNpcHouseZone) ++status.islander_house_players;
+    }
+    if (const acnet::HouseState* cabin = housing_.house(acnet::kIslandCabinHouseId)) {
+        status.cabin_furniture = cabin->furniture.size();
+    }
+    for (const auto& entry : npcs_.all_npcs()) {
+        if (entry.second.zone == acnet::kIslandZone) status.islander_present = true;
+    }
+    return status;
 }
 
 std::vector<RuntimePlayerStatus> TownRuntime::player_statuses() const {
@@ -289,6 +311,102 @@ bool TownRuntime::configure_zone_topology(std::string& error) {
             }
         }
     }
+    if (!configure_island_topology(error)) return false;
+    return true;
+}
+
+bool TownRuntime::install_island_tiles(const acnet::TownBootstrap& request, std::string& error) {
+    /* Island tiles keep their global unit coordinates so the original client
+     * helpers route a write to Save_t.island.fgblock without translation; only
+     * the zone tells them apart from the town. */
+    if (request.island_tiles.size() != acnet::kIslandTileCount) return true;
+    if (!world_.tiles_in_zone(acnet::kIslandZone).empty()) return true;
+    std::size_t index = 0;
+    for (std::int16_t block = 0; block < acnet::kIslandBlockCount; ++block) {
+        const std::int16_t block_x = static_cast<std::int16_t>(request.island_block_x[block]);
+        for (std::int16_t unit_z = 0; unit_z < acnet::kBlockUnits; ++unit_z) {
+            for (std::int16_t unit_x = 0; unit_x < acnet::kBlockUnits; ++unit_x, ++index) {
+                const acnet::TownBootstrapTile& source = request.island_tiles[index];
+                acnet::TileState tile;
+                tile.item = source.item;
+                tile.buried = source.buried;
+                tile.terrain = terrain_for_bootstrap_item(source.item);
+                if (!world_.set_tile({acnet::kIslandZone,
+                                      static_cast<std::int16_t>(block_x * acnet::kBlockUnits + unit_x),
+                                      static_cast<std::int16_t>(acnet::kIslandBlockZ * acnet::kBlockUnits + unit_z)},
+                                     tile)) {
+                    error = "failed to install the island foreground";
+                    return false;
+                }
+            }
+        }
+    }
+    /* One islander, shared by the town, standing in the island exterior. The
+     * conversation lease keeps two visitors from talking to them at once. */
+    acnet::NpcState islander;
+    islander.entity = 1001;
+    islander.zone = acnet::kIslandZone;
+    const auto tiles = world_.tiles_in_zone(acnet::kIslandZone);
+    if (!tiles.empty()) {
+        islander.transform.position = {(static_cast<float>(tiles.front().first.x) + 8.5F) * 40.0F, 0.0F,
+                                       (static_cast<float>(tiles.front().first.z) + 8.5F) * 40.0F};
+    }
+    if (npcs_.npc(islander.entity) == nullptr && !npcs_.add_npc(islander)) {
+        error = "failed to initialize the islander";
+        return false;
+    }
+    return true;
+}
+
+bool TownRuntime::configure_island_topology(std::string& error) {
+    /* Island acres sit at block row kIslandBlockZ, outside the town's own tile
+     * rectangle, so their centre is derived from whichever acre columns the
+     * client reported. Until it has, the ferry still works: none of these
+     * positions is validated -- request_transfer deliberately trusts the
+     * client's scene transition and constrains only the source zone. */
+    const auto island_tiles = world_.tiles_in_zone(acnet::kIslandZone);
+    acnet::Vec3 island_landing{2600.0F, 0.0F, 5220.0F};
+    if (!island_tiles.empty()) {
+        std::int64_t sum_x = 0;
+        std::int64_t sum_z = 0;
+        for (const auto& entry : island_tiles) {
+            sum_x += entry.first.x;
+            sum_z += entry.first.z;
+        }
+        const auto count = static_cast<std::int64_t>(island_tiles.size());
+        island_landing = {(static_cast<float>(sum_x) / static_cast<float>(count) + 0.5F) * 40.0F, 0.0F,
+                          (static_cast<float>(sum_z) / static_cast<float>(count) + 0.5F) * 40.0F};
+    }
+    /* The dock is a town acre the server has no map of; the ferry leaves from
+     * wherever the player boarded, so this is only a return hint. */
+    const acnet::Vec3 dock{2600.0F, 0.0F, 4300.0F};
+    const struct {
+        std::uint32_t id;
+        acnet::ZoneId source;
+        acnet::ZoneId destination;
+        acnet::Vec3 source_position;
+        acnet::Vec3 destination_position;
+    } doors[] = {
+        {acnet::kFerryToIslandDoor, 1, acnet::kIslandZone, dock, island_landing},
+        {acnet::kFerryToTownDoor, acnet::kIslandZone, 1, island_landing, dock},
+        {acnet::kIslandCabinEnterDoor, acnet::kIslandZone, acnet::kIslandCabinZone, island_landing, {}},
+        {acnet::kIslandCabinLeaveDoor, acnet::kIslandCabinZone, acnet::kIslandZone, {}, island_landing},
+        {acnet::kIslandNpcHouseEnterDoor, acnet::kIslandZone, acnet::kIslandNpcHouseZone, island_landing, {}},
+        {acnet::kIslandNpcHouseLeaveDoor, acnet::kIslandNpcHouseZone, acnet::kIslandZone, {}, island_landing},
+    };
+    for (const auto& entry : doors) {
+        acnet::DoorDefinition door;
+        door.id = entry.id;
+        door.source_zone = entry.source;
+        door.destination_zone = entry.destination;
+        door.source_position = entry.source_position;
+        door.destination_position = entry.destination_position;
+        door.interaction_radius = 500.0F;
+        if (!zones_.set_door(door)) {
+            error = "failed to configure island doors";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -329,8 +447,16 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
     shopkeeper.zone = 2;
     shopkeeper.transform.position = {30.0F, 0.0F, 30.0F};
     acnet::ShopState shop;
-    shop.stock.push_back({0x2001, 400, 8});
-    shop.stock.push_back({0x2002, 800, 4});
+    /* The town's rarity permutation is seeded from the town seed so a restart
+     * before the first checkpoint reproduces the same shop, and the daily job
+     * rolls the shelf from it. A checkpoint or journal replay overwrites both
+     * further down, so this only ever establishes a brand-new town. */
+    {
+        std::mt19937_64 shop_random(config_.town_seed);
+        const auto draw = [&shop_random]() -> std::uint64_t { return shop_random(); };
+        acnet::shop_randomise_priorities(shop_stock_, draw);
+        shop.stock = acnet::roll_shop_stock(shop_stock_, draw);
+    }
     if (!npcs_.add_npc(shopkeeper)) {
         error = "failed to initialize public interior";
         return false;
@@ -344,6 +470,36 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
             error = "failed to initialize resident house zones";
             return false;
         }
+    }
+    /* The island and its two interiors. The original game reaches the island by
+     * a Kapp'n ferry that never changes scene, so there is no door animation to
+     * key a transfer off; the client notices its acre kind changed and asks for
+     * the ferry door, and the exterior/island split is what makes that legal. */
+    {
+        acnet::ZoneState island;
+        island.id = acnet::kIslandZone;
+        island.kind = acnet::ZoneKind::Island;
+        island.capacity = config_.capacity;
+        acnet::ZoneState cabin;
+        cabin.id = acnet::kIslandCabinZone;
+        cabin.kind = acnet::ZoneKind::PublicInterior;
+        cabin.capacity = config_.capacity;
+        acnet::ZoneState islander_house;
+        islander_house.id = acnet::kIslandNpcHouseZone;
+        islander_house.kind = acnet::ZoneKind::PublicInterior;
+        islander_house.capacity = config_.capacity;
+        if (!zones_.add_zone(island) || !zones_.add_zone(cabin) || !zones_.add_zone(islander_house)) {
+            error = "failed to initialize island zones";
+            return false;
+        }
+    }
+    /* Save_t.island.cottage belongs to the town, not to a resident: all four
+     * original residents share one cabin. Registering it as a shared house
+     * keeps furniture on the same journalled, revisioned transaction path as
+     * every other room while letting whoever is standing in it decorate. */
+    if (!housing_.register_shared_house(acnet::kIslandCabinHouseId, acnet::kIslandCabinZone)) {
+        error = "failed to initialize the island cabin";
+        return false;
     }
     /* The original outdoor foreground is five by six 16x16-acre blocks,
      * occupying global unit coordinates x=16..95 and z=16..111. */
@@ -407,11 +563,16 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
     daily.next_due = ((town_time / day_seconds) + 1) * day_seconds;
     daily.maximum_catchups = 64;
     if (!clock_.add_job(daily, [this](const ScheduledJob&, std::int64_t) {
+            /* Roll a fresh shelf rather than restocking yesterday's, which is
+             * what the original store does at the day boundary. */
             acnet::ShopState shop = economy_.shop();
             shop.revision = advance_revision(shop.revision);
-            for (acnet::ShopEntry& entry : shop.stock) {
-                if (entry.quantity == 0) entry.quantity = entry.price >= 800 ? 4 : 8;
-            }
+            std::uint64_t entropy = 0;
+            if (!acnet::secure_random(reinterpret_cast<std::uint8_t*>(&entropy), sizeof(entropy)))
+                entropy = static_cast<std::uint64_t>(shop.revision) * 6364136223846793005ULL;
+            std::mt19937_64 shop_random(entropy);
+            shop.stock = acnet::roll_shop_stock(shop_stock_,
+                                                [&shop_random]() -> std::uint64_t { return shop_random(); });
             economy_.set_shop(shop);
             const auto tiles = world_.tiles_in_zone(1);
             for (const auto& entry : tiles) {
@@ -641,6 +802,7 @@ bool TownRuntime::handle_hello(const acnet::Datagram& datagram,
         player.kind = account.kind;
         player.transform = account.transform;
         player.appearance = account.appearance;
+        player.pattern = account.pattern;
         if (!players_.upsert(player) ||
             !movement_.add_player(player.account, player.entity, player.zone, player.transform) ||
             !zones_.join(player.account, player.zone, player.transform.position, movement_.current_tick())) {
@@ -707,7 +869,12 @@ bool TownRuntime::handle_hello(const acnet::Datagram& datagram,
                      std::to_string(hello.account) + " from " + endpoint_key(datagram.host, datagram.port));
         if (!database_.record_account(hello.account, wall_unix_seconds(), error) ||
             !database_.record_session(response.session, hello.account, true, wall_unix_seconds(), error)) return false;
-        if (!send_baseline(connections_.at(response.session), monotonic_ms, error)) return false;
+        /* Appearance is baseline-owned so transform snapshots stay under the
+         * MTU. Refresh every viewer when a player joins; otherwise existing
+         * clients would know the new transform but not the new presentation. */
+        for (auto& connected : connections_) {
+            if (!send_baseline(connected.second, monotonic_ms, error)) return false;
+        }
     }
     return true;
 }
@@ -867,6 +1034,11 @@ bool TownRuntime::send_baseline(Connection& connection,
             baseline.house = entry.second;
             break;
         }
+    } else if (const acnet::HouseState* shared = housing_.shared_house_in(viewer->zone)) {
+        /* The island cabin. Ownerless, so every occupant gets it in their
+         * baseline and any of them may redecorate it. */
+        baseline.has_house = true;
+        baseline.house = *shared;
     }
     if (viewer->zone == 1) {
         const std::int16_t center_x = static_cast<std::int16_t>(viewer->transform.position.x / 40.0F);
@@ -981,9 +1153,15 @@ bool TownRuntime::dispatch(Connection& connection,
                 result.code = acnet::ResultCode::Unauthorized;
             } else {
                 AccountState& state = account->second;
+                request.appearance.revision = state.appearance.revision == std::numeric_limits<acnet::Revision>::max()
+                                                  ? 1
+                                                  : state.appearance.revision + 1;
                 state.appearance = request.appearance;
-                if (acnet::PlayerView* player = players_.by_account(connection.account))
+                state.pattern = request.pattern;
+                if (acnet::PlayerView* player = players_.by_account(connection.account)) {
                     player->appearance = request.appearance;
+                    player->pattern = request.pattern;
+                }
                 const bool initialized_now = !town_bootstrapped_;
                 if (initialized_now) {
                     std::size_t index = 0;
@@ -1008,11 +1186,23 @@ bool TownRuntime::dispatch(Connection& connection,
                         }
                     }
                     town_bootstrapped_ = true;
-                    if (!configure_zone_topology(error) || !commit_state(111, error) ||
+                    if (!install_island_tiles(request, error) || !configure_zone_topology(error) ||
+                        !commit_state(111, error) ||
                         !database_.audit(connection.account, "town_bootstrap", config_.town_name,
                                          wall_unix_seconds(), error)) return false;
-                } else if (!commit_state(112, error)) {
-                    return false;
+                } else {
+                    /* A town created before the island had a zone reaches this
+                     * branch with an empty island. The next login that can read
+                     * the acre layout fills it in; install_island_tiles is a
+                     * no-op once the island already has tiles. */
+                    const bool island_installed = world_.tiles_in_zone(acnet::kIslandZone).empty() &&
+                                                  !request.island_tiles.empty();
+                    if (!install_island_tiles(request, error)) return false;
+                    if (island_installed && !configure_zone_topology(error)) return false;
+                    if (!commit_state(112, error)) return false;
+                    if (island_installed)
+                        record_event("Island terrain adopted from resident account " +
+                                     std::to_string(connection.account));
                 }
                 result.code = acnet::ResultCode::Ok;
                 result.revision = std::max<acnet::Revision>(1, deltas_.current_revision());
@@ -1029,6 +1219,43 @@ bool TownRuntime::dispatch(Connection& connection,
             if (result.code == acnet::ResultCode::Ok) {
                 for (auto& connected : connections_) {
                     connected.second.has_exterior_chunk = false;
+                    if (!send_baseline(connected.second, monotonic_ms, error)) return false;
+                }
+            }
+            return true;
+        }
+        case acnet::MessageType::AppearanceUpdate: {
+            acnet::AppearanceUpdate request;
+            acnet::AppearanceResult result;
+            const auto account = accounts_.find(connection.account);
+            if (!acnet::decode(packet.payload, request)) {
+                ++metrics_.malformed_packets;
+                return true;
+            }
+            if (account == accounts_.end()) {
+                result.code = acnet::ResultCode::Unauthorized;
+            } else {
+                AccountState& state = account->second;
+                request.appearance.revision = state.appearance.revision == std::numeric_limits<acnet::Revision>::max()
+                                                  ? 1
+                                                  : state.appearance.revision + 1;
+                state.appearance = request.appearance;
+                state.pattern = request.pattern;
+                if (acnet::PlayerView* player = players_.by_account(connection.account)) {
+                    player->appearance = request.appearance;
+                    player->pattern = request.pattern;
+                }
+                if (!commit_state(113, error)) return false;
+                result.code = acnet::ResultCode::Ok;
+                result.revision = request.appearance.revision;
+                record_event("Appearance updated for account " + std::to_string(connection.account));
+            }
+            std::vector<std::uint8_t> response;
+            if (!acnet::encode(result, response) ||
+                !send_payload(connection, acnet::MessageType::AppearanceResult,
+                              acnet::Channel::Transactions, response, monotonic_ms, error)) return false;
+            if (result.code == acnet::ResultCode::Ok) {
+                for (auto& connected : connections_) {
                     if (!send_baseline(connected.second, monotonic_ms, error)) return false;
                 }
             }
@@ -1073,12 +1300,12 @@ bool TownRuntime::dispatch(Connection& connection,
             acnet::EconomyRequest request;
             if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
             request.account = connection.account;
-            /* A claim destroys the letter, so its contents are captured before
-             * the transaction in order to describe the removal downstream. */
-            acnet::MailRecord claimed;
-            if (request.type == acnet::EconomyOpType::ClaimMail) {
+            /* A discard destroys the letter, so its contents are captured
+             * before the transaction in order to describe the removal. */
+            acnet::MailRecord discarded;
+            if (request.type == acnet::EconomyOpType::DiscardMail) {
                 const acnet::MailRecord* letter = economy_.mail(request.mail_id);
-                if (letter != nullptr) claimed = *letter;
+                if (letter != nullptr) discarded = *letter;
             }
             const acnet::EconomyResult result = economy_.apply(request);
             std::vector<std::uint8_t> payload;
@@ -1090,12 +1317,16 @@ bool TownRuntime::dispatch(Connection& connection,
                 /* A letter changes a mailbox the sender does not own, so the
                  * recipient is told directly rather than waiting for their next
                  * baseline; a claim confirms the letter left the claimer's. */
-                if (request.type == acnet::EconomyOpType::AttachMail) {
-                    const acnet::MailRecord* delivered = economy_.mail(result.mail_id);
-                    if (delivered == nullptr) { error = "delivered letter is missing"; return false; }
-                    if (!publish_mail_change(*delivered, false, error)) return false;
-                } else if (request.type == acnet::EconomyOpType::ClaimMail) {
-                    if (!publish_mail_change(claimed, true, error)) return false;
+                if (request.type == acnet::EconomyOpType::AttachMail ||
+                    request.type == acnet::EconomyOpType::TakeMail ||
+                    request.type == acnet::EconomyOpType::ClaimMail) {
+                    /* Delivering, taking, and claiming all leave the letter in
+                     * existence, so the recipient is sent its current state. */
+                    const acnet::MailRecord* letter = economy_.mail(result.mail_id);
+                    if (letter == nullptr) { error = "letter is missing after a mail transaction"; return false; }
+                    if (!publish_mail_change(*letter, false, error)) return false;
+                } else if (request.type == acnet::EconomyOpType::DiscardMail) {
+                    if (!publish_mail_change(discarded, true, error)) return false;
                 }
                 acnet::ReplicationDelta delta;
                 delta.kind = request.type == acnet::EconomyOpType::Donate ? acnet::ResourceKind::Event
@@ -1580,13 +1811,27 @@ bool TownRuntime::send_mail(acnet::AccountId recipient,
                 " (accounts are created the first time a player connects)";
         return false;
     }
-    if (text.size() > acnet::kMailTextBytes) {
-        error = "letter text exceeds " + std::to_string(acnet::kMailTextBytes) + " bytes";
+    if (text.size() > acnet::kMailBodyBytes) {
+        error = "letter text exceeds " + std::to_string(acnet::kMailBodyBytes) + " bytes";
         return false;
     }
-    std::array<std::uint8_t, acnet::kMailTextBytes> body{};
-    std::copy(text.begin(), text.end(), body.begin());
-    const acnet::EconomyResult result = economy_.admin_send_mail(recipient, attachment, body);
+    acnet::MailContent content;
+    std::copy(text.begin(), text.end(), content.body.begin());
+    /* The original letter fonts: 0 is a received letter and 3 is a received
+     * letter with a present still attached, both unread. Anything else would
+     * make the UI treat an operator gift as one the player wrote. */
+    content.font = attachment != 0 ? 3 : 0;
+    content.mail_type = 0; /* mMl_TYPE_MAIL */
+    /* sender_name is the raw 22-byte Mail_nm_c the client projects straight
+     * into the letter: an 8-byte player name, an 8-byte town name, two
+     * identifiers, then the name type (0 = a player, so the UI simply prints
+     * the name instead of looking up an NPC). */
+    static const char kOperatorName[] = "TownHall";
+    std::copy(std::begin(kOperatorName), std::end(kOperatorName) - 1, content.sender_name.begin());
+    const std::string town = config_.town_name.substr(0, 8);
+    std::copy(town.begin(), town.end(), content.sender_name.begin() + 8);
+    content.sender_name[20] = 0;
+    const acnet::EconomyResult result = economy_.admin_send_mail(recipient, attachment, content);
     if (result.code == acnet::ResultCode::Capacity) {
         error = "mailbox for account " + std::to_string(recipient) + " already holds " +
                 std::to_string(acnet::kMailboxCapacity) + " letters";
@@ -1632,7 +1877,10 @@ std::vector<RuntimeAccountSummary> TownRuntime::account_summaries() const {
             summary.debt = ledger->debt;
         }
         const acnet::MailboxState* mailbox = economy_.mailbox(entry.first);
-        if (mailbox != nullptr) summary.pending_mail = mailbox->mail.size();
+        if (mailbox != nullptr) {
+            summary.pending_mail = mailbox->mail.size();
+            summary.carried_mail = mailbox->carried.size();
+        }
         summaries.push_back(std::move(summary));
     }
     std::sort(summaries.begin(), summaries.end(), [](const auto& left, const auto& right) {
@@ -1663,6 +1911,7 @@ bool TownRuntime::import_gci(const std::filesystem::path& source, std::string& e
         state.zone = 1;
         state.transform.position = resident_spawn(state.resident_slot);
         state.appearance = imported.residents[slot].appearance;
+        state.pattern = imported.residents[slot].pattern;
         state.resident_slot = static_cast<std::uint8_t>(slot);
         if (state.entity == 0 || !world_.set_inventory(account, imported.residents[slot].inventory) ||
             !economy_.set_account(account, imported.residents[slot].ledger) ||
@@ -1697,6 +1946,7 @@ bool TownRuntime::export_gci(const std::filesystem::path& destination, std::stri
         resident.inventory = *inventory;
         resident.ledger = *ledger;
         resident.appearance = account.second.appearance;
+        resident.pattern = account.second.pattern;
     }
     state.weather = static_cast<std::uint8_t>(clock_.state().weather);
     state.weather_intensity = clock_.state().weather_intensity;

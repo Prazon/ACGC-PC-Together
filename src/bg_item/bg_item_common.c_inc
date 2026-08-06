@@ -1304,7 +1304,11 @@ static int bIT_actor_player_drop_entry(GAME* game, mActor_name_t fg_item, int ut
     u16 drop_type;
 
 #ifdef NETCODE_ENABLED
-    if (Net_IsConnected()) {
+    /* Exterior drops are a server transaction; indoor drops stay local and are
+     * replicated by the house-state submit. Sending an indoor drop to the
+     * exterior tile table always failed, so dropping anything inside a building
+     * reported "no room" while online. */
+    if (Net_WorldTilesAuthoritative()) {
         (void)game;
         (void)layer;
         return Net_RequestDrop(ut_x, ut_z, fg_item) ? 1 : -1;

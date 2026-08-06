@@ -485,6 +485,7 @@ if(NETCODE_ENABLED)
         ${DECOMP_ROOT}/net/src/movement.cpp
         ${DECOMP_ROOT}/net/src/world.cpp
         ${DECOMP_ROOT}/net/src/economy.cpp
+        ${DECOMP_ROOT}/net/src/shop.cpp
         ${DECOMP_ROOT}/net/src/encounter.cpp
         ${DECOMP_ROOT}/net/src/npc.cpp
         ${DECOMP_ROOT}/net/src/zone.cpp

@@ -2952,6 +2952,17 @@ static void mTG_catch_item_from_table(Submenu* submenu, Mail_c* mail, mActor_nam
                                       int table_idx) {
     mHD_Ovl_c* hand_ovl = submenu->overlay->hand_ovl;
 
+    /* Online the letter arrays are projections of server state and only the
+     * supported transactions move a letter. Picking one up into the hand would
+     * empty its slot locally, and the next authoritative refresh would put it
+     * straight back -- so the drag is refused outright rather than appearing to
+     * work. Rearranging, storing, and posting letters online are not supported
+     * yet; see docs/netcode/CURRENT_STATUS.md. */
+    if (mail != NULL && Net_MailAuthoritative()) {
+        sAdo_SysTrgStart(MONO(NA_SE_A));
+        return;
+    }
+
     if (table == mTG_TABLE_PLAYER) {
         hand_ovl->info.wait_timer = 16;
         submenu->overlay->segment.change_player_main_anime_idx = mIV_ANIM_CATCH;
@@ -4738,6 +4749,11 @@ static void mTG_present_proc(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
 
     if (present_myself == FALSE && mPr_GetPossessionItemIdx(Now_Private, EMPTY_NO) == -1) {
         mTG_open_warning_window(submenu, menu_info, mWR_WARNING_PR_LEAVE);
+    } else if (Net_MailAuthoritative()) {
+        /* The server takes the present out of the letter and puts it in the
+         * pocket in one transaction, so online it arrives in a slot rather than
+         * in the hand. Nothing is moved locally. */
+        Net_RequestClaimMail(Net_CarriedMailId(idx));
     } else {
         mTG_catch_item_from_table(submenu, NULL, &mail->present,
                                   present_myself ? mPr_ITEM_COND_NORMAL : mPr_ITEM_COND_PRESENT, mTG_TABLE_MAIL, idx);
@@ -5792,8 +5808,16 @@ static int mTG_trans_mail_mark(Submenu* submenu, mSM_MenuInfo_c* menu_info, mTG_
             }
 
             src = &Common_Get(now_home)->mailbox[src_idx];
-            mMl_copy_mail(&Now_Private->mail[dst_idx], src);
-            mMl_clear_mail(src);
+            /* Online both arrays are projections of server state, so the letter
+             * is moved by a transaction and the accepted result is what
+             * rewrites them; copying here would be reverted on the next
+             * refresh. */
+            if (Net_MailAuthoritative()) {
+                Net_RequestTakeMail(Net_MailboxMailId(src_idx));
+            } else {
+                mMl_copy_mail(&Now_Private->mail[dst_idx], src);
+                mMl_clear_mail(src);
+            }
             tag->tag_col = src_idx % 2;
             tag->tag_row = src_idx / 2;
             mTG_set_hand_pos(submenu, tag->base_pos, tag->table, src_idx);
@@ -5822,8 +5846,13 @@ static int mTG_trans_mail(Submenu* submenu, mSM_MenuInfo_c* menu_info, mTG_tag_c
             int src_idx = submenu->overlay->mailbox_ovl->get_last_mail_idx_proc();
 
             src = &Common_Get(now_home)->mailbox[src_idx];
-            mMl_copy_mail(&Now_Private->mail[dst_idx], src);
-            mMl_clear_mail(src);
+            /* See mTG_trans_mail_mark: the server owns the move online. */
+            if (Net_MailAuthoritative()) {
+                Net_RequestTakeMail(Net_MailboxMailId(src_idx));
+            } else {
+                mMl_copy_mail(&Now_Private->mail[dst_idx], src);
+                mMl_clear_mail(src);
+            }
             src_idx = submenu->overlay->mailbox_ovl->get_last_mail_idx_proc();
             tag->tag_col = src_idx % 2;
             tag->tag_row = src_idx / 2;
@@ -7882,6 +7911,16 @@ static void mTG_move_base_cporiginal(Submenu* submenu, mSM_MenuInfo_c* menu_info
     }
 }
 
+/* The delete path serves every mail table, so online the slot index has to be
+ * translated back into the identifier the server knows. Card storage is not
+ * server-backed and has no identifier. */
+static u64 mTG_net_mail_id(mTG_tag_c* tag, int idx) {
+    if (tag == NULL) return 0;
+    if (tag->table == mTG_TABLE_MAIL) return Net_CarriedMailId(idx);
+    if (tag->table == mTG_TABLE_MBOX) return Net_MailboxMailId(idx);
+    return 0;
+}
+
 static void mTG_move_delete(Submenu* submenu, mTG_tag_c* tag) {
     mIV_Ovl_c* inv_ovl = submenu->overlay->inventory_ovl;
     static f32 remove_accum = 0.0f;
@@ -7931,7 +7970,16 @@ static void mTG_move_delete(Submenu* submenu, mTG_tag_c* tag) {
             if (inv_ovl->mail_mark_flag == 0 &&
                 ((mailbox_ovl != NULL && mailbox_ovl->mark_flag == 0) || mailbox_ovl == NULL) &&
                 ((cpmail_ovl != NULL && cpmail_ovl->mark_flag == 0) || cpmail_ovl == NULL)) {
-                mMl_clear_mail(mTG_get_mail_pointer(submenu, NULL));
+                /* Online the letter belongs to the server, so throwing it away
+                 * is a transaction and the authoritative refresh is what
+                 * removes it from the array. A letter still holding a present
+                 * is left alone rather than destroying the item with it -- the
+                 * present has to be taken out first. */
+                if (Net_MailAuthoritative()) {
+                    Net_RequestDiscardMail(mTG_net_mail_id(tag, idx));
+                } else {
+                    mMl_clear_mail(mTG_get_mail_pointer(submenu, NULL));
+                }
             } else {
                 if (inv_ovl->mail_mark_flag == 1) {
                     int i;
@@ -7939,7 +7987,11 @@ static void mTG_move_delete(Submenu* submenu, mTG_tag_c* tag) {
                     for (i = 0; i < mPr_INVENTORY_MAIL_COUNT; i++) {
                         if (mMl_check_not_used_mail(&Now_Private->mail[i]) != TRUE &&
                             (inv_ovl->mail_mark_bitfield2 & (1 << i)) != 0) {
-                            mMl_clear_mail(&Now_Private->mail[i]);
+                            if (Net_MailAuthoritative()) {
+                                Net_RequestDiscardMail(Net_CarriedMailId(i));
+                            } else {
+                                mMl_clear_mail(&Now_Private->mail[i]);
+                            }
                             inv_ovl->mail_mark_bitfield2 &= ~(1 << i);
                         }
                     }
@@ -7954,7 +8006,11 @@ static void mTG_move_delete(Submenu* submenu, mTG_tag_c* tag) {
 
                         for (i = 0; i < mMB_MAIL_COUNT; i++) {
                             if ((mailbox_ovl->mark_bitfield & (1 << i)) != 0) {
-                                mMl_clear_mail(&Common_Get(now_home)->mailbox[i]);
+                                if (Net_MailAuthoritative()) {
+                                    Net_RequestDiscardMail(Net_MailboxMailId(i));
+                                } else {
+                                    mMl_clear_mail(&Common_Get(now_home)->mailbox[i]);
+                                }
                             }
                         }
 

@@ -13,6 +13,7 @@
 #include "acnet/reliability.hpp"
 #include "acnet/replication.hpp"
 #include "acnet/session.hpp"
+#include "acnet/shop.hpp"
 #include "acnet/transport.hpp"
 #include "acnet/world.hpp"
 #include "acnet/zone.hpp"
@@ -81,6 +82,7 @@ struct RuntimeAccountSummary {
     std::uint64_t bank_balance = 0;
     std::uint64_t debt = 0;
     std::size_t pending_mail = 0;
+    std::size_t carried_mail = 0;
 };
 
 struct RuntimeEvent {
@@ -117,9 +119,32 @@ public:
     std::size_t connected_residents() const;
     std::size_t connected_visitors() const;
     std::size_t registered_residents() const;
+    /* NPC villagers the server is simulating. Until villager replication lands
+     * the runtime registers only the placeholder shopkeeper, so this reports 1
+     * rather than a full town's roster. */
+    std::size_t villager_count() const { return npcs_.all_npcs().size(); }
     std::vector<RuntimePlayerStatus> player_statuses() const;
     std::vector<RuntimeEvent> recent_events() const;
     bool town_initialized() const { return town_bootstrapped_; }
+    /* Island status for the operator console. The island is only authoritative
+     * once a client has reported its acre layout, which a town created before
+     * island support has never done -- so "awaiting" here is a real state an
+     * operator needs to be able to see, not a startup blip. */
+    struct IslandStatus {
+        bool terrain_ready = false;
+        std::size_t tiles = 0;
+        std::size_t outdoor_players = 0;
+        std::size_t cabin_players = 0;
+        std::size_t islander_house_players = 0;
+        std::size_t cabin_furniture = 0;
+        bool islander_present = false;
+    };
+    IslandStatus island_status() const;
+    /* Read-only tile lookup for operators and tests. Mutation stays inside the
+     * transaction path in WorldAuthority. */
+    const acnet::TileState* tile(acnet::ZoneId zone, std::int16_t x, std::int16_t z) const {
+        return world_.tile({zone, x, z});
+    }
     const ClockState& clock_state() const { return clock_.state(); }
     std::optional<acnet::Transform> player_transform(acnet::AccountId account) const {
         const acnet::PlayerView* player = players_.by_account(account);
@@ -133,6 +158,7 @@ private:
         acnet::ZoneId zone = 1;
         acnet::Transform transform;
         acnet::PlayerAppearance appearance;
+        acnet::CustomPattern pattern;
         std::uint8_t resident_slot = 0xFF;
     };
 
@@ -203,6 +229,8 @@ private:
                             acnet::ResultCode result,
                             std::string& error);
     bool configure_zone_topology(std::string& error);
+    bool configure_island_topology(std::string& error);
+    bool install_island_tiles(const acnet::TownBootstrap& request, std::string& error);
     bool allow_message(Connection& connection, acnet::MessageType type, std::uint64_t monotonic_ms);
     bool allow_hello(const std::string& endpoint, std::uint64_t monotonic_ms);
     std::uint8_t house_light_mask() const;
@@ -217,6 +245,10 @@ private:
     acnet::MovementSimulator movement_;
     acnet::WorldAuthority world_;
     acnet::EconomyAuthority economy_;
+    /* Tier, goods power, and the town's A/B/C rarity permutation. The rolled
+     * shelf itself lives in EconomyAuthority's ShopState; this is the state the
+     * daily roll needs to reproduce it. */
+    acnet::ShopStockState shop_stock_;
     acnet::EncounterAuthority encounters_;
     acnet::NpcAuthority npcs_;
     acnet::ZoneCoordinator zones_;

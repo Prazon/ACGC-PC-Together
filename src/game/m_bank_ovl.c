@@ -6,6 +6,7 @@
 #include "m_font.h"
 #include "m_lib.h"
 #include "m_common_data.h"
+#include "m_net_hooks.h"
 
 static int aNSM_sack_amount[MONEY_NUM] = { 100, 1000, 10000, 30000 };
 
@@ -51,6 +52,18 @@ static void mBN_bank_ok(Submenu* submenu, mSM_MenuInfo_c* menu, mBN_Ovl_c* bank_
 
     if (bank_ovl->bank_bell > mBN_DEPOSIT_MAX) {
         bank_ovl->bank_bell = mBN_DEPOSIT_MAX;
+    }
+
+    /* Online the server owns the ledger and the wallet. Send the difference and
+     * leave the save alone: the accepted result is applied by the authoritative
+     * state hook, and committing here as well would be overwritten anyway. The
+     * money-sack reconciliation below is skipped for the same reason -- the
+     * overlay was clamped to wallet bells at open, so no sack is in play. */
+    if (Net_BankingAuthoritative()) {
+        Net_RequestBankTransfer(bank_ovl->bank_bell - (int)Common_Get(now_private)->bank_account);
+        (*submenu->overlay->move_chg_base_proc)(menu, mSM_MOVE_OUT_TOP);
+        sAdo_SysTrgStart(NA_SE_MENU_EXIT);
+        return;
     }
 
     Common_Get(now_private)->bank_account = bank_ovl->bank_bell;
@@ -353,22 +366,32 @@ static void mBN_bank_ovl_init(Submenu* submenu) {
     overlay->menu_info[mSM_OVL_BANK].move_drt = 5;
 
     bank_ovl->now_bell = Common_Get(now_private)->inventory.wallet;
-    bank_ovl->now_bell += mBN_total_item_bell();
+    /* Online, money sacks are ordinary authoritative items and the server's
+     * ledger only moves wallet bells, so the overlay is restricted to the
+     * wallet: counting sacks here would offer the player bells the transaction
+     * cannot take, and the commit would destroy sack items the server never
+     * agreed to give up. */
+    if (!Net_BankingAuthoritative()) {
+        bank_ovl->now_bell += mBN_total_item_bell();
+    }
     bank_ovl->player_bell = bank_ovl->now_bell;
 
     mBN_now_bell_2_bell(bank_ovl);
     bank_ovl->player_max_bell = mPr_WALLET_MAX;
 
-    for (i = 0; i < MONEY_NUM; i++) {
-        int sack_sum = mPr_GetPossessionItemSumWithCond(Common_Get(now_private), aNSM_itemNo[i], mPr_ITEM_COND_NORMAL);
+    if (!Net_BankingAuthoritative()) {
+        for (i = 0; i < MONEY_NUM; i++) {
+            int sack_sum =
+                mPr_GetPossessionItemSumWithCond(Common_Get(now_private), aNSM_itemNo[i], mPr_ITEM_COND_NORMAL);
 
-        bank_ovl->player_max_bell += sack_sum * aNSM_sack_amount[3];
-    }
+            bank_ovl->player_max_bell += sack_sum * aNSM_sack_amount[3];
+        }
 
-    {
-        int sack_sum = mPr_GetPossessionItemSumWithCond(Common_Get(now_private), EMPTY_NO, mPr_ITEM_COND_NORMAL);
+        {
+            int sack_sum = mPr_GetPossessionItemSumWithCond(Common_Get(now_private), EMPTY_NO, mPr_ITEM_COND_NORMAL);
 
-        bank_ovl->player_max_bell += sack_sum * aNSM_sack_amount[3];
+            bank_ovl->player_max_bell += sack_sum * aNSM_sack_amount[3];
+        }
     }
     bank_ovl->bank_bell = Common_Get(now_private)->bank_account;
     bank_ovl->cursol = 0;

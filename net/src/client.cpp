@@ -265,7 +265,8 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
         }
         if (remote.zone != 0 && remote.zone != player.zone) remote.history.clear();
         remote.zone = player.zone;
-        remote.appearance = player.appearance;
+        /* Snapshot appearance is only a revision watermark. The reliable
+         * baseline carries the actual fields and optional custom bitmap. */
         remote.transition_phase = player.transition_phase;
         remote.transition_door = player.transition_door;
         remote.transition_expires_tick = player.transition_expires_tick;
@@ -314,6 +315,24 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             has_baseline_ = true;
             latest_server_tick_ = baseline_.server_tick;
             server_tick_received_ms_ = now_ms;
+            for (const PlayerSnapshot& player : baseline_.players) {
+                if (player.account == config_.account) continue;
+                RemoteTrack& remote = remotes_[player.account];
+                if (remote.account == 0 || remote.entity != player.entity) {
+                    remote = {};
+                    remote.account = player.account;
+                    remote.entity = player.entity;
+                }
+                if (remote.zone != 0 && remote.zone != player.zone) remote.history.clear();
+                remote.zone = player.zone;
+                remote.appearance = player.appearance;
+                remote.pattern = player.pattern;
+                remote.transition_phase = player.transition_phase;
+                remote.transition_door = player.transition_door;
+                remote.transition_expires_tick = player.transition_expires_tick;
+                remote.last_tick = baseline_.server_tick;
+                remote.history.push(baseline_.server_tick, player.transform);
+            }
             break;
         case MessageType::TownBootstrapResult:
             if (!decode(packet.payload, town_bootstrap_result_.emplace())) {
@@ -323,6 +342,14 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             if (town_bootstrap_result_->code == ResultCode::Ok && town_bootstrap_result_->initialized)
                 town_initialized_ = true;
             break;
+        case MessageType::AppearanceResult: {
+            AppearanceResult result;
+            if (!decode(packet.payload, result)) {
+                error = "malformed appearance result";
+                return false;
+            }
+            break;
+        }
         case MessageType::ReplicationDeltas: {
             std::vector<ReplicationDelta> decoded;
             if (!decode_deltas(packet.payload, decoded)) {
@@ -353,13 +380,18 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     if (mail.removed) {
                         if (found != letters.end()) letters.erase(found);
                     } else if (found != letters.end()) {
+                        /* A take is a location change, not a new letter. */
                         *found = mail.record;
-                    } else if (letters.size() < kMailboxCapacity) {
+                    } else if (letters.size() < kMailboxCapacity + kCarriedMailCapacity) {
                         letters.push_back(mail.record);
                     }
                     baseline_.mailbox.revision = mail.mailbox_revision;
                     baseline_.mailbox.mail.clear();
-                    for (const MailRecord& letter : letters) baseline_.mailbox.mail.push_back(letter.id);
+                    baseline_.mailbox.carried.clear();
+                    for (const MailRecord& letter : letters) {
+                        if (letter.location == MailLocation::Carried) baseline_.mailbox.carried.push_back(letter.id);
+                        else baseline_.mailbox.mail.push_back(letter.id);
+                    }
                 }
                 if (delta.kind == ResourceKind::Town) {
                     TownOccupancy occupancy;
@@ -395,9 +427,37 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             if (has_baseline_ && economy_result_->code == ResultCode::Ok) {
                 baseline_.inventory.revision = economy_result_->inventory_revision;
                 baseline_.inventory.bells = economy_result_->bells;
-                baseline_.ledger.revision = economy_result_->auxiliary_revision;
+                /* The balance and debt are echoed by every operation, but
+                 * auxiliary_revision belongs to whichever authority the
+                 * operation touched. Copying it into the ledger unconditionally
+                 * left a shop purchase pointing the bank mirror at the shop's
+                 * revision, and the next deposit would have been rejected as
+                 * stale. */
                 baseline_.ledger.bank_balance = economy_result_->balance;
                 baseline_.ledger.debt = economy_result_->debt;
+                switch (economy_result_->type) {
+                    case EconomyOpType::Deposit:
+                    case EconomyOpType::Withdraw:
+                    case EconomyOpType::PayDebt:
+                        baseline_.ledger.revision = economy_result_->auxiliary_revision;
+                        break;
+                    case EconomyOpType::Buy:
+                    case EconomyOpType::Sell:
+                        baseline_.shop.revision = economy_result_->auxiliary_revision;
+                        break;
+                    case EconomyOpType::AttachMail:
+                    case EconomyOpType::TakeMail:
+                    case EconomyOpType::ClaimMail:
+                    case EconomyOpType::DiscardMail:
+                        baseline_.mailbox.revision = economy_result_->auxiliary_revision;
+                        break;
+                    case EconomyOpType::Donate:
+                    case EconomyOpType::AdminGrantBells:
+                    case EconomyOpType::AdminSendMail:
+                        /* The museum is not mirrored, and the operator
+                         * operations never reach a client. */
+                        break;
+                }
                 if (economy_result_->item != 0 &&
                     economy_result_->inventory_slot < baseline_.inventory.slots.size()) {
                     ItemSlot& slot = baseline_.inventory.slots[economy_result_->inventory_slot];
@@ -466,6 +526,21 @@ bool ClientRuntime::submit_town_bootstrap(TownBootstrap bootstrap,
         return false;
     }
     return send_payload(MessageType::TownBootstrap, Channel::Bulk, payload, now_ms, error);
+}
+
+bool ClientRuntime::update_appearance(AppearanceUpdate update,
+                                      std::uint64_t now_ms,
+                                      std::string& error) {
+    if (state_ != ClientConnectionState::Connected) {
+        error = "appearance update requires a connected client";
+        return false;
+    }
+    std::vector<std::uint8_t> payload;
+    if (!encode(update, payload)) {
+        error = "failed to encode appearance update";
+        return false;
+    }
+    return send_payload(MessageType::AppearanceUpdate, Channel::Transactions, payload, now_ms, error);
 }
 
 std::optional<TownBootstrapResult> ClientRuntime::take_town_bootstrap_result() {
@@ -703,7 +778,7 @@ std::vector<RemotePresentation> ClientRuntime::remote_players() const {
         const auto sampled = item.second.history.sample(render_tick, 2.0, 1.0 / config_.simulation_rate);
         if (!sampled.has_value()) continue;
         output.push_back({item.second.entity, item.second.account, item.second.zone, *sampled,
-                          item.second.appearance, item.second.transition_phase,
+                          item.second.appearance, item.second.pattern, item.second.transition_phase,
                           item.second.transition_door, item.second.transition_expires_tick});
     }
     std::sort(output.begin(), output.end(), [](const RemotePresentation& a, const RemotePresentation& b) {

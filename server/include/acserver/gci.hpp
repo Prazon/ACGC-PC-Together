@@ -17,6 +17,7 @@ struct GciResidentState {
     acnet::InventoryState inventory;
     acnet::AccountLedger ledger;
     acnet::PlayerAppearance appearance;
+    acnet::CustomPattern pattern;
 };
 
 struct GciTownState {

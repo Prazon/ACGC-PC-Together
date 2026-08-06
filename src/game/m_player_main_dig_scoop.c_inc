@@ -120,7 +120,7 @@ static void Player_actor_Put_Hole_Dig_scoop(ACTOR* actor) {
             xyz_t* pos = &main_scoop->target_pos;
             mActor_name_t item = main_scoop->item;
 
-            if (Net_IsConnected()) {
+            if (Net_WorldTilesAuthoritative()) {
                 (void)Net_RequestDig(pos);
                 return;
             }

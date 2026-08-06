@@ -24,6 +24,7 @@ NET_SOURCES := \
 	net/src/movement.cpp \
 	net/src/world.cpp \
 	net/src/economy.cpp \
+	net/src/shop.cpp \
 	net/src/encounter.cpp \
 	net/src/npc.cpp \
 	net/src/zone.cpp \

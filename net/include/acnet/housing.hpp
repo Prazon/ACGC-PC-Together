@@ -15,6 +15,15 @@ constexpr std::size_t kHouseLayerCount = 4;
 constexpr std::uint8_t kMaximumHouseUpgradeLevel = 3;
 constexpr std::size_t kMaximumHouseFurniture = kHouseFloorCount * kHouseLayerCount * 16U * 16U;
 
+/* original_slot value of a house that belongs to no resident. */
+constexpr std::uint8_t kSharedHouseSlot = 0xFF;
+/* The island cabin. One per town, owned by nobody, editable by whoever is
+ * standing in it -- which is what Save_t.island.cottage already means. */
+constexpr std::uint64_t kIslandCabinHouseId = 20000;
+/* Room count the shared cabin actually has: mHm_cottage_c holds a single
+ * mHm_flr_c. Floors above this are rejected for a shared house. */
+constexpr std::size_t kSharedHouseFloorCount = 1;
+
 struct FurnitureAddress {
     std::uint8_t x = 0;
     std::uint8_t z = 0;
@@ -38,6 +47,9 @@ struct HouseState {
     std::uint8_t upgrade_level = 0;
     Revision revision = 1;
     bool initialized = false;
+    /* A shared house has no owner. Presence in its zone is the authorization,
+     * so the ownership test below is skipped and the zone test is not optional. */
+    bool shared = false;
     bool main_light_on = false;
     bool basement_light_on = false;
     std::array<std::int16_t, kHouseFloorCount> music_tracks{{-1, -1, -1}};
@@ -102,8 +114,13 @@ public:
     explicit HousingAuthority(WorldAuthority* world, PlayerDirectory* players = nullptr);
 
     bool register_resident(std::uint8_t original_slot, AccountId owner, ZoneId zone);
+    /* Creates an ownerless house that anyone present in `zone` may decorate.
+     * Registering an existing shared house again is a no-op that succeeds, so
+     * startup may call it unconditionally after a restore. */
+    bool register_shared_house(std::uint64_t house_id, ZoneId zone);
     const HouseState* house(std::uint64_t house_id) const;
     const HouseState* house_for(AccountId owner) const;
+    const HouseState* shared_house_in(ZoneId zone) const;
     FurnitureResult apply(const FurnitureOperation& operation);
     HouseUpdateResult replace_contents(const HouseUpdate& update);
     std::size_t resident_count() const;

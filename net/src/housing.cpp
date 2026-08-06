@@ -80,6 +80,27 @@ bool HousingAuthority::register_resident(std::uint8_t original_slot, AccountId o
     return true;
 }
 
+bool HousingAuthority::register_shared_house(std::uint64_t house_id, ZoneId zone) {
+    if (house_id == 0 || zone == 0) return false;
+    const auto existing = houses_.find(house_id);
+    if (existing != houses_.end()) return existing->second.shared && existing->second.zone == zone;
+    HouseState house_value;
+    house_value.house_id = house_id;
+    house_value.owner = 0;
+    house_value.original_slot = kSharedHouseSlot;
+    house_value.zone = zone;
+    house_value.shared = true;
+    houses_[house_id] = house_value;
+    return true;
+}
+
+const HouseState* HousingAuthority::shared_house_in(ZoneId zone) const {
+    for (const auto& entry : houses_) {
+        if (entry.second.shared && entry.second.zone == zone) return &entry.second;
+    }
+    return nullptr;
+}
+
 const HouseState* HousingAuthority::house(std::uint64_t house_id) const {
     const auto found = houses_.find(house_id);
     return found == houses_.end() ? nullptr : &found->second;
@@ -118,7 +139,16 @@ FurnitureResult HousingAuthority::apply(const FurnitureOperation& operation) {
     const HouseState& current_house = house_it->second;
     result.house_revision = current_house.revision;
     result.inventory_revision = current_inventory->revision;
-    if (current_house.owner != operation.account) {
+    /* A shared house has no owner to compare against: standing in it is the
+     * authorization, so the presence test below stops being optional and a
+     * runtime without a player directory can authorize nobody. */
+    if (current_house.shared) {
+        if (players_ == nullptr || operation.address.floor >= kSharedHouseFloorCount) {
+            result.code = ResultCode::Unauthorized;
+            idempotency_[key] = result;
+            return result;
+        }
+    } else if (current_house.owner != operation.account) {
         result.code = ResultCode::Unauthorized;
         idempotency_[key] = result;
         return result;
@@ -217,7 +247,20 @@ HouseUpdateResult HousingAuthority::replace_contents(const HouseUpdate& update) 
     }
     HouseState& house = found->second;
     result.house_revision = house.revision;
-    if (house.owner != update.account) {
+    if (house.shared) {
+        if (players_ == nullptr) {
+            result.code = ResultCode::Unauthorized;
+            update_idempotency_[key] = result;
+            return result;
+        }
+        for (const auto& entry : update.furniture) {
+            if (entry.first.floor >= kSharedHouseFloorCount) {
+                result.code = ResultCode::Unauthorized;
+                update_idempotency_[key] = result;
+                return result;
+            }
+        }
+    } else if (house.owner != update.account) {
         result.code = ResultCode::Unauthorized;
         update_idempotency_[key] = result;
         return result;
@@ -330,17 +373,25 @@ std::uint64_t HousingAuthority::total_furniture_units() const {
 }
 
 bool HousingAuthority::restore_house(const HouseState& house) {
-    if (house.house_id == 0 || house.owner == 0 || house.original_slot >= kOriginalResidentSlots ||
-        house.zone == 0 || house.revision == 0 || house.upgrade_level > kMaximumHouseUpgradeLevel ||
-        house.furniture.size() > kMaximumHouseFurniture ||
-        (residents_[house.original_slot] != 0 && residents_[house.original_slot] != house.owner)) return false;
+    const std::size_t floor_limit = house.shared ? kSharedHouseFloorCount : kHouseFloorCount;
+    if (house.house_id == 0 || house.zone == 0 || house.revision == 0 ||
+        house.upgrade_level > kMaximumHouseUpgradeLevel ||
+        house.furniture.size() > kMaximumHouseFurniture) return false;
+    if (house.shared) {
+        if (house.owner != 0 || house.original_slot != kSharedHouseSlot) return false;
+    } else if (house.owner == 0 || house.original_slot >= kOriginalResidentSlots ||
+               (residents_[house.original_slot] != 0 && residents_[house.original_slot] != house.owner)) {
+        return false;
+    }
     for (const auto& entry : house.furniture) {
-        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= kHouseFloorCount ||
+        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= floor_limit ||
             entry.first.layer >= kHouseLayerCount || !valid_house_cell(entry.second)) return false;
     }
-    residents_[house.original_slot] = house.owner;
     houses_[house.house_id] = house;
-    owner_houses_[house.owner] = house.house_id;
+    if (!house.shared) {
+        residents_[house.original_slot] = house.owner;
+        owner_houses_[house.owner] = house.house_id;
+    }
     return true;
 }
 

@@ -24,8 +24,13 @@ constexpr std::size_t kPrivateWalletOffset = 0x8C;
 constexpr std::size_t kPrivateLoanOffset = 0x90;
 constexpr std::size_t kPrivateEquipmentOffset = 0x4A4;
 constexpr std::size_t kPrivateExistsOffset = 0x1086;
+constexpr std::size_t kPrivateClothingIndexOffset = 0x1088;
 constexpr std::size_t kPrivateClothingOffset = 0x108A;
 constexpr std::size_t kPrivateBankOffset = 0x122C;
+constexpr std::size_t kPrivateDesignsOffset = 0x1240;
+constexpr std::size_t kPrivateDesignSize = 0x220;
+constexpr std::size_t kPrivateDesignPaletteOffset = 0x10;
+constexpr std::size_t kPrivateDesignTextureOffset = 0x20;
 constexpr std::size_t kForegroundOffset = 0x137A8;
 constexpr std::size_t kForegroundBlockSize = 0x200;
 constexpr std::size_t kDepositOffset = 0x20F1C;
@@ -142,7 +147,16 @@ void patch_save(std::vector<std::uint8_t>& bytes,
         bytes[base + kPrivateGenderOffset] = resident.appearance.gender;
         bytes[base + kPrivateFaceOffset] = resident.appearance.face;
         write_be16(bytes, base + kPrivateEquipmentOffset, resident.appearance.equipped_item);
+        write_be16(bytes, base + kPrivateClothingIndexOffset, resident.appearance.clothing_index);
         write_be16(bytes, base + kPrivateClothingOffset, resident.appearance.clothing);
+        if (resident.pattern.present && resident.appearance.clothing_index >= 0x100 &&
+            resident.appearance.clothing_index < 0x108) {
+            const std::size_t design = base + kPrivateDesignsOffset +
+                static_cast<std::size_t>(resident.appearance.clothing_index - 0x100) * kPrivateDesignSize;
+            bytes[design + kPrivateDesignPaletteOffset] = resident.pattern.palette;
+            std::copy(resident.pattern.texture.begin(), resident.pattern.texture.end(),
+                      bytes.begin() + static_cast<std::ptrdiff_t>(design + kPrivateDesignTextureOffset));
+        }
         std::uint32_t conditions = 0;
         for (std::size_t item = 0; item < resident.inventory.slots.size(); ++item) {
             write_be16(bytes, base + kPrivatePocketsOffset + item * 2,
@@ -207,7 +221,24 @@ bool decode_gci_town(const std::vector<std::uint8_t>& bytes,
         resident.appearance.gender = bytes[base + kPrivateGenderOffset];
         resident.appearance.face = bytes[base + kPrivateFaceOffset];
         resident.appearance.equipped_item = read_be16(bytes, base + kPrivateEquipmentOffset);
+        resident.appearance.clothing_index = read_be16(bytes, base + kPrivateClothingIndexOffset);
         resident.appearance.clothing = read_be16(bytes, base + kPrivateClothingOffset);
+        resident.appearance.revision = 1;
+        if (resident.appearance.clothing_index >= 0x100 && resident.appearance.clothing_index < 0x108) {
+            const std::size_t design = base + kPrivateDesignsOffset +
+                static_cast<std::size_t>(resident.appearance.clothing_index - 0x100) * kPrivateDesignSize;
+            resident.pattern.present = true;
+            resident.pattern.palette = bytes[design + kPrivateDesignPaletteOffset];
+            std::copy(bytes.begin() + static_cast<std::ptrdiff_t>(design + kPrivateDesignTextureOffset),
+                      bytes.begin() + static_cast<std::ptrdiff_t>(design + kPrivateDesignTextureOffset +
+                                                                  resident.pattern.texture.size()),
+                      resident.pattern.texture.begin());
+        } else if (resident.appearance.clothing_index >= 0x108) {
+            resident.appearance.clothing_index = resident.appearance.clothing >= 0x2400 &&
+                                                 resident.appearance.clothing < 0x24FF
+                                                     ? static_cast<std::uint16_t>(resident.appearance.clothing - 0x2400)
+                                                     : 0;
+        }
         const std::uint32_t conditions = read_be32(bytes, base + kPrivateConditionsOffset);
         for (std::size_t item = 0; item < resident.inventory.slots.size(); ++item) {
             resident.inventory.slots[item].item = read_be16(bytes, base + kPrivatePocketsOffset + item * 2);

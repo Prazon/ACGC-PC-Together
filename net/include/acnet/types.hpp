@@ -17,13 +17,14 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 9;
+constexpr std::uint16_t kProtocolVersion = 12;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
 constexpr std::size_t kMaxPlaintextPayloadBytes = kMaxPayloadBytes - kEncryptionTagBytes;
 constexpr std::size_t kMaxPlayersPerZone = 16;
 constexpr std::size_t kReconnectTokenBytes = 32;
+constexpr std::size_t kCustomPatternTextureBytes = 32U * 32U / 2U;
 
 enum class Channel : std::uint8_t {
     Control = 0,
@@ -49,6 +50,8 @@ enum class MessageType : std::uint16_t {
     Pong = 5,
     TownBootstrap = 6,
     TownBootstrapResult = 7,
+    AppearanceUpdate = 8,
+    AppearanceResult = 9,
     InputCommand = 10,
     TransformSnapshot = 11,
     Baseline = 12,
@@ -115,6 +118,17 @@ struct PlayerAppearance {
     std::uint8_t face = 0;
     std::uint16_t clothing = 0;
     std::uint16_t equipped_item = 0;
+    std::uint16_t clothing_index = 0;
+    Revision revision = 0;
+};
+
+/* A custom shirt is process-independent presentation data. It is kept out of
+ * the high-rate transform snapshot and sent only in reliable appearance and
+ * baseline messages. */
+struct CustomPattern {
+    bool present = false;
+    std::uint8_t palette = 0;
+    std::array<std::uint8_t, kCustomPatternTextureBytes> texture{};
 };
 
 enum class DoorTransitionPhase : std::uint8_t {
@@ -130,6 +144,7 @@ struct PlayerSnapshot {
     std::uint32_t acknowledged_input = 0;
     Transform transform;
     PlayerAppearance appearance;
+    CustomPattern pattern;
     DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
     std::uint32_t transition_door = 0;
     Tick transition_expires_tick = 0;

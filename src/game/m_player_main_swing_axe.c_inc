@@ -139,7 +139,7 @@ static void Player_actor_CutTree_Swing_axe(ACTOR* actor, GAME* game, mPlayer_mai
         int ut_z;
         mActor_name_t item = main_axe->axe_common.item;
 
-        if (Net_IsConnected()) {
+        if (Net_WorldTilesAuthoritative()) {
             (void)Net_RequestChop(&main_axe->axe_common.target_pos);
             return;
         }

@@ -2283,7 +2283,11 @@ static void Player_actor_putin(int slot, mActor_name_t item) {
 
 static void Player_actor_putin_item(int slot, mActor_name_t item, xyz_t* pos_p) {
 #ifdef NETCODE_ENABLED
-    if (pos_p != NULL && Net_IsConnected()) {
+    /* Only the exterior is server-owned. Indoors the original local path still
+     * runs, because a room's floor items are replicated by the house-state
+     * submit; routing them through the exterior tile table looked up a
+     * coordinate the server does not have and silently swallowed the pickup. */
+    if (pos_p != NULL && Net_WorldTilesAuthoritative()) {
         Net_RequestPickup(pos_p, item);
         return;
     }

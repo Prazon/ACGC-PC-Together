@@ -15,18 +15,36 @@ constexpr std::size_t kMaximumBaselineNpcs = 256;
 constexpr std::size_t kMaximumShopEntries = 256;
 
 /* A letter is bounded and self-describing: identifier, both accounts, the
- * attached item, and a fixed-size body.  Sender 0 is the town operator. */
+ * attached item, where it currently sits, and fixed-size text carried as opaque
+ * bytes in the game's own encoding. Sender 0 is the town operator. */
 bool encode_mail(ByteWriter& writer, const MailRecord& letter) {
+    const MailContent& content = letter.content;
     return letter.id != 0 && letter.recipient != 0 && letter.revision != 0 && writer.u64(letter.id) &&
            writer.u64(letter.sender) && writer.u64(letter.recipient) && writer.u16(letter.attachment) &&
-           writer.u32(letter.revision) && writer.bytes(letter.text.data(), letter.text.size());
+           writer.u32(letter.revision) && writer.u8(static_cast<std::uint8_t>(letter.location)) &&
+           writer.u8(content.font) && writer.u8(content.mail_type) && writer.u8(content.paper_type) &&
+           writer.u8(content.header_back_start) &&
+           writer.bytes(content.sender_name.data(), content.sender_name.size()) &&
+           writer.bytes(content.header.data(), content.header.size()) &&
+           writer.bytes(content.body.data(), content.body.size()) &&
+           writer.bytes(content.footer.data(), content.footer.size());
 }
 
 bool decode_mail(ByteReader& reader, MailRecord& letter) {
-    return reader.u64(letter.id) && reader.u64(letter.sender) && reader.u64(letter.recipient) &&
-           reader.u16(letter.attachment) && reader.u32(letter.revision) &&
-           reader.bytes(letter.text.data(), letter.text.size()) && letter.id != 0 && letter.recipient != 0 &&
-           letter.revision != 0 && letter.sender != letter.recipient;
+    MailContent& content = letter.content;
+    std::uint8_t location;
+    if (!reader.u64(letter.id) || !reader.u64(letter.sender) || !reader.u64(letter.recipient) ||
+        !reader.u16(letter.attachment) || !reader.u32(letter.revision) || !reader.u8(location) ||
+        location > static_cast<std::uint8_t>(MailLocation::Carried) || !reader.u8(content.font) ||
+        !reader.u8(content.mail_type) || !reader.u8(content.paper_type) ||
+        !reader.u8(content.header_back_start) ||
+        !reader.bytes(content.sender_name.data(), content.sender_name.size()) ||
+        !reader.bytes(content.header.data(), content.header.size()) ||
+        !reader.bytes(content.body.data(), content.body.size()) ||
+        !reader.bytes(content.footer.data(), content.footer.size()) || letter.id == 0 ||
+        letter.recipient == 0 || letter.revision == 0 || letter.sender == letter.recipient) return false;
+    letter.location = static_cast<MailLocation>(location);
+    return true;
 }
 
 bool valid_transition(const PlayerSnapshot& player) {
@@ -36,8 +54,15 @@ bool valid_transition(const PlayerSnapshot& player) {
             (phase != 0 && player.transition_door != 0 && player.transition_expires_tick != 0));
 }
 
+/* A shared house is identified on the wire by the ownerless (owner, slot)
+ * pair rather than a separate flag, so the two can never disagree. */
+bool valid_house_ownership(const HouseState& house) {
+    if (house.shared) return house.owner == 0 && house.original_slot == kSharedHouseSlot;
+    return house.owner != 0 && house.original_slot < kOriginalResidentSlots;
+}
+
 bool encode_house(ByteWriter& writer, const HouseState& house) {
-    if (house.house_id == 0 || house.owner == 0 || house.original_slot >= kOriginalResidentSlots ||
+    if (house.house_id == 0 || !valid_house_ownership(house) ||
         house.zone == 0 || house.upgrade_level > kMaximumHouseUpgradeLevel || house.revision == 0 ||
         house.furniture.size() > kMaximumHouseFurniture) return false;
     if (!writer.u64(house.house_id) || !writer.u64(house.owner) || !writer.u8(house.original_slot) ||
@@ -57,9 +82,10 @@ bool encode_house(ByteWriter& writer, const HouseState& house) {
         if (left.first.z != right.first.z) return left.first.z < right.first.z;
         return left.first.x < right.first.x;
     });
+    const std::size_t floor_limit = house.shared ? kSharedHouseFloorCount : kHouseFloorCount;
     if (!writer.u16(static_cast<std::uint16_t>(furniture.size()))) return false;
     for (const auto& entry : furniture) {
-        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= kHouseFloorCount ||
+        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= floor_limit ||
             entry.first.layer >= kHouseLayerCount || entry.second.item == 0 ||
             !writer.u8(entry.first.x) || !writer.u8(entry.first.z) || !writer.u8(entry.first.floor) ||
             !writer.u8(entry.first.layer) || !writer.u16(entry.second.item) ||
@@ -83,8 +109,9 @@ bool decode_house(ByteReader& reader, HouseState& house) {
     for (std::uint64_t& switches : house.furniture_switches) {
         if (!reader.u64(switches)) return false;
     }
-    if (!reader.u16(count) || count > kMaximumHouseFurniture || house.house_id == 0 || house.owner == 0 ||
-        house.original_slot >= kOriginalResidentSlots || house.zone == 0 ||
+    house.shared = house.original_slot == kSharedHouseSlot;
+    if (!reader.u16(count) || count > kMaximumHouseFurniture || house.house_id == 0 ||
+        !valid_house_ownership(house) || house.zone == 0 ||
         house.upgrade_level > kMaximumHouseUpgradeLevel ||
         house.revision == 0) return false;
     house.initialized = initialized != 0;
@@ -96,7 +123,8 @@ bool decode_house(ByteReader& reader, HouseState& house) {
         ItemSlot item;
         if (!reader.u8(address.x) || !reader.u8(address.z) || !reader.u8(address.floor) ||
             !reader.u8(address.layer) || !reader.u16(item.item) || !reader.u8(item.condition) ||
-            address.x >= 16 || address.z >= 16 || address.floor >= kHouseFloorCount ||
+            address.x >= 16 || address.z >= 16 ||
+            address.floor >= (house.shared ? kSharedHouseFloorCount : kHouseFloorCount) ||
             address.layer >= kHouseLayerCount || item.item == 0 ||
             !house.furniture.emplace(address, item).second) return false;
     }
@@ -115,16 +143,34 @@ bool decode_transform(ByteReader& reader, Transform& value) {
            reader.i16(value.yaw) && reader.u16(value.action) && finite(value.position) && finite(value.velocity);
 }
 
-bool encode_appearance(ByteWriter& writer, const PlayerAppearance& appearance) {
-    return appearance.gender <= 2 && appearance.face < 8 &&
-           writer.bytes(appearance.name.data(), appearance.name.size()) && writer.u8(appearance.gender) &&
-           writer.u8(appearance.face) && writer.u16(appearance.clothing) && writer.u16(appearance.equipped_item);
+bool encode_appearance(ByteWriter& writer,
+                       const PlayerAppearance& appearance,
+                       const CustomPattern& pattern) {
+    if (appearance.gender > 2 || appearance.face >= 8 || pattern.palette >= 16 ||
+        (pattern.present ? appearance.clothing_index < 0x100 || appearance.clothing_index >= 0x108
+                         : appearance.clothing_index >= 0x100)) return false;
+    if (!writer.bytes(appearance.name.data(), appearance.name.size()) || !writer.u8(appearance.gender) ||
+        !writer.u8(appearance.face) || !writer.u16(appearance.clothing) ||
+        !writer.u16(appearance.equipped_item) || !writer.u16(appearance.clothing_index) ||
+        !writer.u32(appearance.revision) || !writer.u8(pattern.present ? 1 : 0) ||
+        !writer.u8(pattern.palette)) return false;
+    return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
-bool decode_appearance(ByteReader& reader, PlayerAppearance& appearance) {
-    return reader.bytes(appearance.name.data(), appearance.name.size()) && reader.u8(appearance.gender) &&
-           reader.u8(appearance.face) && reader.u16(appearance.clothing) &&
-           reader.u16(appearance.equipped_item) && appearance.gender <= 2 && appearance.face < 8;
+bool decode_appearance(ByteReader& reader,
+                       PlayerAppearance& appearance,
+                       CustomPattern& pattern) {
+    std::uint8_t present;
+    pattern = {};
+    if (!reader.bytes(appearance.name.data(), appearance.name.size()) || !reader.u8(appearance.gender) ||
+        !reader.u8(appearance.face) || !reader.u16(appearance.clothing) ||
+        !reader.u16(appearance.equipped_item) || !reader.u16(appearance.clothing_index) ||
+        !reader.u32(appearance.revision) || !reader.u8(present) || !reader.u8(pattern.palette) ||
+        present > 1 || appearance.gender > 2 || appearance.face >= 8 || pattern.palette >= 16) return false;
+    pattern.present = present != 0;
+    if ((pattern.present ? appearance.clothing_index < 0x100 || appearance.clothing_index >= 0x108
+                         : appearance.clothing_index >= 0x100)) return false;
+    return !pattern.present || reader.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
 Revision next_revision(Revision revision) {
@@ -137,7 +183,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
         baseline.players.size() > kMaxPlayersPerZone || baseline.npcs.size() > kMaximumBaselineNpcs ||
         baseline.inventory.revision == 0 || baseline.ledger.revision == 0 || baseline.shop.revision == 0 ||
-        baseline.mailbox.revision == 0 || baseline.mail.size() > kMailboxCapacity ||
+        baseline.mailbox.revision == 0 || baseline.mail.size() > kMailboxCapacity + kCarriedMailCapacity ||
         baseline.shop.stock.size() > kMaximumShopEntries || (baseline.house_light_mask & 0xF0U) != 0 ||
         baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
         (baseline.has_house && baseline.house.zone != baseline.zone)) return false;
@@ -176,7 +222,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (!valid_transition(player)) return false;
         if (!writer.u64(player.entity) || !writer.u64(player.account) || !writer.u32(player.zone) ||
             !writer.u32(player.acknowledged_input) || !encode_transform(writer, player.transform) ||
-            !encode_appearance(writer, player.appearance) ||
+            !encode_appearance(writer, player.appearance, player.pattern) ||
             !writer.u8(static_cast<std::uint8_t>(player.transition_phase)) ||
             !writer.u32(player.transition_door) || !writer.u32(player.transition_expires_tick)) return false;
     }
@@ -217,16 +263,20 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     if (!reader.u32(baseline.ledger.revision) || !reader.u64(baseline.ledger.bank_balance) ||
         !reader.u64(baseline.ledger.debt) || !reader.u32(baseline.mailbox.revision) ||
         !reader.u8(mail_count) || baseline.ledger.revision == 0 || baseline.mailbox.revision == 0 ||
-        mail_count > kMailboxCapacity) return false;
+        mail_count > kMailboxCapacity + kCarriedMailCapacity) return false;
     baseline.mail.clear();
     baseline.mailbox.mail.clear();
+    baseline.mailbox.carried.clear();
     baseline.mail.reserve(mail_count);
     for (std::uint8_t i = 0; i < mail_count; ++i) {
         MailRecord letter;
         if (!decode_mail(reader, letter)) return false;
-        baseline.mailbox.mail.push_back(letter.id);
+        if (letter.location == MailLocation::Carried) baseline.mailbox.carried.push_back(letter.id);
+        else baseline.mailbox.mail.push_back(letter.id);
         baseline.mail.push_back(letter);
     }
+    if (baseline.mailbox.mail.size() > kMailboxCapacity ||
+        baseline.mailbox.carried.size() > kCarriedMailCapacity) return false;
     if (!reader.u32(baseline.shop.revision) || !reader.u16(shop_count) || baseline.shop.revision == 0 ||
         shop_count > kMaximumShopEntries) return false;
     baseline.shop.stock.clear();
@@ -264,7 +314,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         std::uint8_t transition_phase;
         if (!reader.u64(player.entity) || !reader.u64(player.account) || !reader.u32(player.zone) ||
             !reader.u32(player.acknowledged_input) || !decode_transform(reader, player.transform) ||
-            !decode_appearance(reader, player.appearance) || !reader.u8(transition_phase) ||
+            !decode_appearance(reader, player.appearance, player.pattern) || !reader.u8(transition_phase) ||
             !reader.u32(player.transition_door) || !reader.u32(player.transition_expires_tick) ||
             transition_phase > static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) ||
             player.entity == 0 || player.account == 0 || player.zone != baseline.zone) return false;
@@ -328,7 +378,7 @@ bool decode_town_delta(const std::vector<std::uint8_t>& input, TownOccupancy& oc
 
 bool encode_mail_delta(const MailDelta& delta, std::vector<std::uint8_t>& output) {
     if (delta.account == 0 || delta.mailbox_revision == 0 || delta.record.recipient != delta.account) return false;
-    ByteWriter writer(64 + kMailTextBytes);
+    ByteWriter writer(128 + kMailNameBytes + kMailHeaderBytes + kMailBodyBytes + kMailFooterBytes);
     if (!writer.u64(delta.account) || !writer.u32(delta.mailbox_revision) ||
         !writer.u8(delta.removed ? 1 : 0) || !encode_mail(writer, delta.record)) return false;
     output = writer.data();
@@ -408,6 +458,7 @@ ZoneBaseline build_baseline(ZoneId zone,
         snapshot.zone = player->zone;
         snapshot.transform = player->transform;
         snapshot.appearance = player->appearance;
+        snapshot.pattern = player->pattern;
         result.players.push_back(snapshot);
     }
     result.npcs = npcs.zone_snapshot(zone);

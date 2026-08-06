@@ -51,7 +51,7 @@ static void Player_actor_Reset_Hole_Fill_scoop(ACTOR* actor) {
     if (Player_actor_Check_AnimationFrame(fc, 18.0f + mod) && Common_Get(clip).bg_item_clip != NULL) {
         mPlayer_main_fill_scoop_c* main_scoop = &player->main_data.fill_scoop;
         xyz_t* pos = &main_scoop->target_pos;
-        if (Net_IsConnected()) {
+        if (Net_WorldTilesAuthoritative()) {
             (void)Net_RequestFillHole(pos);
             return;
         }

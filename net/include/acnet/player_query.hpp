@@ -25,6 +25,7 @@ struct PlayerView {
     bool interaction_eligible = true;
     Transform transform;
     PlayerAppearance appearance;
+    CustomPattern pattern;
 };
 
 class PlayerDirectory {

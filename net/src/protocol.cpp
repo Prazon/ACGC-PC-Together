@@ -39,6 +39,8 @@ bool valid_message(std::uint16_t value) {
         case MessageType::Pong:
         case MessageType::TownBootstrap:
         case MessageType::TownBootstrapResult:
+        case MessageType::AppearanceUpdate:
+        case MessageType::AppearanceResult:
         case MessageType::InputCommand:
         case MessageType::TransformSnapshot:
         case MessageType::Baseline:
@@ -85,15 +87,15 @@ bool decode_transform(ByteReader& reader, Transform& transform) {
 }
 
 bool encode_appearance(ByteWriter& writer, const PlayerAppearance& appearance) {
-    return appearance.gender <= 2 && appearance.face < 8 &&
-           writer.bytes(appearance.name.data(), appearance.name.size()) && writer.u8(appearance.gender) &&
-           writer.u8(appearance.face) && writer.u16(appearance.clothing) && writer.u16(appearance.equipped_item);
+    /* Reliable baselines own appearance data. The high-rate snapshot carries
+     * only the authority's watermark, keeping a full 16-player packet below
+     * the unfragmented MTU. */
+    return writer.u32(appearance.revision);
 }
 
 bool decode_appearance(ByteReader& reader, PlayerAppearance& appearance) {
-    return reader.bytes(appearance.name.data(), appearance.name.size()) && reader.u8(appearance.gender) &&
-           reader.u8(appearance.face) && reader.u16(appearance.clothing) &&
-           reader.u16(appearance.equipped_item) && appearance.gender <= 2 && appearance.face < 8;
+    appearance = {};
+    return reader.u32(appearance.revision);
 }
 
 } // namespace
