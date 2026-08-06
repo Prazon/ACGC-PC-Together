@@ -29,11 +29,14 @@ if ($null -eq $rom) {
 
 $key = "local-automated-smoke-key"
 $townData = Join-Path ([System.IO.Path]::GetTempPath()) ("acgc-online-smoke-" + [Guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Force -Path $townData
+$serverConfig = Join-Path $townData "server.ini"
+Copy-Item -LiteralPath (Join-Path $repo "packaging\server.ini") -Destination $serverConfig
 $serverStdout = Join-Path $BuildDirectory "smoke-x64-server.stdout.log"
 $serverStderr = Join-Path $BuildDirectory "smoke-x64-server.stderr.log"
 $serverTicks = ($Seconds + 5) * 60
 $server = Start-Process -FilePath $serverExe -WorkingDirectory $BuildDirectory `
-    -ArgumentList @("--port", "$Port", "--town", "1", "--data", $townData,
+    -ArgumentList @("--config", $serverConfig, "--port", "$Port", "--town", "1", "--data", $townData,
                     "--invite-key", $key, "--ticks", "$serverTicks") `
     -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr -PassThru
 

@@ -27,12 +27,15 @@ if ($null -eq $rom) {
 
 $key = "local-two-client-smoke-key"
 $townData = Join-Path ([System.IO.Path]::GetTempPath()) ("acgc-two-client-smoke-" + [Guid]::NewGuid().ToString("N"))
+$null = New-Item -ItemType Directory -Force -Path $townData
+$serverConfig = Join-Path $townData "server.ini"
+Copy-Item -LiteralPath (Join-Path $repo "packaging\server.ini") -Destination $serverConfig
 $serverStdout = Join-Path $BuildDirectory "smoke-x64-two-client-server.stdout.log"
 $serverStderr = Join-Path $BuildDirectory "smoke-x64-two-client-server.stderr.log"
 $serverTicks = ($Seconds + 8) * 60
 $clients = @()
 $server = Start-Process -FilePath $serverExe -WorkingDirectory $BuildDirectory `
-    -ArgumentList @("--port", "$Port", "--town", "1", "--data", $townData,
+    -ArgumentList @("--config", $serverConfig, "--port", "$Port", "--town", "1", "--data", $townData,
                     "--invite-key", $key, "--ticks", "$serverTicks") `
     -RedirectStandardOutput $serverStdout -RedirectStandardError $serverStderr -PassThru
 
@@ -61,8 +64,14 @@ try {
         }
     }
 
-    $serverOutput = Get-Content -LiteralPath $serverStdout -Raw
-    if ($serverOutput -notmatch '(?m)Players\s+(?:\: )?2/16') {
+    $bothConnected = $false
+    $dashboardDeadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        $serverOutput = Get-Content -LiteralPath $serverStdout -Raw
+        $bothConnected = $serverOutput -match '(?m)Players\s+(?:\: )?2/16'
+        if (-not $bothConnected) { Start-Sleep -Milliseconds 250 }
+    } while (-not $bothConnected -and [DateTime]::UtcNow -lt $dashboardDeadline)
+    if (-not $bothConnected) {
         throw "Dedicated server never reported both graphical clients connected"
     }
     foreach ($index in 0..1) {
