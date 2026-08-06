@@ -32,6 +32,12 @@ static u64 house_candidate_hash = 0;
 static u64 house_submitted_hash = 0;
 static int house_candidate_frames = 0;
 static int house_update_pending = FALSE;
+/* A successful optimistic update has a transaction result before the
+ * resulting baseline reaches this client. Keep the predicted room intact
+ * during that gap; applying the previous revision can tear down the
+ * furniture actor while the original PUSH/PULL is still settling. */
+static u32 house_wait_authoritative_revision = 0;
+static int house_reconcile_delay_frames = 0;
 static int force_house_reconcile = FALSE;
 static AcNetHouseFurniture house_furniture[3 * 4 * 16 * 16];
 static mActor_name_t house_authoritative_items[mHm_ROOM_NUM][mCoBG_LAYER_NUM][UT_Z_NUM][UT_X_NUM];
@@ -172,6 +178,8 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
         house_submitted_hash = 0;
         house_candidate_frames = 0;
         house_update_pending = FALSE;
+        house_wait_authoritative_revision = 0;
+        house_reconcile_delay_frames = 0;
         force_house_reconcile = FALSE;
     }
     if (last_house_revision == state.revision && !force_house_reconcile) return FALSE;
@@ -271,9 +279,17 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     int furniture_move_active;
     while (acnet_client_take_house_update_result(&result)) {
         house_update_pending = FALSE;
-        if (result.result_code == 0) house_submitted_hash = house_candidate_hash;
+        if (result.result_code == 0) {
+            house_submitted_hash = house_candidate_hash;
+            house_wait_authoritative_revision = result.house_revision;
+        }
         else {
             house_candidate_frames = 0;
+            house_wait_authoritative_revision = 0;
+            /* The result can arrive before the original player state has
+             * entered PUSH/PULL for the next simulation frame. Hold the old
+             * baseline through that startup and settle window as well. */
+            house_reconcile_delay_frames = 60;
             /* A rejected optimistic local edit must be overwritten even when
              * the authoritative room revision did not advance. */
             force_house_reconcile = TRUE;
@@ -282,6 +298,20 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     if (!mSc_IS_SCENE_PLAYER_ROOM(play->scene_id) || !acnet_client_house(&state) ||
         state.zone_id != Net_SceneZone(play->scene_id) || state.original_slot >= PLAYER_NUM) return;
     my_room = Net_FindMyRoom(play);
+    if (state.owner_account_id == acnet_client_account()) {
+        /* HouseUpdateResult is delivered before the resulting baseline
+         * broadcast. Never roll back the local prediction to the previous
+         * revision during that window. */
+        if (house_update_pending) return;
+        if (house_wait_authoritative_revision != 0) {
+            if (state.revision < house_wait_authoritative_revision) return;
+            house_wait_authoritative_revision = 0;
+        }
+        if (house_reconcile_delay_frames > 0) {
+            --house_reconcile_delay_frames;
+            return;
+        }
+    }
     furniture_move_active = mPlib_check_player_actor_main_index_Furniture_Move((GAME*)play) ||
                             aMR_NetFurnitureMoveActive(my_room);
     if (state.owner_account_id != acnet_client_account() &&
