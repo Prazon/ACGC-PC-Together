@@ -356,8 +356,8 @@ static void aMHS_set_bgOffset(ACTOR* actorx, int flag) {
 
 static int aMHS_light_ctrl(STRUCTURE_ACTOR* my_house) {
     const int house_index = my_house->action & 3;
-    return Net_HouseOccupied(house_index) ||
-           mRmTp_Index2LightSwitchStatus(house_index * 2) != FALSE;
+    if (Net_IsConnected()) return Net_HouseMainLightOn(house_index);
+    return mRmTp_Index2LightSwitchStatus(house_index * 2) != FALSE;
 }
 
 static void aMHS_wait(STRUCTURE_ACTOR* my_house, GAME_PLAY* play) {

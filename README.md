@@ -150,8 +150,9 @@ movement and collision, while the server relays bounded transforms and remains
 authoritative for inventories, ground state, tools/catches, shops, trades, NPC
 leases, zones, housing, time/weather, mail, museum state, and persistence.
 Resident interiors share furniture layout/facing, furniture switches, lights,
-and music. House occupancy lights the exterior, and remote house transfers use
-the original door animation.
+and music. Each exterior reflects its authoritative interior light switch (with
+the original day/night presentation), and remote transfers use the exact
+destination doorway transform plus the original house-door animation.
 The first online resident establishes the server's deterministic town; later
 players see it as an existing town. Online character creation keeps player
 name/gender, gives a randomized face/distinct starter shirt and assigned house, and skips

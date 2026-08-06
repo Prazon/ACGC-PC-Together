@@ -331,7 +331,7 @@ available before the save finishes loading — and falls back to `mLd_GetLandNam
 online attempt deliberately reads as an ordinary offline session rather than surfacing an error
 on a public profile.
 
-The count comes from `acnet_client_town_population()`, which is town-wide (protocol v7: two u8s
+The count comes from `acnet_client_town_population()`, which is town-wide (protocol v8: two u8s
 on the baseline, kept live between baselines by `ResourceKind::Town` deltas). It falls back to
 `acnet_client_remote_players()` — worded "nearby", because that is the interest set and not the
 town — when the server reports no population, which is what an older server or a pre-baseline

@@ -78,7 +78,7 @@ void ClientRuntime::stop(std::uint64_t now_ms) {
     }
     socket_.close();
     remotes_.clear();
-    occupied_house_mask_ = 0;
+    house_light_mask_ = 0;
     town_population_ = 0;
     town_capacity_ = 1;
     session_ = 0;
@@ -247,7 +247,7 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
     TransformSnapshot snapshot;
     if (!decode(packet.payload, snapshot)) return false;
     latest_server_tick_ = snapshot.server_tick;
-    occupied_house_mask_ = snapshot.occupied_house_mask;
+    house_light_mask_ = snapshot.house_light_mask;
     server_tick_received_ms_ = now_ms;
     for (const PlayerSnapshot& player : snapshot.players) {
         if (player.account == config_.account) {
@@ -307,7 +307,7 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                 return false;
             }
             baseline_revision_ = baseline_.revision;
-            occupied_house_mask_ = baseline_.occupied_house_mask;
+            house_light_mask_ = baseline_.house_light_mask;
             town_population_ = baseline_.town_population;
             town_capacity_ = baseline_.town_capacity;
             baseline_received_ms_ = now_ms;

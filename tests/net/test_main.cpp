@@ -179,6 +179,22 @@ void transaction_messages_round_trip() {
     CHECK(decoded_house.furniture_switches[1] == 0x1122334455667788ULL);
     CHECK(decoded_house.furniture.at({4, 5, 2, 1}).item == 0x3001);
 
+    acnet::ZoneReadyRequest ready;
+    ready.account = 47;
+    ready.token = {0x1234, 0x5678};
+    ready.destination_transform.position = {160.0F, 0.0F, 300.0F};
+    ready.destination_transform.velocity = {0.0F, 0.0F, -12.5F};
+    ready.destination_transform.yaw = -32768;
+    CHECK(acnet::encode(ready, bytes));
+    acnet::ZoneReadyRequest decoded_ready;
+    CHECK(acnet::decode(bytes, decoded_ready));
+    CHECK(decoded_ready.account == ready.account);
+    CHECK(decoded_ready.token == ready.token);
+    CHECK(same_float(decoded_ready.destination_transform.position.x, 160.0F));
+    CHECK(same_float(decoded_ready.destination_transform.position.z, 300.0F));
+    CHECK(same_float(decoded_ready.destination_transform.velocity.z, -12.5F));
+    CHECK(decoded_ready.destination_transform.yaw == -32768);
+
     std::vector<acnet::ReplicationDelta> deltas(2);
     deltas[0].revision = 4;
     deltas[0].kind = acnet::ResourceKind::Tile;
@@ -589,6 +605,11 @@ void protocol_rejects_truncated_and_nonfinite() {
     input.client_transform.position.x = std::numeric_limits<float>::infinity();
     CHECK(!acnet::encode(input, bytes));
 
+    acnet::ZoneReadyRequest ready;
+    ready.token = {1, 2};
+    ready.destination_transform.position.z = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!acnet::encode(ready, bytes));
+
     acnet::TransformSnapshot snapshot;
     snapshot.server_tick = 1;
     for (std::size_t i = 0; i <= acnet::kMaxPlayersPerZone; ++i) {
@@ -605,7 +626,7 @@ void snapshot_round_trip() {
     acnet::TransformSnapshot original;
     original.server_tick = 500;
     original.baseline_revision = 17;
-    original.occupied_house_mask = 0x5;
+    original.house_light_mask = 0x5;
     for (std::uint64_t i = 0; i < 8; ++i) {
         acnet::PlayerSnapshot player;
         player.entity = 0x100000001ULL + i;
@@ -628,7 +649,7 @@ void snapshot_round_trip() {
     CHECK(acnet::decode(bytes, decoded));
     CHECK(decoded.players.size() == 8);
     CHECK(decoded.players[7].account == 107);
-    CHECK(decoded.occupied_house_mask == 0x5);
+    CHECK(decoded.house_light_mask == 0x5);
     CHECK(decoded.players[7].transition_phase == acnet::DoorTransitionPhase::Arriving);
     CHECK(decoded.players[7].transition_door == 202);
     CHECK(same_float(decoded.players[7].transform.position.z, 21.0F));
@@ -2070,8 +2091,15 @@ void production_clients_connect_move_and_render_each_other() {
         }
         CHECK(saw_leaving);
 
+        const acnet::Vec3 first_arrival = destination >= 100
+                                            ? acnet::Vec3{120.0F, 0.0F, 220.0F}
+                                            : acnet::Vec3{2200.0F, 0.0F, 1000.0F};
+        const acnet::Vec3 second_arrival = destination >= 100
+                                             ? acnet::Vec3{122.0F, 0.0F, 220.0F}
+                                             : acnet::Vec3{2240.0F, 0.0F, 1000.0F};
         acnet::ZoneReadyRequest ready;
         ready.token = first_offer->token;
+        ready.destination_transform.position = first_arrival;
         CHECK(first.ready(ready, ++transaction_now, error));
 
         bool saw_source_ghost = false;
@@ -2090,11 +2118,14 @@ void production_clients_connect_move_and_render_each_other() {
         CHECK(saw_source_ghost);
 
         ready.token = second_offer->token;
+        ready.destination_transform.position = second_arrival;
         CHECK(second.ready(ready, ++transaction_now, error));
 
         bool shared_zone_visible = false;
         bool saw_arriving = false;
-        for (std::uint64_t i = 0; i < 300 && (!shared_zone_visible || !saw_arriving); ++i) {
+        bool saw_exact_arrivals = false;
+        for (std::uint64_t i = 0; i < 300 &&
+             (!shared_zone_visible || !saw_arriving || !saw_exact_arrivals); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             CHECK(server.step(++transaction_now, wall + 5, error));
             CHECK(first.poll(transaction_now, error));
@@ -2109,9 +2140,15 @@ void production_clients_connect_move_and_render_each_other() {
             saw_arriving = shared_zone_visible &&
                            first_zone_remotes[0].transition_phase == acnet::DoorTransitionPhase::Arriving &&
                            first_zone_remotes[0].transition_door == door_id;
+            saw_exact_arrivals = shared_zone_visible &&
+                                 std::fabs(first_zone_remotes[0].transform.position.x - second_arrival.x) < 0.01F &&
+                                 std::fabs(first_zone_remotes[0].transform.position.z - second_arrival.z) < 0.01F &&
+                                 std::fabs(second_zone_remotes[0].transform.position.x - first_arrival.x) < 0.01F &&
+                                 std::fabs(second_zone_remotes[0].transform.position.z - first_arrival.z) < 0.01F;
         }
         CHECK(shared_zone_visible);
         CHECK(saw_arriving);
+        CHECK(saw_exact_arrivals);
         (void)first.take_transfer_offer();  // Successful ZoneReady acknowledgement.
         (void)second.take_transfer_offer();
     };
@@ -2121,8 +2158,8 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(first.state() == acnet::ClientConnectionState::Connected);
     CHECK(second.state() == acnet::ClientConnectionState::Connected);
     CHECK(first.estimated_town_time(transaction_now) >= before_house_time);
-    CHECK(first.occupied_house_mask() == 1);
-    CHECK(second.occupied_house_mask() == 1);
+    CHECK(first.house_light_mask() == 0);
+    CHECK(second.house_light_mask() == 0);
     CHECK(first.baseline() != nullptr);
     CHECK(second.baseline() != nullptr);
     CHECK(first.baseline()->has_house);
@@ -2152,7 +2189,8 @@ void production_clients_connect_move_and_render_each_other() {
                           second.baseline() != nullptr && first.baseline()->has_house &&
                           second.baseline()->has_house &&
                           first.baseline()->house.revision == house_result->house_revision &&
-                          second.baseline()->house.revision == house_result->house_revision;
+                          second.baseline()->house.revision == house_result->house_revision &&
+                          first.house_light_mask() == 1 && second.house_light_mask() == 1;
     }
     CHECK(house_result.has_value());
     CHECK(house_result->code == acnet::ResultCode::Ok);
@@ -2170,8 +2208,8 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(first.state() == acnet::ClientConnectionState::Connected);
     CHECK(second.state() == acnet::ClientConnectionState::Connected);
     CHECK(first.estimated_town_time(transaction_now) >= before_exit_time);
-    CHECK(first.occupied_house_mask() == 0);
-    CHECK(second.occupied_house_mask() == 0);
+    CHECK(first.house_light_mask() == 1);
+    CHECK(second.house_light_mask() == 1);
 
     const auto transaction_origin = server.player_transform(first_config.account);
     CHECK(transaction_origin.has_value());

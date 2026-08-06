@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 7;
+constexpr std::uint16_t kProtocolVersion = 8;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -195,7 +195,7 @@ struct InputCommand {
 struct TransformSnapshot {
     Tick server_tick = 0;
     Revision baseline_revision = 0;
-    std::uint8_t occupied_house_mask = 0;
+    std::uint8_t house_light_mask = 0;
     std::vector<PlayerSnapshot> players;
 };
 

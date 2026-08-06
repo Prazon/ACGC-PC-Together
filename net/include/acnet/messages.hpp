@@ -63,6 +63,7 @@ struct ZoneTransferRequest {
 struct ZoneReadyRequest {
     AccountId account = 0;
     TransferToken token;
+    Transform destination_transform;
 };
 
 bool encode(const WorldOperation& value, std::vector<std::uint8_t>& output);

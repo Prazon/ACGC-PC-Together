@@ -35,6 +35,9 @@ static int house_update_pending = FALSE;
 static AcNetHouseFurniture house_furniture[3 * 4 * 16 * 16];
 static u32 pending_destination_zone = 0;
 static int zone_transfer_phase = 0;
+static u64 pending_transfer_token_high = 0;
+static u64 pending_transfer_token_low = 0;
+static int zone_arrival_stream_frames = 0;
 static int zone_retry_frames = 0;
 static int gameplay_ready_frames = 0;
 static int gameplay_ready = FALSE;
@@ -131,9 +134,9 @@ static size_t Net_CaptureHouse(int slot,
     return count;
 }
 
-int Net_HouseOccupied(int house_index) {
+int Net_HouseMainLightOn(int house_index) {
     if (!Net_IsConnected() || house_index < 0 || house_index >= PLAYER_NUM) return FALSE;
-    return (acnet_client_occupied_house_mask() & (1U << house_index)) != 0;
+    return (acnet_client_house_light_mask() & (1U << house_index)) != 0;
 }
 
 int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
@@ -308,39 +311,72 @@ void Net_BeginSceneTransition(GAME_PLAY* play, int next_scene) {
     }
 }
 
-static void Net_UpdateZoneTransfer(void) {
+static int Net_CapturePlayerTransform(GAME_PLAY* play, AcNetTransform* transform) {
+    ACTOR* player_actor;
+    if (play == NULL || transform == NULL) return FALSE;
+    player_actor = play->actor_info.list[ACTOR_PART_PLAYER].actor;
+    if (player_actor == NULL || player_actor->id != mAc_PROFILE_PLAYER) return FALSE;
+    transform->x = player_actor->world.position.x;
+    transform->y = player_actor->world.position.y;
+    transform->z = player_actor->world.position.z;
+    transform->velocity_x = player_actor->position_speed.x;
+    transform->velocity_y = player_actor->position_speed.y;
+    transform->velocity_z = player_actor->position_speed.z;
+    transform->yaw = player_actor->shape_info.rotation.y;
+    transform->action = 0;
+    return TRUE;
+}
+
+static void Net_ResetZoneTransfer(void) {
+    pending_destination_zone = 0;
+    pending_transfer_token_high = 0;
+    pending_transfer_token_low = 0;
+    zone_transfer_phase = 0;
+}
+
+static void Net_UpdateZoneTransfer(GAME_PLAY* play) {
     AcNetTransferOffer offer;
     if (zone_transfer_phase != 0 && acnet_client_baseline_zone() == pending_destination_zone) {
-        pending_destination_zone = 0;
-        zone_transfer_phase = 0;
+        zone_arrival_stream_frames = 120;
+        Net_ResetZoneTransfer();
         (void)acnet_client_take_transfer_offer(&offer);
         return;
     }
     if (zone_transfer_phase == 0) return;
-    if (!acnet_client_take_transfer_offer(&offer)) return;
-    if (offer.result_code != 0 || offer.destination_zone != pending_destination_zone) {
-        extern int g_pc_verbose;
-        if (g_pc_verbose) {
-            printf("[NET] zone transfer rejected result=%u source=%u destination=%u expected=%u; will retry\n",
-                   offer.result_code,
-                   offer.source_zone,
-                   offer.destination_zone,
-                   pending_destination_zone);
-            fflush(stdout);
+    if (zone_transfer_phase == 3) {
+        if (acnet_client_take_transfer_offer(&offer) && offer.result_code != 0) {
+            Net_ResetZoneTransfer();
+            zone_retry_frames = 30;
         }
-        pending_destination_zone = 0;
-        zone_transfer_phase = 0;
-        zone_retry_frames = 30;
         return;
     }
     if (zone_transfer_phase == 1) {
-        if (!acnet_client_zone_ready(offer.token_high, offer.token_low)) {
-            pending_destination_zone = 0;
-            zone_transfer_phase = 0;
+        if (!acnet_client_take_transfer_offer(&offer)) return;
+        if (offer.result_code != 0 || offer.destination_zone != pending_destination_zone) {
+            extern int g_pc_verbose;
+            if (g_pc_verbose) {
+                printf("[NET] zone transfer rejected result=%u source=%u destination=%u expected=%u; will retry\n",
+                       offer.result_code,
+                       offer.source_zone,
+                       offer.destination_zone,
+                       pending_destination_zone);
+                fflush(stdout);
+            }
+            Net_ResetZoneTransfer();
             zone_retry_frames = 30;
-        } else {
-            zone_transfer_phase = 2;
+            return;
         }
+        pending_transfer_token_high = offer.token_high;
+        pending_transfer_token_low = offer.token_low;
+        zone_transfer_phase = 2;
+    }
+    if (zone_transfer_phase == 2 && Net_SceneZone(play->scene_id) == pending_destination_zone) {
+        AcNetTransform transform;
+        if (!Net_CapturePlayerTransform(play, &transform)) return;
+        if (!acnet_client_zone_ready(pending_transfer_token_high, pending_transfer_token_low, &transform)) {
+            Net_ResetZoneTransfer();
+            zone_retry_frames = 30;
+        } else zone_transfer_phase = 3;
     }
 }
 
@@ -825,7 +861,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
     int status;
     if (play == NULL) return;
     acnet_client_poll();
-    Net_UpdateZoneTransfer();
+    Net_UpdateZoneTransfer(play);
     Net_EnsureSceneZone(play);
     status = (int)acnet_client_status();
     if (status != last_status) {
@@ -850,23 +886,16 @@ void Net_PostSimulation(GAME_PLAY* play) {
     AcNetTransform transform;
     pad_t* pad;
     int menu_open;
-    if (play == NULL || !gameplay_ready || acnet_client_status() == ACNET_OFFLINE || zone_transfer_phase != 0 ||
+    if (play == NULL || (!gameplay_ready && zone_arrival_stream_frames == 0) ||
+        acnet_client_status() == ACNET_OFFLINE || zone_transfer_phase != 0 ||
         Net_SceneZone(play->scene_id) == 0 || acnet_client_baseline_zone() != Net_SceneZone(play->scene_id)) return;
+    if (!Net_CapturePlayerTransform(play, &transform)) return;
     player_actor = play->actor_info.list[ACTOR_PART_PLAYER].actor;
-    if (player_actor == NULL || player_actor->id != mAc_PROFILE_PLAYER) return;
     /* The local keyboard/controller feeds the first game pad. Reading PAD1
      * sent zero movement forever, so prediction was continually corrected
      * back to the server spawn point. */
     pad = &play->game.pads[PAD0];
     menu_open = play->submenu.process_status != mSM_PROCESS_WAIT;
-    transform.x = player_actor->world.position.x;
-    transform.y = player_actor->world.position.y;
-    transform.z = player_actor->world.position.z;
-    transform.velocity_x = player_actor->position_speed.x;
-    transform.velocity_y = player_actor->position_speed.y;
-    transform.velocity_z = player_actor->position_speed.z;
-    transform.yaw = player_actor->shape_info.rotation.y;
-    transform.action = 0;
     if (acnet_client_frame(menu_open ? 0 : (s16)pad->now.stick_x * 512,
                            menu_open ? 0 : (s16)pad->now.stick_y * 512,
                            menu_open ? 0 : pad->now.button,
@@ -880,6 +909,7 @@ void Net_PostSimulation(GAME_PLAY* play) {
         player_actor->position_speed.z = transform.velocity_z;
         player_actor->shape_info.rotation.y = transform.yaw;
     }
+    if (zone_arrival_stream_frames > 0) zone_arrival_stream_frames--;
 }
 
 void Net_OnActorCreated(ACTOR* actor) {
@@ -897,6 +927,7 @@ void Net_OnSceneLoaded(GAME_PLAY* play) {
         gameplay_ready_frames = 0;
         gameplay_ready = FALSE;
         gameplay_ready_reported = FALSE;
+        zone_arrival_stream_frames = 0;
         acnet_scene_loaded(play->scene_id);
     }
 }

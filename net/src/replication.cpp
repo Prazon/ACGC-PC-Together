@@ -122,14 +122,14 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
         baseline.players.size() > kMaxPlayersPerZone || baseline.npcs.size() > kMaximumBaselineNpcs ||
         baseline.inventory.revision == 0 || baseline.ledger.revision == 0 || baseline.shop.revision == 0 ||
-        baseline.shop.stock.size() > kMaximumShopEntries || (baseline.occupied_house_mask & 0xF0U) != 0 ||
+        baseline.shop.stock.size() > kMaximumShopEntries || (baseline.house_light_mask & 0xF0U) != 0 ||
         baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
         (baseline.has_house && baseline.house.zone != baseline.zone)) return false;
     ByteWriter writer(kMaximumBaselineBytes);
     if (!writer.u32(baseline.server_tick) || !writer.u32(baseline.revision) || !writer.u32(baseline.zone) ||
         !writer.u64(static_cast<std::uint64_t>(baseline.town_unix_seconds)) || !writer.u8(baseline.weather) ||
         !writer.u8(baseline.weather_intensity) || !writer.u8(baseline.town_population) ||
-        !writer.u8(baseline.town_capacity) || !writer.u8(baseline.occupied_house_mask) ||
+        !writer.u8(baseline.town_capacity) || !writer.u8(baseline.house_light_mask) ||
         !writer.u8(baseline.has_house ? 1 : 0) ||
         !writer.u32(static_cast<std::uint32_t>(baseline.tiles.size())) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.players.size())) ||
@@ -181,8 +181,8 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         !reader.u64(town_time) || !reader.u8(baseline.weather) || !reader.u8(baseline.weather_intensity) ||
         !reader.u8(baseline.town_population) || !reader.u8(baseline.town_capacity) ||
         baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
-        !reader.u8(baseline.occupied_house_mask) || !reader.u8(has_house) || has_house > 1 ||
-        (baseline.occupied_house_mask & 0xF0U) != 0 ||
+        !reader.u8(baseline.house_light_mask) || !reader.u8(has_house) || has_house > 1 ||
+        (baseline.house_light_mask & 0xF0U) != 0 ||
         !reader.u32(tile_count) || !reader.u16(player_count) || !reader.u16(npc_count) || baseline.zone == 0 ||
         baseline.revision == 0 || tile_count > kMaximumBaselineTiles || player_count > kMaxPlayersPerZone ||
         npc_count > kMaximumBaselineNpcs || town_time > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))

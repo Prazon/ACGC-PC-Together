@@ -33,6 +33,16 @@ bool vec3(ByteReader& reader, Vec3& value) {
     return reader.f32(value.x) && reader.f32(value.y) && reader.f32(value.z) && finite(value);
 }
 
+bool transform(ByteWriter& writer, const Transform& value) {
+    return vec3(writer, value.position) && vec3(writer, value.velocity) &&
+           writer.i16(value.yaw) && writer.u16(value.action);
+}
+
+bool transform(ByteReader& reader, Transform& value) {
+    return vec3(reader, value.position) && vec3(reader, value.velocity) &&
+           reader.i16(value.yaw) && reader.u16(value.action);
+}
+
 bool valid_result(std::uint16_t value) {
     return value <= static_cast<std::uint16_t>(ResultCode::InternalError);
 }
@@ -315,14 +325,16 @@ bool decode(const std::vector<std::uint8_t>& input, TransferOffer& value) {
 
 bool encode(const ZoneReadyRequest& value, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
-    if (!writer.u64(value.account) || !writer.u64(value.token.high) || !writer.u64(value.token.low)) return false;
+    if (!writer.u64(value.account) || !writer.u64(value.token.high) || !writer.u64(value.token.low) ||
+        !transform(writer, value.destination_transform)) return false;
     output = writer.data();
     return true;
 }
 
 bool decode(const std::vector<std::uint8_t>& input, ZoneReadyRequest& value) {
     ByteReader reader(input);
-    return reader.u64(value.account) && reader.u64(value.token.high) && reader.u64(value.token.low) && reader.finished();
+    return reader.u64(value.account) && reader.u64(value.token.high) && reader.u64(value.token.low) &&
+           transform(reader, value.destination_transform) && reader.finished();
 }
 
 bool encode(const FurnitureOperation& value, std::vector<std::uint8_t>& output) {

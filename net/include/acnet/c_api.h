@@ -198,7 +198,7 @@ size_t acnet_client_baseline_tiles(AcNetTileState* output, size_t capacity);
 int acnet_client_tile(uint32_t zone_id, int16_t x, int16_t z, AcNetTileState* output);
 uint32_t acnet_client_baseline_revision(void);
 uint32_t acnet_client_baseline_zone(void);
-uint8_t acnet_client_occupied_house_mask(void);
+uint8_t acnet_client_house_light_mask(void);
 int acnet_client_house(AcNetHouseState* output);
 size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);
 size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity);
@@ -305,7 +305,9 @@ int acnet_client_submit_house_update(uint64_t house_id,
                                      size_t furniture_count);
 int acnet_client_take_house_update_result(AcNetHouseUpdateResult* output);
 int acnet_client_request_zone_transfer(uint32_t door_id);
-int acnet_client_zone_ready(uint64_t token_high, uint64_t token_low);
+int acnet_client_zone_ready(uint64_t token_high,
+                            uint64_t token_low,
+                            const AcNetTransform* destination_transform);
 int acnet_client_take_transfer_offer(AcNetTransferOffer* output);
 AcNetClientStatus acnet_client_status(void);
 uint64_t acnet_client_account(void);

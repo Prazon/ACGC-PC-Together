@@ -211,8 +211,8 @@ extern "C" uint32_t acnet_client_baseline_zone(void) {
     return client && client->baseline() != nullptr ? client->baseline()->zone : 0;
 }
 
-extern "C" uint8_t acnet_client_occupied_house_mask(void) {
-    return client ? client->occupied_house_mask() : 0;
+extern "C" uint8_t acnet_client_house_light_mask(void) {
+    return client ? client->house_light_mask() : 0;
 }
 
 extern "C" int acnet_client_house(AcNetHouseState* output) {
@@ -683,11 +683,14 @@ extern "C" int acnet_client_request_zone_transfer(uint32_t door_id) {
     } catch (...) { capture_exception(); return 0; }
 }
 
-extern "C" int acnet_client_zone_ready(uint64_t token_high, uint64_t token_low) {
+extern "C" int acnet_client_zone_ready(uint64_t token_high,
+                                        uint64_t token_low,
+                                        const AcNetTransform* destination_transform) {
     try {
-        if (!client) return 0;
+        if (!client || destination_transform == nullptr) return 0;
         acnet::ZoneReadyRequest request;
         request.token = {token_high, token_low};
+        request.destination_transform = from_c(*destination_transform);
         return client->ready(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }
 }

@@ -75,6 +75,13 @@ bool legacy_train_spawn(const acnet::Transform& transform) {
            std::fabs(transform.position.z - 780.0F) < 0.5F;
 }
 
+bool valid_transition_transform(const acnet::Transform& transform) {
+    constexpr float limit = 100000.0F;
+    return acnet::finite(transform.position) && acnet::finite(transform.velocity) &&
+           std::fabs(transform.position.x) <= limit && std::fabs(transform.position.y) <= limit &&
+           std::fabs(transform.position.z) <= limit;
+}
+
 acnet::TerrainState terrain_for_bootstrap_item(std::uint16_t item) {
     if ((item >= 0x0011 && item <= 0x005B)) return acnet::TerrainState::Hole;
     if ((item >= 0x0001 && item <= 0x0004) || (item >= 0x0070 && item <= 0x0077) ||
@@ -166,11 +173,12 @@ void TownRuntime::record_event(std::string message) {
     while (recent_events_.size() > 12) recent_events_.pop_front();
 }
 
-std::uint8_t TownRuntime::occupied_house_mask() const {
+std::uint8_t TownRuntime::house_light_mask() const {
     std::uint8_t mask = 0;
-    for (std::uint8_t slot = 0; slot < acnet::kOriginalResidentSlots; ++slot) {
-        const acnet::ZoneState* house_zone = zones_.zone(100U + slot);
-        if (house_zone != nullptr && !house_zone->occupants.empty()) mask |= static_cast<std::uint8_t>(1U << slot);
+    for (const auto& entry : housing_.houses()) {
+        const acnet::HouseState& house = entry.second;
+        if (house.original_slot < acnet::kOriginalResidentSlots && house.main_light_on)
+            mask |= static_cast<std::uint8_t>(1U << house.original_slot);
     }
     return mask;
 }
@@ -822,7 +830,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
     baseline.town_capacity = occupancy.capacity;
-    baseline.occupied_house_mask = occupied_house_mask();
+    baseline.house_light_mask = house_light_mask();
     if (viewer->zone >= 100 && viewer->zone < 100 + acnet::kOriginalResidentSlots) {
         for (const auto& entry : housing_.houses()) {
             if (entry.second.zone != viewer->zone) continue;
@@ -1152,13 +1160,17 @@ bool TownRuntime::dispatch(Connection& connection,
                 reply = reservation->offer;
                 transition_door = reservation->door_id;
             }
-            reply.code = zones_.acknowledge_ready(connection.account, request.token, movement_.current_tick());
+            reply.code = valid_transition_transform(request.destination_transform)
+                           ? zones_.acknowledge_ready(connection.account, request.token, movement_.current_tick())
+                           : acnet::ResultCode::OutOfRange;
             if (reply.code == acnet::ResultCode::Ok) {
-                const acnet::PlayerView* player = players_.by_account(connection.account);
-                if (player == nullptr || !movement_.teleport(connection.account, player->zone, player->transform)) {
+                acnet::PlayerView* player = players_.by_account(connection.account);
+                if (player == nullptr ||
+                    !movement_.teleport(connection.account, player->zone, request.destination_transform)) {
                     error = "failed to synchronize zone transfer";
                     return false;
                 }
+                player->transform = request.destination_transform;
                 if (!commit_transaction(connection.account,
                                         static_cast<std::uint16_t>(acnet::MessageType::ZoneReady),
                                         reply.code, error)) return false;
@@ -1313,7 +1325,7 @@ bool TownRuntime::send_snapshots(std::uint64_t monotonic_ms, std::string& error)
         acnet::TransformSnapshot snapshot;
         snapshot.server_tick = movement_.current_tick();
         snapshot.baseline_revision = deltas_.current_revision();
-        snapshot.occupied_house_mask = occupied_house_mask();
+        snapshot.house_light_mask = house_light_mask();
         std::unordered_set<acnet::AccountId> included;
         for (const acnet::PlayerView* player : players_.query_zone(viewer->zone, acnet::kMaxPlayersPerZone)) {
             acnet::PlayerSnapshot state = movement_.snapshot(player->account);

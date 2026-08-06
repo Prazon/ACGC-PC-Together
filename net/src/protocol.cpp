@@ -428,10 +428,10 @@ bool decode(const std::vector<std::uint8_t>& input, InputCommand& message) {
 }
 
 bool encode(const TransformSnapshot& message, std::vector<std::uint8_t>& output) {
-    if (message.players.size() > kMaxPlayersPerZone || (message.occupied_house_mask & 0xF0U) != 0) return false;
+    if (message.players.size() > kMaxPlayersPerZone || (message.house_light_mask & 0xF0U) != 0) return false;
     ByteWriter w;
     if (!w.u32(message.server_tick) || !w.u32(message.baseline_revision) ||
-        !w.u8(message.occupied_house_mask) ||
+        !w.u8(message.house_light_mask) ||
         !w.u8(static_cast<std::uint8_t>(message.players.size()))) return false;
     for (const PlayerSnapshot& player : message.players) {
         if (static_cast<std::uint8_t>(player.transition_phase) >
@@ -450,8 +450,8 @@ bool decode(const std::vector<std::uint8_t>& input, TransformSnapshot& message) 
     ByteReader r(input);
     std::uint8_t count;
     if (!r.u32(message.server_tick) || !r.u32(message.baseline_revision) ||
-        !r.u8(message.occupied_house_mask) || !r.u8(count) || count > kMaxPlayersPerZone ||
-        (message.occupied_house_mask & 0xF0U) != 0) return false;
+        !r.u8(message.house_light_mask) || !r.u8(count) || count > kMaxPlayersPerZone ||
+        (message.house_light_mask & 0xF0U) != 0) return false;
     message.players.clear();
     message.players.reserve(count);
     for (std::uint8_t i = 0; i < count; ++i) {

@@ -50,7 +50,7 @@ struct ZoneBaseline {
      * capacity is always at least 1 so the pair is never nonsensical. */
     std::uint8_t town_population = 0;
     std::uint8_t town_capacity = 1;
-    std::uint8_t occupied_house_mask = 0;
+    std::uint8_t house_light_mask = 0;
     bool has_house = false;
     HouseState house;
     InventoryState inventory;

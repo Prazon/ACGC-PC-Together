@@ -25,8 +25,10 @@ resident accounts map to the original save slots; later accounts are visitors.
 The server relays movement and owns inventory/economy, foreground changes,
 tools/catches, NPC leases, zones/houses, clock/weather, and persistence. Shared
 houses replicate furniture layout and facing, furniture switches, lights, and
-music. Occupied houses light up outside, and remote arrivals/departures drive
-the original house-door animation instead of disappearing at the threshold.
+music. A house exterior follows its synchronized interior light switch, while
+the original renderer retains its day/night behavior. Remote arrivals wait for
+the destination scene and publish its exact doorway transform, so peers see the
+entrance at the threshold instead of a placeholder-position teleport.
 
 ## Operate and verify
 

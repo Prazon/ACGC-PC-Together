@@ -87,7 +87,7 @@ public:
     std::uint8_t resident_slot() const { return resident_slot_; }
     bool town_initialized() const { return town_initialized_; }
     const std::array<std::uint8_t, 8>& town_name() const { return town_name_; }
-    std::uint8_t occupied_house_mask() const { return occupied_house_mask_; }
+    std::uint8_t house_light_mask() const { return house_light_mask_; }
     /* Town-wide, refreshed by baselines and by Town deltas between them.
      * Population 0 means the server has not reported one. */
     std::uint8_t town_population() const { return town_population_; }
@@ -173,7 +173,7 @@ private:
     std::uint8_t resident_slot_ = 0xFF;
     bool town_initialized_ = false;
     std::array<std::uint8_t, 8> town_name_{};
-    std::uint8_t occupied_house_mask_ = 0;
+    std::uint8_t house_light_mask_ = 0;
     std::uint8_t town_population_ = 0;
     std::uint8_t town_capacity_ = 1;
     std::optional<WorldResult> world_result_;

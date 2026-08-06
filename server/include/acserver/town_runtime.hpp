@@ -181,7 +181,7 @@ private:
     bool configure_zone_topology(std::string& error);
     bool allow_message(Connection& connection, acnet::MessageType type, std::uint64_t monotonic_ms);
     bool allow_hello(const std::string& endpoint, std::uint64_t monotonic_ms);
-    std::uint8_t occupied_house_mask() const;
+    std::uint8_t house_light_mask() const;
     static std::string endpoint_key(const std::string& host, std::uint16_t port);
 
     TownRuntimeConfig config_;
