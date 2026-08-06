@@ -103,6 +103,7 @@ User provides disc image (.ciso/.iso/.gcm)
 | `pc/src/pc_m_card.c` | Memory card manager: GCI save/load, village generation, ARAM data blocks |
 | `pc/src/pc_save_bswap.c` | GCI save file bidirectional LE↔BE byte-swap (Dolphin-compatible) |
 | `pc/src/pc_pad.c` | Keyboard + SDL2 gamepad input (GC button format) |
+| `pc/src/pc_mouse.c` | Mouse state sampled once per frame: button edges, wheel, motion, GC-space position |
 | `pc/src/pc_audio.c` | SDL2 audio: 32kHz s16 stereo, dedicated producer thread + SPSC ring buffer |
 | `pc/src/pc_vi.c` | Video interface → SDL swap, timer-based 60fps pacing with spin-wait |
 | `pc/src/pc_aram.c` | 16MB ARAM buffer, bump allocator, DMA → memcpy |
@@ -326,6 +327,36 @@ Keyboard mapping:
 SDL2 gamepad with hotplug, analog sticks (deadzone 500), triggers, D-pad, and rumble.
 
 PADRead returns GC button format. Conversion to N64 format happens in `padmgr_UpdatePC()`.
+
+### Mouse (`MOUSE_INPUT`)
+
+`pc/src/pc_mouse.c` samples the mouse once per frame at the end of `pc_platform_poll_events()`,
+so every reader in a frame sees the same snapshot: held/pressed/released button bitflags
+(`PC_MOUSE_BUTTON_*`), this frame's wheel movement, a motion flag, and the cursor position. The
+SDL event loop only accumulates `SDL_MOUSEWHEEL` into `g_mouse_wheel_delta`; `pc_mouse_update()`
+latches and clears it, so an unread scroll is dropped rather than carried into later frames.
+
+`pc_mouse_get_native_position()` maps window pixels into GC screen space (640x480) and undoes the
+pillarbox squeeze `pc_gx.c` applies on wider-than-4:3 windows, so interface hit tests can be
+written in the coordinates the game draws in. Menu code halves that to the 320x240 interface
+space the overlays use.
+
+`pc/include/pc_mouse.h` is SDL-free (`pc_types.h` only) so decomp translation units can include
+it, and with `MOUSE_INPUT` undefined every entry point becomes a `static inline` no-op.
+
+Interfaces wired up (all guarded by `#ifdef MOUSE_INPUT`, all keeping full controller parity —
+whichever device moved last owns the cursor):
+
+| Interface | Behaviour |
+|-|-|
+| `m_hand_ovl.c` | Hand cursor renders from a separate `visual_pos` that eases toward the logical slot, so pointer movement stays smooth |
+| `m_tag_ovl.c` | Hover highlights inventory/mail/catalog/mailbox/pattern/music table slots and submenu options; left click = A, right click = B; wheel scrolls the catalog |
+| `m_design_ovl.c` | Cursor position drives the pattern grid, hovering switches between the tool, grid, palette and canvas areas, strokes interpolate between frames so fast drags leave no gaps |
+| `m_choice_main_normal.c_inc` | Dialogue choices highlight on hover, left click confirms, right click cancels |
+
+Mouse buttons can also be bound as ordinary GC buttons in `keybindings.ini` (`Mouse1`/`Mouse2`/
+`Mouse3`). Nothing is bound there by default — if you do bind one, it fires *both* the button and
+the menu click.
 
 ## Fault Handling
 

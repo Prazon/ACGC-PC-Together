@@ -96,6 +96,18 @@ struct design_ovl_s {
     u8 _6DA;
     u8 _6DB;
     u8 _6DC;
+#ifdef MOUSE_INPUT
+    /* PC-only: mouse cursor state. centered_* is in 320x240 interface
+     * coordinates with the origin at the screen centre. */
+    int mouse_active;
+    f32 centered_x;
+    f32 centered_y;
+    int mouse_tool_active;
+    int mouse_tool_x;
+    int mouse_tool_y;
+    int prev_cursor_x;
+    int prev_cursor_y;
+#endif
 #ifdef TARGET_PC
     f32 stick_repeat_accum;
     f32 stick_full_accum;

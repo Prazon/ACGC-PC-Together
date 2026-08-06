@@ -289,6 +289,17 @@ struct tag_ovl_s {
     /* 0x376 */ u16 _02;
     /* 0x378 */ mTG_cporiginal_mark_entry_c original_entries[mTG_ORG_TYPE_NUM];
     /* 0x390 */ mTG_mark_original_c original_mark;
+#ifdef MOUSE_INPUT
+    /* PC-only: mouse cursor state, in 320x240 interface coordinates. */
+    u8 mouse_active;
+    f32 mouse_x;
+    f32 mouse_y;
+    int hovered_table;
+    int hovered_idx;
+    int hovered_col;
+    int hovered_row;
+    int hovered_option;
+#endif
     f32 item_name_wait_accum;
 };
 

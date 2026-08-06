@@ -1,5 +1,9 @@
 #include "m_choice.h"
 
+#ifdef MOUSE_INPUT
+#include "pc_mouse.h"
+#endif
+
 #include "audio.h"
 #include "jsyswrap.h"
 #include "libultra/libultra.h"
