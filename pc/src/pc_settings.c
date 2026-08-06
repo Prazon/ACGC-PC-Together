@@ -20,6 +20,7 @@ PCSettings g_pc_settings = {
     .master_volume = 100,
     .stick_deadzone = 12,
     .cstick_deadzone = 12,
+    .discord_client_id = "",
 };
 
 static const char* SETTINGS_FILE = "settings.ini";
@@ -69,7 +70,12 @@ static const char* DEFAULT_SETTINGS =
     "[Input]\n"
     "# Gamepad stick deadzones as a percentage (0-40)\n"
     "stick_deadzone = 12\n"
-    "cstick_deadzone = 12\n";
+    "cstick_deadzone = 12\n"
+    "\n"
+    "[Discord]\n"
+    "# Discord Rich Presence: paste your Application's Client ID from\n"
+    "# https://discord.com/developers/applications to enable (leave blank to disable)\n"
+    "discord_client_id = \n";
 
 static const char* skip_ws(const char* s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -120,6 +126,9 @@ static void apply_setting(const char* key, const char* value) {
         if (val >= 0 && val <= 40) g_pc_settings.stick_deadzone = val;
     } else if (strcmp(key, "cstick_deadzone") == 0) {
         if (val >= 0 && val <= 40) g_pc_settings.cstick_deadzone = val;
+    } else if (strcmp(key, "discord_client_id") == 0) {
+        strncpy(g_pc_settings.discord_client_id, value, sizeof(g_pc_settings.discord_client_id) - 1);
+        g_pc_settings.discord_client_id[sizeof(g_pc_settings.discord_client_id) - 1] = '\0';
     }
 }
 
@@ -201,6 +210,11 @@ void pc_settings_save(void) {
     fprintf(f, "# Gamepad stick deadzones as a percentage (0-40)\n");
     fprintf(f, "stick_deadzone = %d\n", g_pc_settings.stick_deadzone);
     fprintf(f, "cstick_deadzone = %d\n", g_pc_settings.cstick_deadzone);
+    fprintf(f, "\n");
+    fprintf(f, "[Discord]\n");
+    fprintf(f, "# Discord Rich Presence: paste your Application's Client ID from\n");
+    fprintf(f, "# https://discord.com/developers/applications to enable (leave blank to disable)\n");
+    fprintf(f, "discord_client_id = %s\n", g_pc_settings.discord_client_id);
     fclose(f);
     printf("[Settings] Saved %s\n", SETTINGS_FILE);
 }

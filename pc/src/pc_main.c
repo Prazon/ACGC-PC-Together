@@ -12,6 +12,7 @@
 #include "pc_typing.h"
 #include "pc_pause_menu.h"
 #include "pc_settings_menu.h"
+#include "pc_discord.h"
 #include "pc_profiler.h"
 #include "pc_network_config.h"
 #include "m_kankyo.h"
@@ -286,6 +287,7 @@ int pc_platform_poll_events(void) {
     SDL_Event event;
 
     pc_typing_update();
+    pc_discord_update();
 
     while (SDL_PollEvent(&event)) {
         switch (event.type) {
@@ -637,6 +639,7 @@ int main(int argc, char* argv[]) {
     pc_settings_load();
     pc_keybindings_load();
     pc_platform_init();
+    pc_discord_init();
     pc_disc_init();
     if (!pc_assets_init()) {
         const char* msg =
@@ -646,6 +649,7 @@ int main(int argc, char* argv[]) {
         fprintf(stderr, "[PC] %s\n", msg);
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR,
                                  "Animal Crossing - Missing ROM", msg, g_pc_window);
+        pc_discord_shutdown();
         pc_platform_shutdown();
         return 1;
     }
@@ -666,6 +670,7 @@ int main(int argc, char* argv[]) {
                             g_pc_online_invite_key)) {
         fprintf(stderr, "[NET] Unable to start online client: %s\n", acnet_client_last_error());
         pc_disc_shutdown();
+        pc_discord_shutdown();
         pc_platform_shutdown();
         return 1;
     }
@@ -679,6 +684,7 @@ int main(int argc, char* argv[]) {
             fprintf(stderr, "[NET] Could not connect before game boot: %s\n", acnet_client_last_error());
             acnet_client_stop();
             pc_disc_shutdown();
+            pc_discord_shutdown();
             pc_platform_shutdown();
             return 1;
         }
@@ -699,6 +705,7 @@ int main(int argc, char* argv[]) {
     acnet_client_stop();
 #endif
     pc_disc_shutdown();
+    pc_discord_shutdown();
     pc_platform_shutdown();
     return 0;
 }

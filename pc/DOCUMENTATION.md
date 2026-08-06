@@ -114,6 +114,7 @@ User provides disc image (.ciso/.iso/.gcm)
 | `pc/src/pc_settings.c` | Runtime `settings.ini` parser/writer (resolution up to 4K, fullscreen, vsync, MSAA) |
 | `pc/src/pc_texture_pack.c` | Dolphin-compatible HD texture pack loader (XXHash64 matching, DDS, preloading) |
 | `pc/src/pc_model_viewer.c` | Debug model viewer: 75 building/structure models, orbit camera |
+| `pc/src/pc_discord.c` | Discord Rich Presence over local IPC (Windows only, opt-in via `discord_client_id`) |
 
 #### Support
 
@@ -280,6 +281,9 @@ window_height = 720
 fullscreen = 0          # 0=windowed, 1=fullscreen, 2=borderless
 vsync = 0
 msaa = 4                # 0/2/4/8
+
+[Discord]
+discord_client_id =     # blank disables Rich Presence
 ```
 
 Auto-generated with defaults on first run. Resolution presets up to 4K supported. Custom resolutions can be set in the .ini file. DPI-aware on Windows (respects system scaling).
@@ -295,6 +299,18 @@ Wildcard palette support: `tex1_WxH_DATAHASH_$_FMT.dds` matches any palette vari
 ### 4x MSAA
 
 Anti-aliasing via multisampled framebuffer. Configurable in `settings.ini` (0/2/4/8 samples).
+
+### Discord Rich Presence
+
+`pc/src/pc_discord.c`, Windows only (no-op stubs elsewhere). Speaks Discord's local IPC protocol
+directly over `\\.\pipe\discord-ipc-0..9` — handshake plus `SET_ACTIVITY` frames of JSON, no SDK
+or third-party dependency. Disabled unless `discord_client_id` is set in `settings.ini`.
+
+All pipe I/O runs on an SDL worker thread; `pc_discord_update()` (called from
+`pc_platform_poll_events`) only writes a mutex-guarded desired-presence struct, throttled to once
+every 5 s, so an absent or wedged Discord client can never stall the frame loop. Presence text is
+derived from `mLd_GetLandName()` and `Save_Get(scene_no)`; town names are game font codes, so they
+go through a small font→ASCII mapping (accented letters folded, symbols dropped).
 
 ## Input
 
