@@ -2,6 +2,7 @@
 
 #include "acnet/world.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -12,6 +13,11 @@
 
 namespace acnet {
 
+/* Appended, never reordered: the wire encodes this enum as a u8 and validates
+ * it against the last client-reachable value.  Everything at or below
+ * kMaximumClientEconomyOp may arrive in a client request; the administrative
+ * operations above it exist only inside the server process and are rejected by
+ * both the decoder and EconomyAuthority::apply. */
 enum class EconomyOpType : std::uint8_t {
     Buy,
     Sell,
@@ -20,7 +26,22 @@ enum class EconomyOpType : std::uint8_t {
     PayDebt,
     Donate,
     AttachMail,
+    ClaimMail,
+    AdminGrantBells,
+    AdminSendMail,
 };
+
+constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::ClaimMail);
+constexpr std::uint8_t kMaximumEconomyOp = static_cast<std::uint8_t>(EconomyOpType::AdminSendMail);
+
+/* One mailbox holds ten pending letters, matching the original game's mailbox
+ * capacity, and a letter carries a bounded body so an administrative gift can
+ * explain itself. */
+constexpr std::size_t kMailboxCapacity = 10;
+constexpr std::size_t kMailTextBytes = 96;
+
+/* Sender sentinel for letters the town operator posts. No account is ever 0. */
+constexpr AccountId kAdministratorAccount = 0;
 
 struct ShopEntry {
     std::uint16_t item = 0;
@@ -46,10 +67,19 @@ struct MuseumState {
 
 struct MailRecord {
     std::uint64_t id = 0;
-    AccountId sender = 0;
+    AccountId sender = 0; // kAdministratorAccount when the town operator posted it
     AccountId recipient = 0;
     std::uint16_t attachment = 0;
     Revision revision = 1;
+    std::array<std::uint8_t, kMailTextBytes> text{};
+};
+
+/* Pending letters for one account, oldest first.  The identifiers are the
+ * authoritative ordering; the revision changes whenever a letter is delivered
+ * or claimed so a client cannot claim against a stale view. */
+struct MailboxState {
+    Revision revision = 1;
+    std::vector<std::uint64_t> mail;
 };
 
 struct EconomyRequest {
@@ -63,10 +93,15 @@ struct EconomyRequest {
     std::uint16_t expected_item = 0;
     std::uint64_t amount = 0;
     AccountId recipient = 0;
+    std::uint64_t mail_id = 0;
 };
 
 struct EconomyResult {
     ResultCode code = ResultCode::InternalError;
+    /* Echoed so a client can tell which authority auxiliary_revision belongs
+     * to: the shop for Buy/Sell, the museum for Donate, the bank ledger for
+     * Deposit/Withdraw/PayDebt, and a mailbox for the mail operations. */
+    EconomyOpType type = EconomyOpType::Buy;
     IdempotencyKey idempotency;
     Revision inventory_revision = 0;
     Revision auxiliary_revision = 0;
@@ -115,6 +150,11 @@ struct EconomyConfig {
     float maximum_shop_distance = 0.0F;
     ZoneId museum_zone = 0;
     ZoneId post_office_zone = 0;
+    /* Letters are posted at the post office but read at the mailbox outside the
+     * recipient's house, so claiming is not restricted to one zone by default.
+     * Ownership, the mailbox revision, and inventory capacity are what make the
+     * claim safe; the zone is only a fidelity rule. */
+    ZoneId mailbox_zone = 0;
     float maximum_trade_distance = 120.0F;
 };
 
@@ -135,10 +175,29 @@ public:
     const MuseumState& museum() const { return museum_; }
     const AccountLedger* ledger(AccountId account) const;
     const MailRecord* mail(std::uint64_t mail_id) const;
+    const MailboxState* mailbox(AccountId account) const;
     const std::unordered_map<AccountId, AccountLedger>& ledgers() const { return ledgers_; }
     const std::unordered_map<std::uint64_t, MailRecord>& mail_records() const { return mail_; }
+    const std::unordered_map<AccountId, MailboxState>& mailboxes() const { return mailboxes_; }
+    std::vector<MailRecord> mail_for(AccountId account) const;
     bool restore_mail(const MailRecord& record);
+    bool restore_mailbox_revision(AccountId account, Revision revision);
+    /* Startup decodes a checkpoint and then the newest journalled state on the
+     * same authority. Mail is the one collection restored by appending rather
+     * than by key, so the caller drops the previous set first: otherwise a
+     * letter present in both would be rejected as a duplicate, and one claimed
+     * between the two would come back to life and be claimable again. */
+    void clear_mail();
     EconomyResult apply(const EconomyRequest& request);
+
+    /* Operator actions.  They carry no idempotency key and skip the player
+     * context checks a client request must pass -- the operator is not standing
+     * in the post office -- but they commit through the same ledger, mailbox,
+     * and revision rules, so the caller still journals the result. */
+    EconomyResult admin_grant_bank_bells(AccountId account, std::uint64_t amount);
+    EconomyResult admin_send_mail(AccountId recipient,
+                                  std::uint16_t attachment,
+                                  const std::array<std::uint8_t, kMailTextBytes>& text);
 
     TradeResult create_trade(std::uint64_t trade_id, AccountId first, AccountId second);
     TradeResult update_trade_offer(std::uint64_t trade_id,
@@ -166,6 +225,11 @@ private:
 
     static Revision next_revision(Revision revision);
     static std::optional<std::uint8_t> empty_slot(const InventoryState& inventory);
+    MailboxState& mailbox_for(AccountId account);
+    std::uint64_t deliver_mail(AccountId sender,
+                               AccountId recipient,
+                               std::uint16_t attachment,
+                               const std::array<std::uint8_t, kMailTextBytes>& text);
     EconomyResult reject(const EconomyRequest& request, ResultCode code) const;
     TradeOffer* offer_for(TradeSession& trade, AccountId account);
     const TradeOffer* offer_for(const TradeSession& trade, AccountId account) const;
@@ -184,6 +248,7 @@ private:
     std::unordered_map<AccountId, AccountLedger> ledgers_;
     std::unordered_map<std::uint16_t, std::uint32_t> sell_prices_;
     std::unordered_map<std::uint64_t, MailRecord> mail_;
+    std::unordered_map<AccountId, MailboxState> mailboxes_;
     std::unordered_map<OperationKey, EconomyResult, OperationKeyHash> idempotency_;
     std::unordered_map<std::uint64_t, TradeSession> trades_;
     std::unordered_map<AccountId, std::uint64_t> account_trade_;

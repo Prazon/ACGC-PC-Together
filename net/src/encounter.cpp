@@ -7,13 +7,96 @@
 #include <limits>
 
 namespace acnet {
+
+#include "encounter_tables.inc"
+
 namespace {
 
 Revision next_revision(Revision revision) {
     return revision == std::numeric_limits<Revision>::max() ? 1 : revision + 1;
 }
 
+/* Species the original game spawns outside the month tables. */
+constexpr std::uint16_t kCoelacanthItem = kFishItemBase + 31;
+constexpr std::uint16_t kBeeItem = kInsectItemBase + 8;
+constexpr std::uint16_t kAntItem = kInsectItemBase + 38;
+
+/* Fish time slots, include/ac_set_ovl_gyoei.h:
+ *   0 = 9pm-3:59am, 1 = 4am-8:59am, 2 = 9am-3:59pm, 3 = 4pm-8:59pm */
+int fish_time_slot(int hour) {
+    if (hour >= 21 || hour <= 3) return 0;
+    if (hour <= 8) return 1;
+    if (hour <= 15) return 2;
+    return 3;
+}
+
+/* Insect terms, include/ac_set_ovl_insect.h:
+ *   0 = 11pm-3:59am, 1 = 4am-7:59am, 2 = 8am-3:59pm,
+ *   3 = 4pm-4:59pm,  4 = 5pm-6:59pm, 5 = 7pm-10:59pm */
+int insect_term(int hour) {
+    if (hour >= 23 || hour <= 3) return 0;
+    if (hour <= 7) return 1;
+    if (hour <= 15) return 2;
+    if (hour == 16) return 3;
+    if (hour <= 18) return 4;
+    return 5;
+}
+
+bool fish_available(std::size_t species, const TownDate& date) {
+    if (species >= kFishSpeciesCount) return false;
+    const std::uint8_t months = kFishAvailability[species][date.month - 1];
+    const int slot = fish_time_slot(date.hour);
+    /* The original game blends the outgoing half-month's fish in over a
+     * randomised transition of up to five days, so a catch legal in either
+     * half of the current month is accepted rather than rejected as forged. */
+    return (months & (1U << slot)) != 0 || (months & (1U << (4 + slot))) != 0;
+}
+
+bool insect_available(std::size_t species, const TownDate& date) {
+    if (species >= kInsectSpeciesCount) return false;
+    return (kInsectAvailability[species][date.month - 1] & (1U << insect_term(date.hour))) != 0;
+}
+
 } // namespace
+
+TownDate town_date_from_seconds(std::int64_t town_unix_seconds) {
+    /* Days-to-civil from Howard Hinnant's chrono algorithms, kept local so the
+     * portable core stays free of timezone-dependent C library calls. */
+    std::int64_t seconds = town_unix_seconds;
+    std::int64_t days = seconds / 86400;
+    std::int64_t rem = seconds % 86400;
+    if (rem < 0) {
+        rem += 86400;
+        --days;
+    }
+    days += 719468;
+    const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
+    const std::int64_t doe = days - era * 146097;
+    const std::int64_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    const std::int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    const std::int64_t mp = (5 * doy + 2) / 153;
+    TownDate date;
+    date.day = static_cast<int>(doy - (153 * mp + 2) / 5 + 1);
+    date.month = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
+    date.year = static_cast<int>(yoe + era * 400 + (date.month <= 2 ? 1 : 0));
+    date.hour = static_cast<int>(rem / 3600);
+    return date;
+}
+
+bool encounter_species_is_available(EncounterKind kind,
+                                    std::uint16_t item,
+                                    const TownDate& date,
+                                    std::uint8_t weather) {
+    if (date.month < 1 || date.month > 12 || date.hour < 0 || date.hour > 23) return false;
+    if (kind == EncounterKind::Fish) {
+        if (item < kFishItemBase || item >= kFishItemBase + kEncounterSpeciesPerKind) return false;
+        if (item == kCoelacanthItem) return weather != 0;
+        return fish_available(static_cast<std::size_t>(item - kFishItemBase), date);
+    }
+    if (item < kInsectItemBase || item >= kInsectItemBase + kEncounterSpeciesPerKind) return false;
+    if (item == kBeeItem || item == kAntItem) return true;
+    return insect_available(static_cast<std::size_t>(item - kInsectItemBase), date);
+}
 
 EncounterAuthority::EncounterAuthority(PlayerDirectory* players, WorldAuthority* world, std::uint64_t seed)
     : players_(players), world_(world), random_(seed) {
@@ -68,10 +151,16 @@ EncounterResult EncounterAuthority::resolve(const EncounterRequest& request,
                 break;
             }
         }
+        const TownDate date = town_date_from_seconds(town_unix_seconds);
         if (empty == kInventorySlots) {
             result.code = ResultCode::Capacity;
+        } else if (request.species != 0 &&
+                   !encounter_species_is_available(request.kind, request.species, date, weather)) {
+            /* The claimed species cannot appear at this date, hour, or weather,
+             * so the request is a forgery or a stale client. Nothing is
+             * committed and no cooldown is spent. */
+            result.code = ResultCode::InvalidState;
         } else {
-            const std::uint32_t hour = static_cast<std::uint32_t>((town_unix_seconds / 3600) % 24);
             std::uint64_t random_value = 0;
             if (secure_random_) {
                 if (!secure_random(reinterpret_cast<std::uint8_t*>(&random_value), sizeof(random_value))) {
@@ -87,19 +176,37 @@ EncounterResult EncounterAuthority::resolve(const EncounterRequest& request,
             result.next_allowed_tick = tick + 90;
             cooldowns_[request.account] = result.next_allowed_tick;
             if (result.caught) {
-                static constexpr std::array<std::uint16_t, 6> fish{{0x2300, 0x2301, 0x2302, 0x2303, 0x2304, 0x2305}};
-                static constexpr std::array<std::uint16_t, 6> insects{{0x2D00, 0x2D01, 0x2D02, 0x2D03, 0x2D04, 0x2D05}};
-                const auto& table = request.kind == EncounterKind::Fish ? fish : insects;
-                if (secure_random_) {
-                    if (!secure_random(reinterpret_cast<std::uint8_t*>(&random_value), sizeof(random_value))) {
-                        result.code = ResultCode::InternalError;
+                if (request.species != 0) {
+                    result.item = request.species;
+                } else {
+                    /* No claim: choose uniformly from everything that can
+                     * legally appear now, rather than from a fixed prefix of
+                     * the item range. */
+                    const std::uint16_t base =
+                        request.kind == EncounterKind::Fish ? kFishItemBase : kInsectItemBase;
+                    std::array<std::uint16_t, kEncounterSpeciesPerKind> legal{};
+                    std::size_t legal_count = 0;
+                    for (std::uint16_t offset = 0; offset < kEncounterSpeciesPerKind; ++offset) {
+                        const std::uint16_t candidate = static_cast<std::uint16_t>(base + offset);
+                        if (encounter_species_is_available(request.kind, candidate, date, weather))
+                            legal[legal_count++] = candidate;
+                    }
+                    if (legal_count == 0) {
                         result.caught = false;
+                        result.inventory_revision = inventory.revision;
                         idempotency_[key] = result;
                         return result;
                     }
-                } else random_value = random_();
-                const std::size_t index = static_cast<std::size_t>((random_value + hour + player->zone) % table.size());
-                result.item = table[index];
+                    if (secure_random_) {
+                        if (!secure_random(reinterpret_cast<std::uint8_t*>(&random_value), sizeof(random_value))) {
+                            result.code = ResultCode::InternalError;
+                            result.caught = false;
+                            idempotency_[key] = result;
+                            return result;
+                        }
+                    } else random_value = random_();
+                    result.item = legal[static_cast<std::size_t>(random_value % legal_count)];
+                }
                 result.inventory_slot = static_cast<std::uint8_t>(empty);
                 inventory.slots[empty].item = result.item;
                 inventory.revision = next_revision(inventory.revision);

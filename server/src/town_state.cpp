@@ -9,7 +9,7 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 4;
+constexpr std::uint16_t kTownStateVersion = 5;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -80,6 +80,11 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
             if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return {};
         }
         if (!writer.u32(ledger->revision) || !writer.u64(ledger->bank_balance) || !writer.u64(ledger->debt)) return {};
+        /* Only the mailbox revision is stored: the letter list is rebuilt from
+         * the mail records below, which carry their own recipient and are
+         * replayed in identifier order. */
+        const acnet::MailboxState* mailbox = economy_.mailbox(account);
+        if (!writer.u32(mailbox == nullptr ? 1 : mailbox->revision)) return {};
     }
 
     const auto& tiles = world_.tiles();
@@ -119,7 +124,8 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
     for (std::uint64_t id : sorted_keys(mail)) {
         const acnet::MailRecord& record = mail.at(id);
         if (!writer.u64(record.id) || !writer.u64(record.sender) || !writer.u64(record.recipient) ||
-            !writer.u16(record.attachment) || !writer.u32(record.revision)) return {};
+            !writer.u16(record.attachment) || !writer.u32(record.revision) ||
+            !writer.bytes(record.text.data(), record.text.size())) return {};
     }
 
     const auto& npcs = npcs_.all_npcs();
@@ -206,8 +212,11 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         for (acnet::ItemSlot& slot : inventory.slots) {
             if (!reader.u16(slot.item) || !reader.u8(slot.condition)) { error = "invalid inventory"; return false; }
         }
+        acnet::Revision mailbox_revision = 1;
         if (!reader.u32(ledger.revision) || !reader.u64(ledger.bank_balance) || !reader.u64(ledger.debt) ||
-            account == 0 || state.entity == 0 || state.zone == 0 || inventory.revision == 0 || ledger.revision == 0) {
+            (version >= 5 && !reader.u32(mailbox_revision)) ||
+            account == 0 || state.entity == 0 || state.zone == 0 || inventory.revision == 0 ||
+            ledger.revision == 0 || mailbox_revision == 0) {
             error = "invalid account ledger"; return false;
         }
         accounts_[account] = state;
@@ -216,7 +225,8 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
                                              entities_.process_generation(), 1};
             if (!entities_.restore(entity)) { error = "invalid persisted entity"; return false; }
         }
-        if (!world_.set_inventory(account, inventory) || !economy_.set_account(account, ledger)) {
+        if (!world_.set_inventory(account, inventory) || !economy_.set_account(account, ledger) ||
+            !economy_.restore_mailbox_revision(account, mailbox_revision)) {
             error = "failed to restore account authorities"; return false;
         }
     }
@@ -266,10 +276,16 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
 
     std::uint32_t mail_count;
     if (!reader.u32(mail_count) || mail_count > 100000) { error = "invalid mail count"; return false; }
+    /* The decoded payload is the whole truth about pending mail, and this
+     * function runs twice at startup -- once for the checkpoint, once for the
+     * newest journalled state. */
+    economy_.clear_mail();
     for (std::uint32_t i = 0; i < mail_count; ++i) {
         acnet::MailRecord mail;
         if (!reader.u64(mail.id) || !reader.u64(mail.sender) || !reader.u64(mail.recipient) ||
-            !reader.u16(mail.attachment) || !reader.u32(mail.revision) || !economy_.restore_mail(mail)) {
+            !reader.u16(mail.attachment) || !reader.u32(mail.revision) ||
+            (version >= 5 && !reader.bytes(mail.text.data(), mail.text.size())) ||
+            !economy_.restore_mail(mail)) {
             error = "invalid mail state"; return false;
         }
     }

@@ -139,6 +139,12 @@ typedef struct my_room_work_s {
     FTR_ACTOR* ftr_actor_list;
     u8* used_list;
     int list_size;
+    int net_motion_active;
+    int net_motion_ftr_id;
+    xyz_t net_motion_start;
+    xyz_t net_motion_target;
+    f32 net_motion_frame;
+    f32 net_motion_duration;
 } aMR_work_c;
 
 static aMR_work_c l_aMR_work;
@@ -1921,6 +1927,7 @@ extern void aMR_NetReloadFurniture(ACTOR* actorx, GAME* game) {
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
     if (actorx == NULL || game == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != actorx ||
         l_aMR_work.ftr_actor_list == NULL || l_aMR_work.used_list == NULL) return;
+    l_aMR_work.net_motion_active = FALSE;
     aMR_AllFurnitureDestruct(actorx, game);
     aMR_InitFurnitureActorExistTable();
     aMR_MakeFurnitureActor(actorx, (GAME_PLAY*)game, mCoBG_LAYER0);
@@ -1928,6 +1935,49 @@ extern void aMR_NetReloadFurniture(ACTOR* actorx, GAME* game) {
     aMR_MakeItemDataInFurniture();
     aMR_ClearSwitchSaveData(my_room);
     aMR_OneMDFurnitureSwitchOn();
+}
+
+extern void aMR_NetReloadFurnitureMotion(ACTOR* actorx, GAME* game,
+                                         int source_x, int source_z,
+                                         int destination_x, int destination_z,
+                                         int layer, f32 duration_frames) {
+    int source_id = -1;
+    int destination_id = -1;
+    xyz_t source_position;
+    FTR_ACTOR* destination;
+
+    if (duration_frames <= 0.0f ||
+        !aMR_UnitNum2FtrItemNoFtrID(NULL, &source_id, source_x, source_z, layer) ||
+        source_id < 0 || source_id >= l_aMR_work.list_size || !l_aMR_work.used_list[source_id]) {
+        aMR_NetReloadFurniture(actorx, game);
+        return;
+    }
+    source_position = l_aMR_work.ftr_actor_list[source_id].position;
+    aMR_NetReloadFurniture(actorx, game);
+    if (!aMR_UnitNum2FtrItemNoFtrID(NULL, &destination_id, destination_x, destination_z, layer) ||
+        destination_id < 0 || destination_id >= l_aMR_work.list_size || !l_aMR_work.used_list[destination_id]) return;
+
+    destination = &l_aMR_work.ftr_actor_list[destination_id];
+    l_aMR_work.net_motion_active = TRUE;
+    l_aMR_work.net_motion_ftr_id = destination_id;
+    l_aMR_work.net_motion_start = source_position;
+    l_aMR_work.net_motion_target = destination->position;
+    l_aMR_work.net_motion_frame = 0.0f;
+    l_aMR_work.net_motion_duration = duration_frames;
+    destination->position = source_position;
+    destination->last_position = source_position;
+}
+
+extern int aMR_NetFurnitureMoveActive(const MY_ROOM_ACTOR* my_room) {
+    int i;
+    if (my_room == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != (const ACTOR*)my_room ||
+        l_aMR_work.ftr_actor_list == NULL || l_aMR_work.used_list == NULL) return FALSE;
+    for (i = 0; i < l_aMR_work.list_size; ++i) {
+        const FTR_ACTOR* furniture = &l_aMR_work.ftr_actor_list[i];
+        if (l_aMR_work.used_list[i] && furniture->state >= aFTR_STATE_WAIT_PUSH &&
+            furniture->state <= aFTR_STATE_PULL) return TRUE;
+    }
+    return FALSE;
 }
 
 extern void aMR_NetFlushSwitches(MY_ROOM_ACTOR* my_room) {

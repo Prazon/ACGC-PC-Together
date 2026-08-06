@@ -2661,6 +2661,28 @@ static void aMR_GetItemPosOnMovingFurniture(MY_ROOM_ACTOR* my_room, FTR_ACTOR* f
 
 typedef void (*aMR_FPROC)(FTR_ACTOR*, GAME*, MY_ROOM_ACTOR*);
 
+static void aMR_NetInterpolateFurniture(FTR_ACTOR* ftr_actor, GAME* game) {
+    f32 progress;
+    f32 eased;
+    if (!l_aMR_work.net_motion_active || ftr_actor->id != l_aMR_work.net_motion_ftr_id) return;
+
+    l_aMR_work.net_motion_frame += (f32)game->graph->dt_num_60fps_frames;
+    progress = l_aMR_work.net_motion_frame / l_aMR_work.net_motion_duration;
+    if (progress >= 1.0f) {
+        ftr_actor->position = l_aMR_work.net_motion_target;
+        l_aMR_work.net_motion_active = FALSE;
+        return;
+    }
+    if (progress < 0.0f) progress = 0.0f;
+    eased = progress * progress * (3.0f - 2.0f * progress);
+    ftr_actor->position.x = l_aMR_work.net_motion_start.x +
+                            (l_aMR_work.net_motion_target.x - l_aMR_work.net_motion_start.x) * eased;
+    ftr_actor->position.y = l_aMR_work.net_motion_start.y +
+                            (l_aMR_work.net_motion_target.y - l_aMR_work.net_motion_start.y) * eased;
+    ftr_actor->position.z = l_aMR_work.net_motion_start.z +
+                            (l_aMR_work.net_motion_target.z - l_aMR_work.net_motion_start.z) * eased;
+}
+
 static void aMR_FurnitureMoveFunction(ACTOR* actorx, GAME* game) {
     int i;
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
@@ -2684,6 +2706,7 @@ static void aMR_FurnitureMoveFunction(ACTOR* actorx, GAME* game) {
             aFTR_PROFILE* profile = aMR_GetFurnitureProfile(ftr_actor->name);
 
             if (profile != NULL) {
+                aMR_NetInterpolateFurniture(ftr_actor, game);
 #ifdef TARGET_PC
                 ftr_actor->texture_scroll_frame += (f32)game->graph->dt_num_60fps_frames;
 #endif

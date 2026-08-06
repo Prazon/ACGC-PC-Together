@@ -314,6 +314,11 @@ extern int aMR_RadioBgmNow(void);
 extern void aMR_ThrowItem_FurnitureLock(void);
 extern void aMR_ThrowItem_FurnitureUnlock(void);
 extern void aMR_NetReloadFurniture(ACTOR* actor, GAME* game);
+extern void aMR_NetReloadFurnitureMotion(ACTOR* actor, GAME* game,
+                                         int source_x, int source_z,
+                                         int destination_x, int destination_z,
+                                         int layer, f32 duration_frames);
+extern int aMR_NetFurnitureMoveActive(const MY_ROOM_ACTOR* my_room);
 extern void aMR_NetFlushSwitches(MY_ROOM_ACTOR* my_room);
 extern int aMR_NetCurrentMusic(const MY_ROOM_ACTOR* my_room);
 extern int aMR_NetSetMusic(MY_ROOM_ACTOR* my_room, int music_track);

@@ -313,6 +313,7 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             baseline_received_ms_ = now_ms;
             has_baseline_ = true;
             latest_server_tick_ = baseline_.server_tick;
+            server_tick_received_ms_ = now_ms;
             break;
         case MessageType::TownBootstrapResult:
             if (!decode(packet.payload, town_bootstrap_result_.emplace())) {
@@ -339,6 +340,26 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         [&](const auto& entry) { return entry.first == tile.address; });
                     if (found != baseline_.tiles.end()) found->second = tile.state;
                     else if (tile.address.zone == baseline_.zone) baseline_.tiles.emplace_back(tile.address, tile.state);
+                }
+                if (delta.kind == ResourceKind::Mail && has_baseline_) {
+                    MailDelta mail;
+                    if (!decode_mail_delta(delta.payload, mail) || mail.account != config_.account) {
+                        error = "malformed mailbox replication delta";
+                        return false;
+                    }
+                    auto& letters = baseline_.mail;
+                    const auto found = std::find_if(letters.begin(), letters.end(),
+                        [&](const MailRecord& letter) { return letter.id == mail.record.id; });
+                    if (mail.removed) {
+                        if (found != letters.end()) letters.erase(found);
+                    } else if (found != letters.end()) {
+                        *found = mail.record;
+                    } else if (letters.size() < kMailboxCapacity) {
+                        letters.push_back(mail.record);
+                    }
+                    baseline_.mailbox.revision = mail.mailbox_revision;
+                    baseline_.mailbox.mail.clear();
+                    for (const MailRecord& letter : letters) baseline_.mailbox.mail.push_back(letter.id);
                 }
                 if (delta.kind == ResourceKind::Town) {
                     TownOccupancy occupancy;
@@ -500,6 +521,7 @@ bool ClientRuntime::handle_datagram(const Datagram& datagram, std::uint64_t now_
 
 bool ClientRuntime::poll(std::uint64_t now_ms, std::string& error) {
     error.clear();
+    current_time_ms_ = now_ms;
     if (!socket_.is_open()) {
         error = "client socket is closed";
         return false;
@@ -566,6 +588,7 @@ bool ClientRuntime::frame(std::uint64_t now_ms,
          * original player controller/collision code instead of asking the
          * server to reinterpret camera-relative stick axes. */
         command.client_transform = diagnostic_local;
+        command.client_transform.action = action;
         std::vector<std::uint8_t> payload;
         if (!encode(command, payload) ||
             !send_payload(MessageType::InputCommand, Channel::Snapshots, payload, now_ms, error)) return false;
@@ -668,7 +691,14 @@ std::optional<EncounterResult> ClientRuntime::take_encounter_result() {
 std::vector<RemotePresentation> ClientRuntime::remote_players() const {
     std::vector<RemotePresentation> output;
     output.reserve(remotes_.size());
-    const double render_tick = latest_server_tick_ > 6 ? static_cast<double>(latest_server_tick_ - 6) : 0.0;
+    double estimated_tick = static_cast<double>(latest_server_tick_);
+    if (current_time_ms_ >= server_tick_received_ms_ && config_.simulation_rate != 0) {
+        const std::uint64_t elapsed_ms = std::min<std::uint64_t>(current_time_ms_ - server_tick_received_ms_, 5000);
+        estimated_tick += static_cast<double>(elapsed_ms) * config_.simulation_rate / 1000.0;
+    }
+    /* Keep six simulation ticks buffered, but advance through that buffer at
+     * render time rather than holding each sample until another packet lands. */
+    const double render_tick = std::max(0.0, estimated_tick - 6.0);
     for (const auto& item : remotes_) {
         const auto sampled = item.second.history.sample(render_tick, 2.0, 1.0 / config_.simulation_rate);
         if (!sampled.has_value()) continue;

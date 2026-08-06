@@ -153,11 +153,55 @@ void transaction_messages_round_trip() {
     economy.expected_aux_revision = 3;
     economy.recipient = 99;
     economy.amount = 500;
+    economy.mail_id = 77;
     CHECK(acnet::encode(economy, bytes));
     acnet::EconomyRequest decoded_economy;
     CHECK(acnet::decode(bytes, decoded_economy));
     CHECK(decoded_economy.recipient == 99);
     CHECK(decoded_economy.amount == 500);
+    CHECK(decoded_economy.mail_id == 77);
+
+    acnet::EconomyResult economy_result;
+    economy_result.code = acnet::ResultCode::Ok;
+    economy_result.type = acnet::EconomyOpType::ClaimMail;
+    economy_result.idempotency = {16, 17};
+    economy_result.inventory_revision = 8;
+    economy_result.auxiliary_revision = 9;
+    economy_result.balance = 4000;
+    economy_result.mail_id = 77;
+    economy_result.item = 0x2203;
+    CHECK(acnet::encode(economy_result, bytes));
+    acnet::EconomyResult decoded_economy_result;
+    CHECK(acnet::decode(bytes, decoded_economy_result));
+    CHECK(decoded_economy_result.type == acnet::EconomyOpType::ClaimMail);
+    CHECK(decoded_economy_result.mail_id == 77);
+    CHECK(decoded_economy_result.auxiliary_revision == 9);
+
+    /* Operator operations are outside the client-reachable range in both
+     * directions, so neither codec will carry one. */
+    acnet::EconomyRequest administrative = economy;
+    administrative.type = acnet::EconomyOpType::AdminSendMail;
+    CHECK(!acnet::encode(administrative, bytes));
+    acnet::EconomyResult administrative_result = economy_result;
+    administrative_result.type = acnet::EconomyOpType::AdminGrantBells;
+    CHECK(!acnet::encode(administrative_result, bytes));
+
+    acnet::MailDelta mail_delta;
+    mail_delta.account = 99;
+    mail_delta.mailbox_revision = 4;
+    mail_delta.record = {77, 45, 99, 0x2203, 1, {}};
+    mail_delta.record.text[0] = 'H';
+    CHECK(acnet::encode_mail_delta(mail_delta, bytes));
+    acnet::MailDelta decoded_mail_delta;
+    CHECK(acnet::decode_mail_delta(bytes, decoded_mail_delta));
+    CHECK(decoded_mail_delta.record.id == 77);
+    CHECK(decoded_mail_delta.record.attachment == 0x2203);
+    CHECK(decoded_mail_delta.mailbox_revision == 4);
+    CHECK(!decoded_mail_delta.removed);
+    CHECK(decoded_mail_delta.record.text[0] == 'H');
+    acnet::MailDelta mismatched = mail_delta;
+    mismatched.account = 100; // a letter must belong to the mailbox it changes
+    CHECK(!acnet::encode_mail_delta(mismatched, bytes));
 
     acnet::HouseUpdate house;
     house.account = 46;
@@ -688,6 +732,7 @@ void snapshot_round_trip() {
         player.transform.position = {static_cast<float>(i), 2.0F, static_cast<float>(i * 3)};
         player.transform.velocity = {0.1F, 0.0F, -0.2F};
         player.transform.yaw = static_cast<std::int16_t>(i * 100);
+        player.transform.action = static_cast<std::uint16_t>(120 + i);
         if (i == 7) {
             player.transition_phase = acnet::DoorTransitionPhase::Arriving;
             player.transition_door = 202;
@@ -705,6 +750,7 @@ void snapshot_round_trip() {
     CHECK(decoded.players[7].transition_phase == acnet::DoorTransitionPhase::Arriving);
     CHECK(decoded.players[7].transition_door == 202);
     CHECK(same_float(decoded.players[7].transform.position.z, 21.0F));
+    CHECK(decoded.players[7].transform.action == 127);
 }
 
 void entity_ids_are_stable_and_not_reused() {
@@ -770,14 +816,17 @@ void interpolation_orders_and_extrapolates() {
     acnet::Transform a;
     a.position = {0.0F, 0.0F, 0.0F};
     a.velocity = {1.0F, 0.0F, 0.0F};
+    a.action = 4;
     acnet::Transform b = a;
     b.position.x = 10.0F;
+    b.action = 5;
     CHECK(history.push(10, a));
     CHECK(history.push(20, b));
     CHECK(!history.push(19, b));
     const auto midpoint = history.sample(15.0);
     CHECK(midpoint.has_value());
     CHECK(same_float(midpoint->position.x, 5.0F));
+    CHECK(midpoint->action == 5);
     const auto extrapolated = history.sample(25.0, 2.0);
     CHECK(extrapolated.has_value());
     CHECK(same_float(extrapolated->position.x, 12.0F));
@@ -1229,6 +1278,325 @@ void economy_and_trade_prevent_value_duplication() {
     CHECK(world.set_inventory(1, externally_changed));
     CHECK(economy.confirm_trade(901, 1, offer_b.trade_revision).code == acnet::ResultCode::StaleRevision);
     CHECK(economy.cancel_trade(901));
+}
+
+void mail_and_banking_are_server_authoritative() {
+    acnet::PlayerDirectory players;
+    acnet::WorldAuthority world(&players);
+    acnet::InventoryState sender_inventory;
+    sender_inventory.bells = 900;
+    sender_inventory.slots[0].item = 0x1000;
+    acnet::InventoryState recipient_inventory;
+    CHECK(world.register_inventory(1, sender_inventory));
+    CHECK(world.register_inventory(2, recipient_inventory));
+
+    acnet::EconomyAuthority economy(&world);
+    acnet::AccountLedger sender_ledger;
+    sender_ledger.bank_balance = 100;
+    sender_ledger.debt = 400;
+    CHECK(economy.register_account(1, sender_ledger));
+    CHECK(economy.register_account(2));
+    const std::uint64_t initial_items = economy.total_item_units();
+    const std::uint64_t initial_bells = economy.total_bells();
+
+    /* Banking is a revisioned, idempotent server transaction: the ledger only
+     * moves through apply(), a stale revision is refused, and a replayed key
+     * returns the first answer instead of moving the money twice. */
+    acnet::EconomyRequest deposit;
+    deposit.type = acnet::EconomyOpType::Deposit;
+    deposit.account = 1;
+    deposit.idempotency = {71, 1};
+    deposit.expected_inventory_revision = 1;
+    deposit.expected_aux_revision = 1;
+    deposit.amount = 500;
+    const acnet::EconomyResult deposited = economy.apply(deposit);
+    CHECK(deposited.code == acnet::ResultCode::Ok);
+    CHECK(deposited.type == acnet::EconomyOpType::Deposit);
+    CHECK(deposited.balance == 600);
+    CHECK(deposited.bells == 400);
+    CHECK(deposited.auxiliary_revision == 2);
+    const acnet::EconomyResult deposit_replay = economy.apply(deposit);
+    CHECK(deposit_replay.replayed);
+    CHECK(deposit_replay.balance == 600);
+    CHECK(economy.ledger(1)->bank_balance == 600);
+
+    acnet::EconomyRequest stale_withdraw;
+    stale_withdraw.type = acnet::EconomyOpType::Withdraw;
+    stale_withdraw.account = 1;
+    stale_withdraw.idempotency = {71, 2};
+    stale_withdraw.expected_inventory_revision = deposited.inventory_revision;
+    stale_withdraw.expected_aux_revision = 1; // pre-deposit ledger revision
+    stale_withdraw.amount = 600;
+    CHECK(economy.apply(stale_withdraw).code == acnet::ResultCode::StaleRevision);
+
+    acnet::EconomyRequest overdraw = stale_withdraw;
+    overdraw.idempotency = {71, 3};
+    overdraw.expected_aux_revision = deposited.auxiliary_revision;
+    overdraw.amount = 601;
+    CHECK(economy.apply(overdraw).code == acnet::ResultCode::InvalidState);
+
+    acnet::EconomyRequest overpay;
+    overpay.type = acnet::EconomyOpType::PayDebt;
+    overpay.account = 1;
+    overpay.idempotency = {71, 4};
+    overpay.expected_inventory_revision = deposited.inventory_revision;
+    overpay.expected_aux_revision = deposited.auxiliary_revision;
+    overpay.amount = 401; // more than the 400 owed
+    CHECK(economy.apply(overpay).code == acnet::ResultCode::InvalidState);
+    CHECK(economy.ledger(1)->debt == 400);
+    CHECK(economy.total_bells() == initial_bells);
+
+    /* Mail: the attachment leaves the sender's pocket, lands in the recipient's
+     * mailbox, and is conserved the whole way. */
+    acnet::EconomyRequest attach;
+    attach.type = acnet::EconomyOpType::AttachMail;
+    attach.account = 1;
+    attach.idempotency = {72, 1};
+    attach.expected_inventory_revision = deposited.inventory_revision;
+    attach.inventory_slot = 0;
+    attach.expected_item = 0x1000;
+    attach.recipient = 2;
+    const acnet::EconomyResult attached = economy.apply(attach);
+    CHECK(attached.code == acnet::ResultCode::Ok);
+    CHECK(attached.mail_id != 0);
+    CHECK(world.inventory(1)->slots[0].item == 0);
+    CHECK(economy.mailbox(2)->mail.size() == 1);
+    CHECK(economy.mailbox(2)->mail[0] == attached.mail_id);
+    CHECK(economy.mail_for(2).size() == 1);
+    CHECK(economy.total_item_units() == initial_items);
+
+    acnet::EconomyRequest self_mail;
+    self_mail.type = acnet::EconomyOpType::AttachMail;
+    self_mail.account = 2;
+    self_mail.idempotency = {72, 2};
+    self_mail.expected_inventory_revision = world.inventory(2)->revision;
+    self_mail.inventory_slot = 0;
+    self_mail.recipient = 2;
+    CHECK(economy.apply(self_mail).code != acnet::ResultCode::Ok);
+
+    /* Only the addressee may claim, only against the current mailbox revision,
+     * and only once. */
+    acnet::EconomyRequest wrong_claimant;
+    wrong_claimant.type = acnet::EconomyOpType::ClaimMail;
+    wrong_claimant.account = 1;
+    wrong_claimant.idempotency = {73, 1};
+    wrong_claimant.expected_inventory_revision = world.inventory(1)->revision;
+    wrong_claimant.expected_aux_revision = economy.mailbox(1)->revision;
+    wrong_claimant.mail_id = attached.mail_id;
+    CHECK(economy.apply(wrong_claimant).code == acnet::ResultCode::NotFound);
+
+    acnet::EconomyRequest stale_claim;
+    stale_claim.type = acnet::EconomyOpType::ClaimMail;
+    stale_claim.account = 2;
+    stale_claim.idempotency = {73, 2};
+    stale_claim.expected_inventory_revision = world.inventory(2)->revision;
+    stale_claim.expected_aux_revision = 1; // pre-delivery mailbox revision
+    stale_claim.mail_id = attached.mail_id;
+    const acnet::EconomyResult stale_claimed = economy.apply(stale_claim);
+    CHECK(stale_claimed.code == acnet::ResultCode::StaleRevision);
+    CHECK(stale_claimed.auxiliary_revision == economy.mailbox(2)->revision);
+
+    acnet::EconomyRequest claim = stale_claim;
+    claim.idempotency = {73, 3};
+    claim.expected_aux_revision = economy.mailbox(2)->revision;
+    const acnet::EconomyResult claimed = economy.apply(claim);
+    CHECK(claimed.code == acnet::ResultCode::Ok);
+    CHECK(claimed.type == acnet::EconomyOpType::ClaimMail);
+    CHECK(claimed.item == 0x1000);
+    CHECK(world.inventory(2)->slots[claimed.inventory_slot].item == 0x1000);
+    CHECK(economy.mailbox(2)->mail.empty());
+    CHECK(economy.mail(attached.mail_id) == nullptr);
+    CHECK(claimed.auxiliary_revision == economy.mailbox(2)->revision);
+    CHECK(economy.total_item_units() == initial_items);
+    const acnet::EconomyResult claim_replay = economy.apply(claim);
+    CHECK(claim_replay.replayed);
+    CHECK(economy.total_item_units() == initial_items);
+
+    /* Operator gifts commit through the same authority. Bells appear in the
+     * bank with a fresh ledger revision; a letter appears in the mailbox with
+     * the operator as sender. */
+    CHECK(economy.admin_grant_bank_bells(999, 100).code == acnet::ResultCode::NotFound);
+    const acnet::Revision ledger_revision = economy.ledger(2)->revision;
+    const acnet::EconomyResult granted = economy.admin_grant_bank_bells(2, 12345);
+    CHECK(granted.code == acnet::ResultCode::Ok);
+    CHECK(granted.balance == 12345);
+    CHECK(economy.ledger(2)->bank_balance == 12345);
+    CHECK(granted.auxiliary_revision != ledger_revision);
+    CHECK(economy.total_bells() == initial_bells + 12345);
+
+    std::array<std::uint8_t, acnet::kMailTextBytes> body{};
+    const std::string message = "Thanks for playing!";
+    std::copy(message.begin(), message.end(), body.begin());
+    const acnet::EconomyResult posted = economy.admin_send_mail(2, 0x2203, body);
+    CHECK(posted.code == acnet::ResultCode::Ok);
+    const acnet::MailRecord* letter = economy.mail(posted.mail_id);
+    CHECK(letter != nullptr);
+    CHECK(letter->sender == acnet::kAdministratorAccount);
+    CHECK(letter->recipient == 2);
+    CHECK(letter->attachment == 0x2203);
+    CHECK(std::equal(message.begin(), message.end(), letter->text.begin()));
+    CHECK(economy.mailbox(2)->mail.size() == 1);
+    CHECK(economy.admin_send_mail(999, 0, body).code == acnet::ResultCode::NotFound);
+
+    /* The mailbox is bounded, and a full one refuses both a player letter and
+     * an operator letter rather than silently dropping either. */
+    for (std::size_t i = economy.mailbox(2)->mail.size(); i < acnet::kMailboxCapacity; ++i) {
+        CHECK(economy.admin_send_mail(2, 0, body).code == acnet::ResultCode::Ok);
+    }
+    CHECK(economy.mailbox(2)->mail.size() == acnet::kMailboxCapacity);
+    CHECK(economy.admin_send_mail(2, 0, body).code == acnet::ResultCode::Capacity);
+    acnet::InventoryState refilled = *world.inventory(1);
+    refilled.slots[0].item = 0x1001;
+    refilled.revision = 50;
+    CHECK(world.set_inventory(1, refilled));
+    acnet::EconomyRequest overflow;
+    overflow.type = acnet::EconomyOpType::AttachMail;
+    overflow.account = 1;
+    overflow.idempotency = {74, 1};
+    overflow.expected_inventory_revision = 50;
+    overflow.inventory_slot = 0;
+    overflow.recipient = 2;
+    CHECK(economy.apply(overflow).code == acnet::ResultCode::Capacity);
+    CHECK(world.inventory(1)->slots[0].item == 0x1001); // the item never left the pocket
+
+    /* Administrative operations are not reachable through the request path even
+     * when a request is built locally rather than decoded from the wire. */
+    acnet::EconomyRequest forged;
+    forged.type = acnet::EconomyOpType::AdminGrantBells;
+    forged.account = 1;
+    forged.idempotency = {75, 1};
+    forged.amount = 1000000;
+    CHECK(economy.apply(forged).code == acnet::ResultCode::Unauthorized);
+    CHECK(economy.ledger(1)->bank_balance == 600);
+    std::vector<std::uint8_t> forged_bytes;
+    CHECK(!acnet::encode(forged, forged_bytes));
+}
+
+void operator_gifts_survive_a_restart() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-admin-gift-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } cleanup{root};
+    constexpr std::int64_t wall = 1700000000;
+    acserver::TownRuntimeConfig config;
+    config.port = 0;
+    config.data_directory = root / "town";
+    config.connection_timeout_ms = 60000;
+    config.invite_key = "gift-test-key";
+    std::string error;
+    constexpr acnet::AccountId account = 4242;
+
+    {
+        acserver::TownRuntime server(config);
+        CHECK(server.initialize(wall, error));
+        /* Gifts address accounts, and an account exists once its player has
+         * connected at least once. */
+        CHECK(!server.grant_bank_bells(account, 1000, error));
+        CHECK(!error.empty());
+        acnet::ClientConfig client_config;
+        client_config.server_port = server.bound_port();
+        client_config.account = account;
+        client_config.invite_key = config.invite_key;
+        acnet::ClientRuntime client(client_config);
+        CHECK(client.start(1000, error));
+        for (std::uint64_t i = 0; i < 200 && client.baseline() == nullptr; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1000 + i, wall, error));
+            CHECK(client.poll(1000 + i, error));
+        }
+        CHECK(client.baseline() != nullptr);
+        CHECK(client.mailbox().revision != 0);
+        CHECK(client.mail().empty());
+
+        const std::uint64_t balance_before = client.baseline()->ledger.bank_balance;
+        CHECK(server.grant_bank_bells(account, 30000, error));
+        CHECK(server.send_mail(account, 0x2203, "Welcome to town", error));
+        const std::vector<acserver::RuntimeAccountSummary> summaries = server.account_summaries();
+        CHECK(summaries.size() == 1);
+        CHECK(summaries[0].account == account);
+        CHECK(summaries[0].bank_balance == balance_before + 30000);
+        CHECK(summaries[0].pending_mail == 1);
+
+        /* The addressee is told about the letter while connected, without
+         * waiting for another baseline. */
+        for (std::uint64_t i = 0; i < 200 && client.mail().empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1400 + i, wall, error));
+            CHECK(client.poll(1400 + i, error));
+        }
+        CHECK(client.mail().size() == 1);
+        CHECK(client.mail()[0].sender == acnet::kAdministratorAccount);
+        CHECK(client.mail()[0].attachment == 0x2203);
+        CHECK(client.mailbox().mail.size() == 1);
+
+        /* Claiming moves the gift into the pocket exactly once. */
+        acnet::EconomyRequest claim;
+        claim.type = acnet::EconomyOpType::ClaimMail;
+        claim.account = account;
+        claim.idempotency = {91, 7};
+        claim.expected_inventory_revision = client.baseline()->inventory.revision;
+        claim.expected_aux_revision = client.mailbox().revision;
+        claim.mail_id = client.mail()[0].id;
+        CHECK(client.request(claim, 1700, error));
+        std::optional<acnet::EconomyResult> claimed;
+        for (std::uint64_t i = 0; i < 200 && !claimed.has_value(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1700 + i, wall, error));
+            CHECK(client.poll(1700 + i, error));
+            claimed = client.take_economy_result();
+        }
+        CHECK(claimed.has_value());
+        CHECK(claimed->code == acnet::ResultCode::Ok);
+        CHECK(claimed->item == 0x2203);
+        for (std::uint64_t i = 0; i < 200 && !client.mail().empty(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(1900 + i, wall, error));
+            CHECK(client.poll(1900 + i, error));
+        }
+        CHECK(client.mail().empty());
+        CHECK(server.shutdown(error));
+    }
+
+    /* A gift is journalled before it is reported, so it is still there after a
+     * restart -- including a second letter posted while the town was stopped. */
+    acserver::TownRuntime restarted(config);
+    CHECK(restarted.initialize(wall + 5, error));
+    std::vector<acserver::RuntimeAccountSummary> summaries = restarted.account_summaries();
+    CHECK(summaries.size() == 1);
+    CHECK(summaries[0].bank_balance >= 30000);
+    CHECK(summaries[0].pending_mail == 0);
+    CHECK(restarted.send_mail(account, 0x2204, "A second gift", error));
+    summaries = restarted.account_summaries();
+    CHECK(summaries[0].pending_mail == 1);
+    CHECK(restarted.shutdown(error));
+
+    acserver::TownRuntime reopened(config);
+    CHECK(reopened.initialize(wall + 10, error));
+    const std::vector<acserver::RuntimeAccountSummary> reopened_summaries = reopened.account_summaries();
+    CHECK(reopened_summaries.size() == 1);
+    CHECK(reopened_summaries[0].bank_balance >= 30000);
+    CHECK(reopened_summaries[0].pending_mail == 1);
+    CHECK(reopened.shutdown(error));
+
+    /* Startup decodes the checkpoint and then the newest journalled state on
+     * the same authority. A letter that appears in both must not be read as a
+     * duplicate, and one letter has to survive alongside a second posted after
+     * the checkpoint even when the process never shuts down cleanly. */
+    {
+        acserver::TownRuntime crashing(config);
+        CHECK(crashing.initialize(wall + 15, error));
+        CHECK(crashing.account_summaries()[0].pending_mail == 1);
+        CHECK(crashing.send_mail(account, 0x2205, "posted after the checkpoint", error));
+        CHECK(crashing.account_summaries()[0].pending_mail == 2);
+        // No shutdown: the newest journal record is never superseded by a checkpoint.
+    }
+    acserver::TownRuntime replayed(config);
+    CHECK(replayed.initialize(wall + 20, error));
+    CHECK(replayed.account_summaries()[0].pending_mail == 2);
+    CHECK(replayed.shutdown(error));
 }
 
 void npc_leases_scope_conversations_and_disconnects() {
@@ -2094,6 +2462,38 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(std::fabs(second_remotes[0].transform.position.x - first_local.position.x) < 0.01F);
     CHECK(first_remotes[0].transform.yaw == second_local.yaw);
     CHECK(second_remotes[0].transform.yaw == first_local.yaw);
+
+    bool actions_converged = false;
+    for (std::uint64_t i = 0; i < 120 && !actions_converged; ++i) {
+        ++settle_now;
+        acnet::Transform corrected;
+        bool has_correction = false;
+        CHECK(first.frame(settle_now, 0, 0, 0, 121, first_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(second.frame(settle_now, 0, 0, 0, 122, second_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(server.step(settle_now, wall + 5, error));
+        CHECK(first.poll(settle_now, error));
+        CHECK(second.poll(settle_now, error));
+        first_remotes = first.remote_players();
+        second_remotes = second.remote_players();
+        actions_converged = first_remotes.size() == 1 && second_remotes.size() == 1 &&
+                            first_remotes[0].transform.action == 122 &&
+                            second_remotes[0].transform.action == 121;
+    }
+    CHECK(actions_converged);
+    settle_now += 40;
+    {
+        acnet::Transform corrected;
+        bool has_correction = false;
+        CHECK(first.frame(settle_now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(server.step(settle_now, wall + 5, error));
+        CHECK(first.poll(settle_now, error));
+        CHECK(second.poll(settle_now, error));
+    }
     CHECK(first.packets_received() > 10);
     CHECK(second.packets_received() > 10);
     CHECK(first.baseline() != nullptr);
@@ -2535,6 +2935,8 @@ int main() {
         {"client-authoritative movement at 200ms", movement_is_client_authoritative_under_latency},
         {"atomic world transactions", world_transactions_are_atomic_idempotent_and_conserved},
         {"economy and escrow trade", economy_and_trade_prevent_value_duplication},
+        {"server-authoritative mail and banking", mail_and_banking_are_server_authoritative},
+        {"operator gifts survive a restart", operator_gifts_survive_a_restart},
         {"NPC conversation leases", npc_leases_scope_conversations_and_disconnects},
         {"zone handoff and housing", zone_handoffs_and_four_resident_housing_are_safe},
         {"persistence crash recovery", persistence_recovers_checkpoints_journal_and_gci},

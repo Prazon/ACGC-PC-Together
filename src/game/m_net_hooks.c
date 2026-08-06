@@ -32,7 +32,19 @@ static u64 house_candidate_hash = 0;
 static u64 house_submitted_hash = 0;
 static int house_candidate_frames = 0;
 static int house_update_pending = FALSE;
+static int force_house_reconcile = FALSE;
 static AcNetHouseFurniture house_furniture[3 * 4 * 16 * 16];
+static mActor_name_t house_authoritative_items[mHm_ROOM_NUM][mCoBG_LAYER_NUM][UT_Z_NUM][UT_X_NUM];
+typedef struct net_furniture_motion_s {
+    int valid;
+    u8 floor;
+    u8 layer;
+    u8 source_x;
+    u8 source_z;
+    u8 destination_x;
+    u8 destination_z;
+} NetFurnitureMotion;
+static NetFurnitureMotion house_motion;
 static u32 pending_destination_zone = 0;
 static int zone_transfer_phase = 0;
 static u64 pending_transfer_token_high = 0;
@@ -148,6 +160,8 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
     int floor;
     int layer;
     int changed = FALSE;
+    int can_interpolate;
+    memset(&house_motion, 0, sizeof(house_motion));
     if (play == NULL || !Net_IsConnected() || !mSc_IS_SCENE_PLAYER_ROOM(play->scene_id) ||
         !acnet_client_house(&state) || state.zone_id != Net_SceneZone(play->scene_id) || !state.initialized ||
         state.original_slot >= PLAYER_NUM) return FALSE;
@@ -158,9 +172,68 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
         house_submitted_hash = 0;
         house_candidate_frames = 0;
         house_update_pending = FALSE;
+        force_house_reconcile = FALSE;
     }
-    if (last_house_revision == state.revision) return FALSE;
+    if (last_house_revision == state.revision && !force_house_reconcile) return FALSE;
+    can_interpolate = last_house_revision != 0;
     home = &Save_Get(homes[state.original_slot]);
+    memset(house_authoritative_items, 0, sizeof(house_authoritative_items));
+    count = acnet_client_house_furniture(authoritative, ARRAY_COUNT(authoritative));
+    for (i = 0; i < count; ++i) {
+        mActor_name_t presentation_item;
+        if (authoritative[i].floor >= mHm_ROOM_NUM || authoritative[i].layer >= mCoBG_LAYER_NUM ||
+            authoritative[i].x >= UT_X_NUM || authoritative[i].z >= UT_Z_NUM) continue;
+        presentation_item = authoritative[i].item;
+        if ((presentation_item & 0xF000) != 0xF000) {
+            presentation_item = mRmTp_Item1ItemNo2FtrItemNo_AtPlayerRoom(presentation_item, TRUE);
+            if (ITEM_IS_FTR(presentation_item))
+                presentation_item = (presentation_item & ~3) | (authoritative[i].condition & 3);
+        }
+        house_authoritative_items[authoritative[i].floor][authoritative[i].layer]
+                                 [authoritative[i].z][authoritative[i].x] = presentation_item;
+    }
+
+    /* A single adjacent layer-zero move is the common push/pull case. Keep
+     * enough information to animate an accepted remote move (or an owner-side
+     * correction) after the authoritative grid has replaced the old one. */
+    if (can_interpolate) {
+        int source_count = 0;
+        int destination_count = 0;
+        mActor_name_t source_item = EMPTY_NO;
+        mActor_name_t destination_item = EMPTY_NO;
+        for (floor = 0; floor < mHm_ROOM_NUM; ++floor) {
+            mActor_name_t (*old_items)[UT_X_NUM] = home->floors[floor].layer_main.items;
+            for (i = 0; i < UT_X_NUM * UT_Z_NUM; ++i) {
+                const int x = (int)(i % UT_X_NUM);
+                const int z = (int)(i / UT_X_NUM);
+                const mActor_name_t old_item = ((mActor_name_t*)old_items)[i];
+                const mActor_name_t new_item = house_authoritative_items[floor][mCoBG_LAYER0][z][x];
+                if (old_item == new_item) continue;
+                if (ITEM_IS_FTR(old_item)) {
+                    ++source_count;
+                    source_item = old_item;
+                    house_motion.floor = (u8)floor;
+                    house_motion.layer = mCoBG_LAYER0;
+                    house_motion.source_x = (u8)x;
+                    house_motion.source_z = (u8)z;
+                }
+                if (ITEM_IS_FTR(new_item)) {
+                    ++destination_count;
+                    destination_item = new_item;
+                    house_motion.destination_x = (u8)x;
+                    house_motion.destination_z = (u8)z;
+                }
+            }
+        }
+        if (source_count == 1 && destination_count == 1 &&
+            (source_item & ~3) == (destination_item & ~3) &&
+            (source_item & 3) == (destination_item & 3)) {
+            const int dx = (int)house_motion.destination_x - (int)house_motion.source_x;
+            const int dz = (int)house_motion.destination_z - (int)house_motion.source_z;
+            house_motion.valid = (ABS(dx) + ABS(dz)) == 1;
+        }
+    }
+
     if (home->size_info.size != state.upgrade_level) {
         home->size_info.size = state.upgrade_level;
         changed = TRUE;
@@ -170,35 +243,18 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
         for (layer = 0; layer < mCoBG_LAYER_NUM; ++layer) {
             if (layers[layer].ftr_switch != state.furniture_switches[floor * mCoBG_LAYER_NUM + layer]) changed = TRUE;
             layers[layer].ftr_switch = state.furniture_switches[floor * mCoBG_LAYER_NUM + layer];
-            for (i = 0; i < UT_X_NUM * UT_Z_NUM; ++i) {
-                if (((mActor_name_t*)layers[layer].items)[i] != EMPTY_NO) changed = TRUE;
-                ((mActor_name_t*)layers[layer].items)[i] = EMPTY_NO;
-            }
+            if (memcmp(layers[layer].items, house_authoritative_items[floor][layer],
+                       sizeof(layers[layer].items)) != 0) changed = TRUE;
+            memcpy(layers[layer].items, house_authoritative_items[floor][layer],
+                   sizeof(layers[layer].items));
         }
-    }
-    count = acnet_client_house_furniture(authoritative, ARRAY_COUNT(authoritative));
-    for (i = 0; i < count; ++i) {
-        mHm_lyr_c* layers;
-        mActor_name_t* item;
-        mActor_name_t presentation_item;
-        if (authoritative[i].floor >= mHm_ROOM_NUM || authoritative[i].layer >= mCoBG_LAYER_NUM ||
-            authoritative[i].x >= UT_X_NUM || authoritative[i].z >= UT_Z_NUM) continue;
-        layers = &home->floors[authoritative[i].floor].layer_main;
-        item = &layers[authoritative[i].layer].items[authoritative[i].z][authoritative[i].x];
-        presentation_item = authoritative[i].item;
-        if ((presentation_item & 0xF000) != 0xF000) {
-            presentation_item = mRmTp_Item1ItemNo2FtrItemNo_AtPlayerRoom(presentation_item, TRUE);
-            if (ITEM_IS_FTR(presentation_item))
-                presentation_item = (presentation_item & ~3) | (authoritative[i].condition & 3);
-        }
-        if (*item != presentation_item) changed = TRUE;
-        *item = presentation_item;
     }
     if (state.main_light_on) mRmTp_IndexLightSwitchON(state.original_slot * 2);
     else mRmTp_IndexLightSwitchOFF(state.original_slot * 2);
     if (state.basement_light_on) mRmTp_IndexLightSwitchON(state.original_slot * 2 + 1);
     else mRmTp_IndexLightSwitchOFF(state.original_slot * 2 + 1);
     last_house_revision = state.revision;
+    force_house_reconcile = FALSE;
     return changed;
 }
 
@@ -212,6 +268,7 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     size_t count;
     int floor;
     int changed;
+    int furniture_move_active;
     while (acnet_client_take_house_update_result(&result)) {
         house_update_pending = FALSE;
         if (result.result_code == 0) house_submitted_hash = house_candidate_hash;
@@ -219,24 +276,67 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
             house_candidate_frames = 0;
             /* A rejected optimistic local edit must be overwritten even when
              * the authoritative room revision did not advance. */
-            last_house_revision = 0;
+            force_house_reconcile = TRUE;
         }
     }
     if (!mSc_IS_SCENE_PLAYER_ROOM(play->scene_id) || !acnet_client_house(&state) ||
-        state.zone_id != Net_SceneZone(play->scene_id)) return;
+        state.zone_id != Net_SceneZone(play->scene_id) || state.original_slot >= PLAYER_NUM) return;
     my_room = Net_FindMyRoom(play);
+    furniture_move_active = mPlib_check_player_actor_main_index_Furniture_Move((GAME*)play) ||
+                            aMR_NetFurnitureMoveActive(my_room);
+    if (state.owner_account_id != acnet_client_account() &&
+        last_house_revision == state.revision && !force_house_reconcile) {
+        count = Net_CaptureHouse(state.original_slot, &state, my_room, music_tracks, switches, &hash);
+        (void)count;
+        if (house_submitted_hash == 0) {
+            house_submitted_hash = hash;
+        } else if (hash != house_submitted_hash) {
+            /* Visitors may run the original local interaction for responsive
+             * presentation, but they cannot authoritatively decorate someone
+             * else's house. Correct their prediction after its keyframe. */
+            if (furniture_move_active) return;
+            force_house_reconcile = TRUE;
+        }
+    }
+    /* The original push/pull owns the local actor until its keyframe settles.
+     * Rebuilding the furniture list mid-action invalidates that handshake and
+     * can leave the player applying root motion forever. The local result is
+     * already predicted in Save_t, so wait to compare/correct until it ends. */
+    if (furniture_move_active &&
+        (last_house_revision != state.revision || force_house_reconcile)) return;
     changed = Net_ApplyHouseStateBeforeRoom(play);
-    if (changed && my_room != NULL) aMR_NetReloadFurniture((ACTOR*)my_room, (GAME*)play);
     floor = mFI_GetPlayerHouseFloorNo(play->scene_id);
+    if (changed && my_room != NULL) {
+        if (house_motion.valid && house_motion.floor == floor) {
+            aMR_NetReloadFurnitureMotion((ACTOR*)my_room, (GAME*)play,
+                                         house_motion.source_x, house_motion.source_z,
+                                         house_motion.destination_x, house_motion.destination_z,
+                                         house_motion.layer, 28.0f);
+        } else {
+            aMR_NetReloadFurniture((ACTOR*)my_room, (GAME*)play);
+        }
+    }
     if (state.initialized && my_room != NULL && floor >= 0 && floor < 3)
         aMR_NetSetMusic(my_room, state.music_tracks[floor]);
-    if (state.owner_account_id != acnet_client_account() || state.original_slot >= PLAYER_NUM ||
-        house_update_pending) return;
+    if (state.owner_account_id != acnet_client_account()) {
+        Net_CaptureHouse(state.original_slot, &state, my_room, music_tracks, switches,
+                         &house_submitted_hash);
+        return;
+    }
+    if (state.original_slot >= PLAYER_NUM || house_update_pending) return;
     count = Net_CaptureHouse(state.original_slot, &state, my_room, music_tracks, switches, &hash);
     if (hash != house_candidate_hash) {
         house_candidate_hash = hash;
-        house_candidate_frames = 0;
-        return;
+        if (furniture_move_active) {
+            /* Push/pull has already written its predicted destination into the
+             * room grid. Submit that complete candidate immediately so the
+             * server can validate it while the original keyframe is playing
+             * and peers can begin their interpolated presentation promptly. */
+            house_candidate_frames = 30;
+        } else {
+            house_candidate_frames = 0;
+            return;
+        }
     }
     if (house_candidate_frames < 30) {
         ++house_candidate_frames;
@@ -312,18 +412,18 @@ void Net_BeginSceneTransition(GAME_PLAY* play, int next_scene) {
 }
 
 static int Net_CapturePlayerTransform(GAME_PLAY* play, AcNetTransform* transform) {
-    ACTOR* player_actor;
+    PLAYER_ACTOR* player;
     if (play == NULL || transform == NULL) return FALSE;
-    player_actor = play->actor_info.list[ACTOR_PART_PLAYER].actor;
-    if (player_actor == NULL || player_actor->id != mAc_PROFILE_PLAYER) return FALSE;
-    transform->x = player_actor->world.position.x;
-    transform->y = player_actor->world.position.y;
-    transform->z = player_actor->world.position.z;
-    transform->velocity_x = player_actor->position_speed.x;
-    transform->velocity_y = player_actor->position_speed.y;
-    transform->velocity_z = player_actor->position_speed.z;
-    transform->yaw = player_actor->shape_info.rotation.y;
-    transform->action = 0;
+    player = (PLAYER_ACTOR*)play->actor_info.list[ACTOR_PART_PLAYER].actor;
+    if (player == NULL || player->actor_class.id != mAc_PROFILE_PLAYER) return FALSE;
+    transform->x = player->actor_class.world.position.x;
+    transform->y = player->actor_class.world.position.y;
+    transform->z = player->actor_class.world.position.z;
+    transform->velocity_x = player->actor_class.position_speed.x;
+    transform->velocity_y = player->actor_class.position_speed.y;
+    transform->velocity_z = player->actor_class.position_speed.z;
+    transform->yaw = player->actor_class.shape_info.rotation.y;
+    transform->action = (u16)player->now_main_index;
     return TRUE;
 }
 
@@ -899,7 +999,7 @@ void Net_PostSimulation(GAME_PLAY* play) {
     if (acnet_client_frame(menu_open ? 0 : (s16)pad->now.stick_x * 512,
                            menu_open ? 0 : (s16)pad->now.stick_y * 512,
                            menu_open ? 0 : pad->now.button,
-                           0,
+                           transform.action,
                            &transform)) {
         player_actor->world.position.x = transform.x;
         player_actor->world.position.y = transform.y;

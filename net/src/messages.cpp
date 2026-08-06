@@ -167,12 +167,14 @@ bool decode(const std::vector<std::uint8_t>& input, WorldResult& value) {
 
 bool encode(const EconomyRequest& value, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
-    if (static_cast<std::uint8_t>(value.type) > static_cast<std::uint8_t>(EconomyOpType::AttachMail) ||
+    /* Operator operations live above the client-reachable range and never
+     * travel on the wire in either direction. */
+    if (static_cast<std::uint8_t>(value.type) > kMaximumClientEconomyOp ||
         !writer.u8(static_cast<std::uint8_t>(value.type)) || !writer.u64(value.account) ||
         !idempotency(writer, value.idempotency) || !writer.u32(value.expected_inventory_revision) ||
         !writer.u32(value.expected_aux_revision) || !writer.u32(value.shop_index) ||
         !writer.u8(value.inventory_slot) || !writer.u16(value.expected_item) || !writer.u64(value.amount) ||
-        !writer.u64(value.recipient)) return false;
+        !writer.u64(value.recipient) || !writer.u64(value.mail_id)) return false;
     output = writer.data();
     return true;
 }
@@ -180,19 +182,21 @@ bool encode(const EconomyRequest& value, std::vector<std::uint8_t>& output) {
 bool decode(const std::vector<std::uint8_t>& input, EconomyRequest& value) {
     ByteReader reader(input);
     std::uint8_t type;
-    if (!reader.u8(type) || type > static_cast<std::uint8_t>(EconomyOpType::AttachMail) ||
+    if (!reader.u8(type) || type > kMaximumClientEconomyOp ||
         !reader.u64(value.account) || !idempotency(reader, value.idempotency) ||
         !reader.u32(value.expected_inventory_revision) || !reader.u32(value.expected_aux_revision) ||
         !reader.u32(value.shop_index) || !reader.u8(value.inventory_slot) ||
         !reader.u16(value.expected_item) || !reader.u64(value.amount) || !reader.u64(value.recipient) ||
-        !reader.finished()) return false;
+        !reader.u64(value.mail_id) || !reader.finished()) return false;
     value.type = static_cast<EconomyOpType>(type);
     return true;
 }
 
 bool encode(const EconomyResult& value, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
-    if (!result(writer, value.code) || !idempotency(writer, value.idempotency) ||
+    if (static_cast<std::uint8_t>(value.type) > kMaximumClientEconomyOp ||
+        !result(writer, value.code) || !writer.u8(static_cast<std::uint8_t>(value.type)) ||
+        !idempotency(writer, value.idempotency) ||
         !writer.u32(value.inventory_revision) || !writer.u32(value.auxiliary_revision) ||
         !writer.u64(value.balance) || !writer.u64(value.debt) || !writer.u32(value.bells) ||
         !writer.u16(value.item) || !writer.u8(value.inventory_slot) || !writer.u64(value.mail_id) ||
@@ -203,12 +207,15 @@ bool encode(const EconomyResult& value, std::vector<std::uint8_t>& output) {
 
 bool decode(const std::vector<std::uint8_t>& input, EconomyResult& value) {
     ByteReader reader(input);
+    std::uint8_t type;
     std::uint8_t replayed;
-    if (!result(reader, value.code) || !idempotency(reader, value.idempotency) ||
+    if (!result(reader, value.code) || !reader.u8(type) || type > kMaximumClientEconomyOp ||
+        !idempotency(reader, value.idempotency) ||
         !reader.u32(value.inventory_revision) || !reader.u32(value.auxiliary_revision) ||
         !reader.u64(value.balance) || !reader.u64(value.debt) || !reader.u32(value.bells) ||
         !reader.u16(value.item) || !reader.u8(value.inventory_slot) || !reader.u64(value.mail_id) ||
         !reader.u8(replayed) || replayed > 1 || !reader.finished()) return false;
+    value.type = static_cast<EconomyOpType>(type);
     value.replayed = replayed != 0;
     return true;
 }
@@ -474,7 +481,7 @@ bool encode(const EncounterRequest& value, std::vector<std::uint8_t>& output) {
     if (static_cast<std::uint8_t>(value.kind) > static_cast<std::uint8_t>(EncounterKind::Insect) ||
         !writer.u64(value.account) || !idempotency(writer, value.idempotency) ||
         !writer.u8(static_cast<std::uint8_t>(value.kind)) || !writer.u32(value.expected_inventory_revision) ||
-        !writer.u8(value.tool_slot)) return false;
+        !writer.u8(value.tool_slot) || !writer.u16(value.species)) return false;
     output = writer.data();
     return true;
 }
@@ -484,7 +491,16 @@ bool decode(const std::vector<std::uint8_t>& input, EncounterRequest& value) {
     std::uint8_t kind;
     if (!reader.u64(value.account) || !idempotency(reader, value.idempotency) || !reader.u8(kind) ||
         kind > static_cast<std::uint8_t>(EncounterKind::Insect) ||
-        !reader.u32(value.expected_inventory_revision) || !reader.u8(value.tool_slot) || !reader.finished()) return false;
+        !reader.u32(value.expected_inventory_revision) || !reader.u8(value.tool_slot) ||
+        !reader.u16(value.species) || !reader.finished()) return false;
+    /* Zero means "no claim"; anything else must name a real species so a
+     * malformed identifier is rejected at the parser rather than deep in the
+     * authority. */
+    if (value.species != 0) {
+        const std::uint16_t base =
+            kind == static_cast<std::uint8_t>(EncounterKind::Fish) ? kFishItemBase : kInsectItemBase;
+        if (value.species < base || value.species >= base + kEncounterSpeciesPerKind) return false;
+    }
     value.kind = static_cast<EncounterKind>(kind);
     return true;
 }
@@ -517,7 +533,7 @@ bool encode_deltas(const std::vector<ReplicationDelta>& value, std::vector<std::
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u16(static_cast<std::uint16_t>(value.size()))) return false;
     for (const ReplicationDelta& delta : value) {
-        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Town) ||
+        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Mail) ||
             delta.payload.size() > 65535 || !writer.u32(delta.revision) ||
             !writer.u8(static_cast<std::uint8_t>(delta.kind)) || !writer.u32(delta.zone) ||
             !writer.u64(delta.target_account) || !writer.u64(delta.entity) ||
@@ -542,7 +558,7 @@ bool decode_deltas(const std::vector<std::uint8_t>& input, std::vector<Replicati
         std::uint8_t reliable;
         std::uint8_t has_position;
         std::uint16_t size;
-        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Town) ||
+        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Mail) ||
             !reader.u32(delta.zone) || !reader.u64(delta.target_account) || !reader.u64(delta.entity) ||
             !reader.u8(reliable) || !reader.u8(has_position) || reliable > 1 || has_position > 1 ||
             !vec3(reader, delta.position) || !reader.u16(size) || size > reader.remaining()) return false;

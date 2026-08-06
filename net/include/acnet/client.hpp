@@ -92,6 +92,10 @@ public:
      * Population 0 means the server has not reported one. */
     std::uint8_t town_population() const { return town_population_; }
     std::uint8_t town_capacity() const { return town_capacity_; }
+    /* The authoritative mailbox mirror: the baseline seeds it and Mail deltas
+     * keep it live, so a claim always quotes a revision the server issued. */
+    const MailboxState& mailbox() const { return baseline_.mailbox; }
+    const std::vector<MailRecord>& mail() const { return baseline_.mail; }
 
     bool submit_town_bootstrap(TownBootstrap bootstrap, std::uint64_t now_ms, std::string& error);
     bool request(WorldOperation operation, std::uint64_t now_ms, std::string& error);
@@ -158,6 +162,7 @@ private:
     std::uint64_t last_control_send_ms_ = 0;
     std::uint64_t last_receive_ms_ = 0;
     std::uint64_t server_tick_received_ms_ = 0;
+    std::uint64_t current_time_ms_ = 0;
     Tick latest_server_tick_ = 0;
     std::array<std::uint8_t, kReconnectTokenBytes> reconnect_token_{};
     std::uint8_t reconnect_token_size_ = 0;

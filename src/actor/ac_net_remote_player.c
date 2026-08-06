@@ -44,7 +44,9 @@ typedef struct net_remote_render_data_s {
 
 enum {
     NET_REMOTE_ANIM_WAIT,
-    NET_REMOTE_ANIM_WALK
+    NET_REMOTE_ANIM_WALK,
+    NET_REMOTE_ANIM_PUSH,
+    NET_REMOTE_ANIM_PULL
 };
 
 static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote) {
@@ -160,10 +162,9 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
                 remote->transition_expires_tick = states[i].transition_expires_tick;
             }
             xyz_t_move(&actor->last_world_position, &actor->world.position);
-            /* The portable client already buffers six simulation ticks and
-             * interpolates snapshot history. Its sample advances at snapshot
-             * cadence, though, so ease the presentation actor between those
-             * samples at the actual render rate. Large discontinuities are
+            /* The portable client buffers six simulation ticks and advances
+             * through snapshot history at render time. A light final ease
+             * absorbs packet-arrival clock jitter. Large discontinuities are
              * scene transitions/teleports and must not glide across a room. */
             if (states[i].zone_id != remote->zone_id || distance_squared > 320.0f * 320.0f) {
                 actor->world.position.x = target_x;
@@ -194,10 +195,24 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
                 NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
                 const f32 speed_squared = actor->position_speed.x * actor->position_speed.x +
                                           actor->position_speed.z * actor->position_speed.z;
-                const int animation = speed_squared > 1.0f ? NET_REMOTE_ANIM_WALK : NET_REMOTE_ANIM_WAIT;
+                int animation;
+                int animation_index;
+                if (states[i].transform.action == mPlayer_INDEX_PUSH) {
+                    animation = NET_REMOTE_ANIM_PUSH;
+                    animation_index = mPlayer_ANIM_PUSH1;
+                } else if (states[i].transform.action == mPlayer_INDEX_PULL) {
+                    animation = NET_REMOTE_ANIM_PULL;
+                    animation_index = mPlayer_ANIM_PULL1;
+                } else if (speed_squared > 1.0f) {
+                    animation = NET_REMOTE_ANIM_WALK;
+                    animation_index = mPlayer_ANIM_WALK1;
+                } else {
+                    animation = NET_REMOTE_ANIM_WAIT;
+                    animation_index = mPlayer_ANIM_WAIT1;
+                }
                 if (render->animation_mode != animation) {
                     cKF_SkeletonInfo_R_init_standard_repeat(
-                        &render->keyframe, mPlib_Get_Pointer_Animation(animation == NET_REMOTE_ANIM_WALK ? 1 : 0), NULL);
+                        &render->keyframe, mPlib_Get_Pointer_Animation(animation_index), NULL);
                     render->animation_mode = (s8)animation;
                 }
                 cKF_SkeletonInfo_R_play(&render->keyframe);

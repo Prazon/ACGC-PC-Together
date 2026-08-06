@@ -4,6 +4,7 @@
 #include "acnet/entity_registry.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <exception>
 #include <memory>
 #include <string>
@@ -462,9 +463,10 @@ extern "C" int acnet_client_request_economy_auto(uint8_t operation_type,
                                                    uint8_t inventory_slot,
                                                    uint16_t expected_item,
                                                    uint64_t amount,
-                                                   uint64_t recipient) {
+                                                   uint64_t recipient,
+                                                   uint64_t mail_id) {
     try {
-        if (!client || operation_type > static_cast<std::uint8_t>(acnet::EconomyOpType::AttachMail)) return 0;
+        if (!client || operation_type > acnet::kMaximumClientEconomyOp) return 0;
         acnet::EconomyRequest request;
         request.type = static_cast<acnet::EconomyOpType>(operation_type);
         request.idempotency = random_idempotency();
@@ -475,6 +477,7 @@ extern "C" int acnet_client_request_economy_auto(uint8_t operation_type,
         request.expected_item = expected_item;
         request.amount = amount;
         request.recipient = recipient;
+        request.mail_id = mail_id;
         return request.idempotency.valid() &&
                client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }
@@ -485,11 +488,50 @@ extern "C" int acnet_client_take_economy_result(AcNetEconomyResult* output) {
         if (!client || output == nullptr) return 0;
         const auto value = client->take_economy_result();
         if (!value.has_value()) return 0;
-        *output = {static_cast<std::uint16_t>(value->code), value->inventory_revision,
+        *output = {static_cast<std::uint16_t>(value->code), static_cast<std::uint8_t>(value->type),
+                   value->inventory_revision,
                    value->auxiliary_revision, value->balance, value->debt, value->bells,
                    value->item, value->inventory_slot, value->mail_id,
                    static_cast<std::uint8_t>(value->replayed)};
         return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_bank_revision(void) {
+    try {
+        return client == nullptr || client->baseline() == nullptr ? 0 : client->baseline()->ledger.revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_mailbox_revision(void) {
+    try {
+        return client == nullptr || client->baseline() == nullptr ? 0 : client->mailbox().revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" size_t acnet_client_mail(AcNetMailRecord* output, size_t capacity) {
+    try {
+        if (!client || client->baseline() == nullptr || (capacity != 0 && output == nullptr)) return 0;
+        const std::vector<acnet::MailRecord>& letters = client->mail();
+        const std::size_t count = letters.size() < capacity ? letters.size() : capacity;
+        for (std::size_t i = 0; i < count; ++i) {
+            output[i].id = letters[i].id;
+            output[i].sender = letters[i].sender;
+            output[i].recipient = letters[i].recipient;
+            output[i].attachment = letters[i].attachment;
+            output[i].revision = letters[i].revision;
+            std::memcpy(output[i].text, letters[i].text.data(), letters[i].text.size());
+        }
+        return count;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_claim_mail(uint64_t mail_id) {
+    try {
+        if (!client || client->baseline() == nullptr || mail_id == 0) return 0;
+        return acnet_client_request_economy_auto(
+            static_cast<std::uint8_t>(acnet::EconomyOpType::ClaimMail),
+            client->baseline()->inventory.revision, client->mailbox().revision, 0, 0, 0, 0, 0, mail_id);
     } catch (...) { capture_exception(); return 0; }
 }
 

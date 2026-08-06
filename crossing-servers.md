@@ -37,6 +37,9 @@ entrance at the threshold instead of a placeholder-position teleport.
 - Stop with Ctrl+C for an orderly checkpoint and back up the whole town folder.
 - Use `--checkpoint-now`, `--ban`, `--unban`, `--import-gci`, or `--export-gci`
   as one-shot commands while the main process is stopped.
+- Gift with `--list-accounts` to find an account, then `--grant-bells ID=AMOUNT`
+  for the bank or `--send-mail ID --mail-item 0x2203 --mail-text "..."` for a
+  letter. The letter waits in the mailbox until the player claims it.
 - Run `make check` and `make sanitize` for the automated suite. With a disc in
   the build directory, `scripts/smoke_two_clients_windows.ps1` passively boots
   a server and two real x64 clients without sending synthetic input.

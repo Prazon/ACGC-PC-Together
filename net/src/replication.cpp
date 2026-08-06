@@ -14,6 +14,21 @@ constexpr std::size_t kMaximumBaselineTiles = 65535;
 constexpr std::size_t kMaximumBaselineNpcs = 256;
 constexpr std::size_t kMaximumShopEntries = 256;
 
+/* A letter is bounded and self-describing: identifier, both accounts, the
+ * attached item, and a fixed-size body.  Sender 0 is the town operator. */
+bool encode_mail(ByteWriter& writer, const MailRecord& letter) {
+    return letter.id != 0 && letter.recipient != 0 && letter.revision != 0 && writer.u64(letter.id) &&
+           writer.u64(letter.sender) && writer.u64(letter.recipient) && writer.u16(letter.attachment) &&
+           writer.u32(letter.revision) && writer.bytes(letter.text.data(), letter.text.size());
+}
+
+bool decode_mail(ByteReader& reader, MailRecord& letter) {
+    return reader.u64(letter.id) && reader.u64(letter.sender) && reader.u64(letter.recipient) &&
+           reader.u16(letter.attachment) && reader.u32(letter.revision) &&
+           reader.bytes(letter.text.data(), letter.text.size()) && letter.id != 0 && letter.recipient != 0 &&
+           letter.revision != 0 && letter.sender != letter.recipient;
+}
+
 bool valid_transition(const PlayerSnapshot& player) {
     const std::uint8_t phase = static_cast<std::uint8_t>(player.transition_phase);
     return phase <= static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) &&
@@ -122,6 +137,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
         baseline.players.size() > kMaxPlayersPerZone || baseline.npcs.size() > kMaximumBaselineNpcs ||
         baseline.inventory.revision == 0 || baseline.ledger.revision == 0 || baseline.shop.revision == 0 ||
+        baseline.mailbox.revision == 0 || baseline.mail.size() > kMailboxCapacity ||
         baseline.shop.stock.size() > kMaximumShopEntries || (baseline.house_light_mask & 0xF0U) != 0 ||
         baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
         (baseline.has_house && baseline.house.zone != baseline.zone)) return false;
@@ -139,7 +155,12 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return false;
     }
     if (!writer.u32(baseline.ledger.revision) || !writer.u64(baseline.ledger.bank_balance) ||
-        !writer.u64(baseline.ledger.debt) || !writer.u32(baseline.shop.revision) ||
+        !writer.u64(baseline.ledger.debt) || !writer.u32(baseline.mailbox.revision) ||
+        !writer.u8(static_cast<std::uint8_t>(baseline.mail.size()))) return false;
+    for (const MailRecord& letter : baseline.mail) {
+        if (!encode_mail(writer, letter)) return false;
+    }
+    if (!writer.u32(baseline.shop.revision) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.shop.stock.size()))) return false;
     for (const ShopEntry& entry : baseline.shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
@@ -192,9 +213,21 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     for (ItemSlot& slot : baseline.inventory.slots) {
         if (!reader.u16(slot.item) || !reader.u8(slot.condition)) return false;
     }
+    std::uint8_t mail_count;
     if (!reader.u32(baseline.ledger.revision) || !reader.u64(baseline.ledger.bank_balance) ||
-        !reader.u64(baseline.ledger.debt) || !reader.u32(baseline.shop.revision) ||
-        !reader.u16(shop_count) || baseline.ledger.revision == 0 || baseline.shop.revision == 0 ||
+        !reader.u64(baseline.ledger.debt) || !reader.u32(baseline.mailbox.revision) ||
+        !reader.u8(mail_count) || baseline.ledger.revision == 0 || baseline.mailbox.revision == 0 ||
+        mail_count > kMailboxCapacity) return false;
+    baseline.mail.clear();
+    baseline.mailbox.mail.clear();
+    baseline.mail.reserve(mail_count);
+    for (std::uint8_t i = 0; i < mail_count; ++i) {
+        MailRecord letter;
+        if (!decode_mail(reader, letter)) return false;
+        baseline.mailbox.mail.push_back(letter.id);
+        baseline.mail.push_back(letter);
+    }
+    if (!reader.u32(baseline.shop.revision) || !reader.u16(shop_count) || baseline.shop.revision == 0 ||
         shop_count > kMaximumShopEntries) return false;
     baseline.shop.stock.clear();
     baseline.shop.stock.resize(shop_count);
@@ -291,6 +324,25 @@ bool decode_town_delta(const std::vector<std::uint8_t>& input, TownOccupancy& oc
     ByteReader reader(input);
     if (!reader.u8(occupancy.population) || !reader.u8(occupancy.capacity)) return false;
     return occupancy.capacity != 0 && occupancy.population <= occupancy.capacity;
+}
+
+bool encode_mail_delta(const MailDelta& delta, std::vector<std::uint8_t>& output) {
+    if (delta.account == 0 || delta.mailbox_revision == 0 || delta.record.recipient != delta.account) return false;
+    ByteWriter writer(64 + kMailTextBytes);
+    if (!writer.u64(delta.account) || !writer.u32(delta.mailbox_revision) ||
+        !writer.u8(delta.removed ? 1 : 0) || !encode_mail(writer, delta.record)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_mail_delta(const std::vector<std::uint8_t>& input, MailDelta& delta) {
+    ByteReader reader(input);
+    std::uint8_t removed;
+    if (!reader.u64(delta.account) || !reader.u32(delta.mailbox_revision) || !reader.u8(removed) ||
+        removed > 1 || !decode_mail(reader, delta.record) || !reader.finished() || delta.account == 0 ||
+        delta.mailbox_revision == 0 || delta.record.recipient != delta.account) return false;
+    delta.removed = removed != 0;
+    return true;
 }
 
 DeltaLog::DeltaLog(std::size_t capacity) : capacity_(std::max<std::size_t>(1, capacity)) {}

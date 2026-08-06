@@ -26,6 +26,9 @@ enum class ResourceKind : std::uint8_t {
     /* Town-wide occupancy. Appended, never inserted: the wire encodes this
      * enum as a u8 and validates against the last value. */
     Town,
+    /* One recipient's mailbox. Always account-targeted, so it reaches the
+     * addressee wherever they are standing. */
+    Mail,
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -37,6 +40,18 @@ struct TownOccupancy {
 
 bool encode_town_delta(const TownOccupancy& occupancy, std::vector<std::uint8_t>& output);
 bool decode_town_delta(const std::vector<std::uint8_t>& input, TownOccupancy& occupancy);
+
+/* One mailbox change. `removed` claims report only the identifier; a delivery
+ * carries the whole letter so the recipient never has to ask for a baseline. */
+struct MailDelta {
+    AccountId account = 0;
+    Revision mailbox_revision = 0;
+    bool removed = false;
+    MailRecord record;
+};
+
+bool encode_mail_delta(const MailDelta& delta, std::vector<std::uint8_t>& output);
+bool decode_mail_delta(const std::vector<std::uint8_t>& input, MailDelta& delta);
 
 struct ZoneBaseline {
     Tick server_tick = 0;
@@ -55,6 +70,9 @@ struct ZoneBaseline {
     HouseState house;
     InventoryState inventory;
     AccountLedger ledger;
+    MailboxState mailbox;
+    /* The viewer's own pending letters, in mailbox order. */
+    std::vector<MailRecord> mail;
     ShopState shop;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;

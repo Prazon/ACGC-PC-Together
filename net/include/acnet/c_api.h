@@ -126,8 +126,23 @@ typedef struct AcNetEncounterResult {
     uint8_t replayed;
 } AcNetEncounterResult;
 
+/* Mirrors acnet::MailRecord. `sender` is 0 for a letter the town operator
+ * posted; `text` is a fixed-size, not necessarily terminated body. */
+#define ACNET_MAIL_TEXT_BYTES 96
+#define ACNET_MAILBOX_CAPACITY 10
+
+typedef struct AcNetMailRecord {
+    uint64_t id;
+    uint64_t sender;
+    uint64_t recipient;
+    uint16_t attachment;
+    uint32_t revision;
+    uint8_t text[ACNET_MAIL_TEXT_BYTES];
+} AcNetMailRecord;
+
 typedef struct AcNetEconomyResult {
     uint16_t result_code;
+    uint8_t operation_type;
     uint32_t inventory_revision;
     uint32_t auxiliary_revision;
     uint64_t balance;
@@ -261,8 +276,17 @@ int acnet_client_request_economy_auto(uint8_t operation_type,
                                       uint8_t inventory_slot,
                                       uint16_t expected_item,
                                       uint64_t amount,
-                                      uint64_t recipient);
+                                      uint64_t recipient,
+                                      uint64_t mail_id);
 int acnet_client_take_economy_result(AcNetEconomyResult* output);
+/* The bank ledger revision a deposit, withdrawal, or debt payment must quote.
+ * acnet_client_bank_balance()/acnet_client_debt() report the same ledger. */
+uint32_t acnet_client_bank_revision(void);
+/* Pending mail. The revision is what a claim must quote; the letters arrive in
+ * the baseline and stay current through account-targeted mailbox deltas. */
+uint32_t acnet_client_mailbox_revision(void);
+size_t acnet_client_mail(AcNetMailRecord* output, size_t capacity);
+int acnet_client_claim_mail(uint64_t mail_id);
 int acnet_client_request_trade(uint8_t action,
                                uint64_t trade_id,
                                uint64_t other_account,

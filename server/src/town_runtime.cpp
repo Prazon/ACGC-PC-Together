@@ -17,6 +17,12 @@ namespace acserver {
 
 namespace {
 
+/* Transaction-log operation codes for operator gifts. They sit above the
+ * MessageType values the player-driven rows use so the two cannot be confused
+ * when auditing town.db. */
+constexpr std::uint16_t kAdminGrantBellsOperation = 0xA001;
+constexpr std::uint16_t kAdminSendMailOperation = 0xA002;
+
 acnet::Revision advance_revision(acnet::Revision revision) {
     return revision == std::numeric_limits<acnet::Revision>::max() ? 1 : revision + 1;
 }
@@ -195,7 +201,9 @@ TownRuntime::TownRuntime(TownRuntimeConfig config)
                 0),
       movement_(),
       world_(&players_),
-      economy_(&world_, &players_, acnet::EconomyConfig{2, {30.0F, 0.0F, 30.0F}, 220.0F, 4, 3, 120.0F}),
+      /* shop zone/position/radius, museum zone, post office zone, mailbox zone
+       * (0 = any: letters are read at the recipient's own mailbox), trade radius. */
+      economy_(&world_, &players_, acnet::EconomyConfig{2, {30.0F, 0.0F, 30.0F}, 220.0F, 4, 3, 0, 120.0F}),
       encounters_(&players_, &world_),
       npcs_(&players_),
       zones_(&players_),
@@ -794,6 +802,24 @@ void TownRuntime::publish_population_change() {
     last_published_capacity_ = occupancy.capacity;
 }
 
+bool TownRuntime::publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error) {
+    const acnet::MailboxState* mailbox = economy_.mailbox(record.recipient);
+    if (mailbox == nullptr) { error = "mailbox is missing for the recipient"; return false; }
+    acnet::MailDelta mail;
+    mail.account = record.recipient;
+    mail.mailbox_revision = mailbox->revision;
+    mail.removed = removed;
+    mail.record = record;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Mail;
+    delta.zone = 0; /* the addressee gets it wherever they are standing */
+    delta.target_account = record.recipient;
+    delta.reliable = true;
+    if (!acnet::encode_mail_delta(mail, delta.payload)) { error = "failed to serialize mailbox delta"; return false; }
+    deltas_.append(std::move(delta));
+    return true;
+}
+
 acnet::TownOccupancy TownRuntime::current_occupancy() const {
     acnet::TownOccupancy occupancy;
     occupancy.population = static_cast<std::uint8_t>(std::min<std::size_t>(connected_clients(), 255U));
@@ -825,6 +851,9 @@ bool TownRuntime::send_baseline(Connection& connection,
     }
     baseline.inventory = *inventory;
     baseline.ledger = *ledger;
+    const acnet::MailboxState* mailbox = economy_.mailbox(connection.account);
+    if (mailbox != nullptr) baseline.mailbox = *mailbox;
+    baseline.mail = economy_.mail_for(connection.account);
     baseline.shop = economy_.shop();
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
@@ -1044,6 +1073,13 @@ bool TownRuntime::dispatch(Connection& connection,
             acnet::EconomyRequest request;
             if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
             request.account = connection.account;
+            /* A claim destroys the letter, so its contents are captured before
+             * the transaction in order to describe the removal downstream. */
+            acnet::MailRecord claimed;
+            if (request.type == acnet::EconomyOpType::ClaimMail) {
+                const acnet::MailRecord* letter = economy_.mail(request.mail_id);
+                if (letter != nullptr) claimed = *letter;
+            }
             const acnet::EconomyResult result = economy_.apply(request);
             std::vector<std::uint8_t> payload;
             if (!acnet::encode(result, payload)) { error = "failed to serialize economy result"; return false; }
@@ -1051,6 +1087,16 @@ bool TownRuntime::dispatch(Connection& connection,
                 if (!commit_transaction(connection.account,
                                         static_cast<std::uint16_t>(acnet::MessageType::InventoryRequest),
                                         result.code, error)) return false;
+                /* A letter changes a mailbox the sender does not own, so the
+                 * recipient is told directly rather than waiting for their next
+                 * baseline; a claim confirms the letter left the claimer's. */
+                if (request.type == acnet::EconomyOpType::AttachMail) {
+                    const acnet::MailRecord* delivered = economy_.mail(result.mail_id);
+                    if (delivered == nullptr) { error = "delivered letter is missing"; return false; }
+                    if (!publish_mail_change(*delivered, false, error)) return false;
+                } else if (request.type == acnet::EconomyOpType::ClaimMail) {
+                    if (!publish_mail_change(claimed, true, error)) return false;
+                }
                 acnet::ReplicationDelta delta;
                 delta.kind = request.type == acnet::EconomyOpType::Donate ? acnet::ResourceKind::Event
                                                                           : acnet::ResourceKind::Shop;
@@ -1498,6 +1544,101 @@ bool TownRuntime::set_account_banned(acnet::AccountId account, bool banned, std:
         }
     }
     return error.empty();
+}
+
+bool TownRuntime::grant_bank_bells(acnet::AccountId account, std::uint64_t amount, std::string& error) {
+    error.clear();
+    if (!initialized_) { error = "runtime is not initialized"; return false; }
+    if (economy_.ledger(account) == nullptr) {
+        error = "unknown account " + std::to_string(account) +
+                " (accounts are created the first time a player connects)";
+        return false;
+    }
+    const acnet::EconomyResult result = economy_.admin_grant_bank_bells(account, amount);
+    if (result.code != acnet::ResultCode::Ok) {
+        error = "bank grant rejected with result code " + std::to_string(static_cast<unsigned>(result.code));
+        return false;
+    }
+    /* Durable before it is reported: the same rule a player deposit follows. */
+    if (!commit_transaction(account, kAdminGrantBellsOperation, result.code, error) ||
+        !database_.audit(0, "grant-bells",
+                         "account=" + std::to_string(account) + " amount=" + std::to_string(amount) +
+                             " balance=" + std::to_string(result.balance),
+                         wall_unix_seconds(), error)) return false;
+    record_event("operator granted " + std::to_string(amount) + " bells to account " + std::to_string(account));
+    return true;
+}
+
+bool TownRuntime::send_mail(acnet::AccountId recipient,
+                            std::uint16_t attachment,
+                            const std::string& text,
+                            std::string& error) {
+    error.clear();
+    if (!initialized_) { error = "runtime is not initialized"; return false; }
+    if (economy_.ledger(recipient) == nullptr) {
+        error = "unknown account " + std::to_string(recipient) +
+                " (accounts are created the first time a player connects)";
+        return false;
+    }
+    if (text.size() > acnet::kMailTextBytes) {
+        error = "letter text exceeds " + std::to_string(acnet::kMailTextBytes) + " bytes";
+        return false;
+    }
+    std::array<std::uint8_t, acnet::kMailTextBytes> body{};
+    std::copy(text.begin(), text.end(), body.begin());
+    const acnet::EconomyResult result = economy_.admin_send_mail(recipient, attachment, body);
+    if (result.code == acnet::ResultCode::Capacity) {
+        error = "mailbox for account " + std::to_string(recipient) + " already holds " +
+                std::to_string(acnet::kMailboxCapacity) + " letters";
+        return false;
+    }
+    if (result.code != acnet::ResultCode::Ok) {
+        error = "mail delivery rejected with result code " + std::to_string(static_cast<unsigned>(result.code));
+        return false;
+    }
+    const acnet::MailRecord* delivered = economy_.mail(result.mail_id);
+    if (delivered == nullptr) { error = "delivered letter is missing"; return false; }
+    if (!commit_transaction(recipient, kAdminSendMailOperation, result.code, error) ||
+        !database_.audit(0, "send-mail",
+                         "account=" + std::to_string(recipient) + " item=" + std::to_string(attachment) +
+                             " mail=" + std::to_string(result.mail_id),
+                         wall_unix_seconds(), error)) return false;
+    /* Harmless while the town is stopped, and correct if it ever runs live. */
+    if (!publish_mail_change(*delivered, false, error)) return false;
+    record_event("operator posted letter " + std::to_string(result.mail_id) + " to account " +
+                 std::to_string(recipient));
+    return true;
+}
+
+std::vector<RuntimeAccountSummary> TownRuntime::account_summaries() const {
+    std::vector<RuntimeAccountSummary> summaries;
+    summaries.reserve(accounts_.size());
+    for (const auto& entry : accounts_) {
+        RuntimeAccountSummary summary;
+        summary.account = entry.first;
+        summary.resident_slot = entry.second.resident_slot;
+        summary.resident = entry.second.kind == acnet::PlayerKind::Resident;
+        for (const auto& connection : connections_) {
+            if (connection.second.account == entry.first) { summary.connected = true; break; }
+        }
+        const auto& name = entry.second.appearance.name;
+        const auto end = std::find(name.begin(), name.end(), 0);
+        summary.name.assign(name.begin(), end);
+        const acnet::InventoryState* inventory = world_.inventory(entry.first);
+        if (inventory != nullptr) summary.bells = inventory->bells;
+        const acnet::AccountLedger* ledger = economy_.ledger(entry.first);
+        if (ledger != nullptr) {
+            summary.bank_balance = ledger->bank_balance;
+            summary.debt = ledger->debt;
+        }
+        const acnet::MailboxState* mailbox = economy_.mailbox(entry.first);
+        if (mailbox != nullptr) summary.pending_mail = mailbox->mail.size();
+        summaries.push_back(std::move(summary));
+    }
+    std::sort(summaries.begin(), summaries.end(), [](const auto& left, const auto& right) {
+        return left.account < right.account;
+    });
+    return summaries;
 }
 
 bool TownRuntime::import_gci(const std::filesystem::path& source, std::string& error) {

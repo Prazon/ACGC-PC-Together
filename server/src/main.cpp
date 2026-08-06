@@ -48,7 +48,33 @@ bool parse_u64(const std::string& text, std::uint64_t& value) {
 void usage() {
     std::cout << "AnimalCrossingServer [--port N] [--town N] [--data DIR] [--config FILE] [--ticks N] "
                  "--invite-key KEY [--smoke] [--no-sleep] [--no-dashboard] [--insecure-local] "
-                 "[--ban N|--unban N|--import-gci FILE|--export-gci FILE|--checkpoint-now]\n";
+                 "[--ban N|--unban N|--import-gci FILE|--export-gci FILE|--checkpoint-now]\n"
+                 "  Operator gifts (run with the town stopped, one shot):\n"
+                 "    --list-accounts                 print every known account, its bank, and its mailbox\n"
+                 "    --grant-bells ACCOUNT=AMOUNT    deposit bells straight into a bank account\n"
+                 "    --send-mail ACCOUNT             post a letter, with --mail-item and --mail-text\n"
+                 "    --mail-item ITEM                attach item ITEM (decimal or 0x hex) to the letter\n"
+                 "    --mail-text TEXT                letter body, up to 96 bytes\n";
+}
+
+/* ACCOUNT=AMOUNT, also accepting ACCOUNT:AMOUNT so a shell that eats '=' still
+ * works. Both halves must be decimal and non-empty. */
+bool parse_pair(const std::string& text, std::uint64_t& first, std::uint64_t& second) {
+    const std::size_t separator = text.find_first_of("=:");
+    if (separator == std::string::npos || separator == 0 || separator + 1 >= text.size()) return false;
+    return parse_u64(text.substr(0, separator), first) && parse_u64(text.substr(separator + 1), second);
+}
+
+/* Item identifiers are quoted in hex all over the original game, so accept both. */
+bool parse_item(const std::string& text, std::uint64_t& value) {
+    try {
+        std::size_t consumed = 0;
+        const bool hexadecimal = text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+        value = std::stoull(text, &consumed, hexadecimal ? 16 : 10);
+        return consumed == text.size() && value <= 0xFFFFU;
+    } catch (...) {
+        return false;
+    }
 }
 
 const char* weather_name(acserver::Weather weather) {
@@ -354,6 +380,26 @@ private:
 #endif
 };
 
+void print_accounts(const acserver::TownRuntime& runtime) {
+    const std::vector<acserver::RuntimeAccountSummary> accounts = runtime.account_summaries();
+    if (accounts.empty()) {
+        std::cout << "No accounts yet: a town records an account the first time that player connects.\n";
+        return;
+    }
+    std::cout << "  ACCOUNT   ROLE       NAME                  WALLET       BANK        DEBT  MAIL\n";
+    for (const acserver::RuntimeAccountSummary& account : accounts) {
+        std::ostringstream role;
+        if (account.resident) role << "resident" << (account.resident_slot + 1U);
+        else role << "visitor";
+        std::cout << "  " << std::setw(9) << std::left << account.account << std::setw(11) << role.str()
+                  << std::setw(22) << shorten(account.name.empty() ? "(unnamed)" : account.name, 21) << std::right
+                  << std::setw(8) << account.bells << std::setw(12) << account.bank_balance << std::setw(12)
+                  << account.debt << std::setw(6) << (std::to_string(account.pending_mail) + "/10")
+                  << (account.connected ? "  ONLINE" : "") << '\n';
+    }
+    std::cout << std::flush;
+}
+
 void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownRuntimeConfig& config) {
     const acserver::RuntimeMetrics& metrics = runtime.metrics();
     const acserver::ClockState& clock = runtime.clock_state();
@@ -451,8 +497,14 @@ int main(int argc, char** argv) {
     bool no_sleep = false;
     bool dashboard = config.dashboard;
     bool checkpoint_now = false;
+    bool list_accounts = false;
     std::uint64_t ban_account = 0;
     std::uint64_t unban_account = 0;
+    std::uint64_t grant_account = 0;
+    std::uint64_t grant_amount = 0;
+    std::uint64_t mail_account = 0;
+    std::uint64_t mail_item = 0;
+    std::string mail_text;
     std::filesystem::path import_gci;
     std::filesystem::path export_gci;
     for (int i = 1; i < argc; ++i) {
@@ -460,6 +512,10 @@ int main(int argc, char** argv) {
         if (argument == "--help") {
             usage();
             return 0;
+        }
+        if (argument == "--list-accounts") {
+            list_accounts = true;
+            continue;
         }
         if (argument == "--smoke") {
             smoke = true;
@@ -497,6 +553,18 @@ int main(int argc, char** argv) {
             import_gci = value;
         } else if (argument == "--export-gci") {
             export_gci = value;
+        } else if (argument == "--mail-text") {
+            mail_text = value;
+        } else if (argument == "--grant-bells") {
+            if (!parse_pair(value, grant_account, grant_amount) || grant_account == 0 || grant_amount == 0) {
+                std::cerr << "Expected --grant-bells ACCOUNT=AMOUNT with non-zero decimal values\n";
+                return 2;
+            }
+        } else if (argument == "--mail-item") {
+            if (!parse_item(value, mail_item)) {
+                std::cerr << "Expected --mail-item ITEM as a decimal or 0x-prefixed 16-bit value\n";
+                return 2;
+            }
         } else if (!parse_u64(value, number)) {
             std::cerr << "Invalid number for " << argument << '\n';
             return 2;
@@ -510,6 +578,8 @@ int main(int argc, char** argv) {
             ban_account = number;
         } else if (argument == "--unban" && number != 0) {
             unban_account = number;
+        } else if (argument == "--send-mail" && number != 0) {
+            mail_account = number;
         } else {
             usage();
             return 2;
@@ -521,7 +591,16 @@ int main(int argc, char** argv) {
         no_sleep = true;
         if (maximum_ticks == 0) maximum_ticks = 120;
     }
-    const bool one_shot_admin = checkpoint_now || ban_account != 0 || unban_account != 0 ||
+    if (mail_account == 0 && (mail_item != 0 || !mail_text.empty())) {
+        std::cerr << "--mail-item and --mail-text require --send-mail ACCOUNT\n";
+        return 2;
+    }
+    if (mail_account != 0 && mail_item == 0 && mail_text.empty()) {
+        std::cerr << "--send-mail needs --mail-item ITEM, --mail-text TEXT, or both\n";
+        return 2;
+    }
+    const bool one_shot_admin = checkpoint_now || list_accounts || ban_account != 0 || unban_account != 0 ||
+                                grant_account != 0 || mail_account != 0 ||
                                 !import_gci.empty() || !export_gci.empty();
     if (one_shot_admin && config.invite_key.empty()) config.allow_unauthenticated = true;
     std::signal(SIGINT, stop_server);
@@ -546,6 +625,22 @@ int main(int argc, char** argv) {
         if (!import_gci.empty()) ok = runtime.import_gci(import_gci, error);
         if (ok && ban_account != 0) ok = runtime.set_account_banned(ban_account, true, error);
         if (ok && unban_account != 0) ok = runtime.set_account_banned(unban_account, false, error);
+        if (ok && grant_account != 0) {
+            ok = runtime.grant_bank_bells(grant_account, grant_amount, error);
+            if (ok) {
+                std::cout << "Granted " << grant_amount << " bells to the bank account of " << grant_account
+                          << ".\n";
+            }
+        }
+        if (ok && mail_account != 0) {
+            ok = runtime.send_mail(mail_account, static_cast<std::uint16_t>(mail_item), mail_text, error);
+            if (ok) {
+                std::cout << "Posted a letter to account " << mail_account;
+                if (mail_item != 0) std::cout << " with item 0x" << std::hex << mail_item << std::dec << " attached";
+                std::cout << ".\n";
+            }
+        }
+        if (ok && list_accounts) print_accounts(runtime);
         if (ok && checkpoint_now) ok = runtime.checkpoint_now(error);
         if (ok && !export_gci.empty()) ok = runtime.export_gci(export_gci, error);
         std::string shutdown_error;

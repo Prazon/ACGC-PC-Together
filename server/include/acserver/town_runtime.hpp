@@ -69,6 +69,20 @@ struct RuntimePlayerStatus {
     std::string name;
 };
 
+/* What an operator needs to address a gift: who the account is, what it already
+ * holds, and how much room is left in its mailbox. */
+struct RuntimeAccountSummary {
+    acnet::AccountId account = 0;
+    std::uint8_t resident_slot = 0xFF;
+    bool resident = false;
+    bool connected = false;
+    std::string name;
+    std::uint32_t bells = 0;
+    std::uint64_t bank_balance = 0;
+    std::uint64_t debt = 0;
+    std::size_t pending_mail = 0;
+};
+
 struct RuntimeEvent {
     std::uint64_t sequence = 0;
     std::int64_t wall_unix_seconds = 0;
@@ -84,6 +98,15 @@ public:
     bool shutdown(std::string& error);
     bool checkpoint_now(std::string& error);
     bool set_account_banned(acnet::AccountId account, bool banned, std::string& error);
+    /* Operator gifts. Both commit through the same authority, journal, and
+     * audit path a player transaction uses, so a gift survives a restart and is
+     * attributable afterwards. */
+    bool grant_bank_bells(acnet::AccountId account, std::uint64_t amount, std::string& error);
+    bool send_mail(acnet::AccountId recipient,
+                   std::uint16_t attachment,
+                   const std::string& text,
+                   std::string& error);
+    std::vector<RuntimeAccountSummary> account_summaries() const;
     bool import_gci(const std::filesystem::path& source, std::string& error);
     bool export_gci(const std::filesystem::path& destination, std::string& error) const;
 
@@ -161,6 +184,7 @@ private:
     bool send_snapshots(std::uint64_t monotonic_ms, std::string& error);
     bool send_baseline(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     void publish_population_change();
+    bool publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error);
     acnet::TownOccupancy current_occupancy() const;
     bool send_deltas(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool refresh_interest_chunk(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
