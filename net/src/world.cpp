@@ -209,10 +209,11 @@ WorldResult WorldAuthority::apply(const WorldOperation& operation, Tick tick) {
     result.tile = operation.tile;
     result.inventory_slot = operation.inventory_slot;
     bool inventory_changed = false;
-    const auto tool_item = [&]() -> std::uint16_t {
-        return operation.tool_slot < candidate_inventory.slots.size()
-                   ? candidate_inventory.slots[operation.tool_slot].item : 0;
-    };
+    /* What is actually in the hand. The client used to name the slot it wanted
+     * checked, which made "own a shovel" and "be holding a shovel" the same
+     * thing; holding is now a committed transaction, so the server can ask the
+     * question the game asks. */
+    const auto tool_item = [&]() -> std::uint16_t { return candidate_inventory.equipped.item; };
 
     const auto take_inventory_item = [&]() -> bool {
         if (operation.inventory_slot >= candidate_inventory.slots.size()) return false;
@@ -342,6 +343,9 @@ std::uint64_t WorldAuthority::total_item_units() const {
         for (const ItemSlot& slot : item.second.slots) {
             if (slot.item != 0) ++result;
         }
+        /* The hand holds a real item. Leaving it out would read as a leak the
+         * moment anyone equipped a tool. */
+        if (item.second.equipped.item != 0) ++result;
     }
     for (const auto& tile_item : tiles_) {
         if (tile_item.second.item != 0) ++result;

@@ -326,6 +326,7 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                 if (remote.zone != 0 && remote.zone != player.zone) remote.history.clear();
                 remote.zone = player.zone;
                 remote.appearance = player.appearance;
+                remote.presentation = player.presentation;
                 remote.pattern = player.pattern;
                 remote.transition_phase = player.transition_phase;
                 remote.transition_door = player.transition_door;
@@ -393,6 +394,20 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         else baseline_.mailbox.mail.push_back(letter.id);
                     }
                 }
+                if (delta.kind == ResourceKind::Player) {
+                    PlayerPresentationDelta presentation;
+                    if (!decode_player_delta(delta.payload, presentation)) {
+                        error = "malformed player presentation delta";
+                        return false;
+                    }
+                    /* Only for someone already being tracked: a delta for a
+                     * player this client has no snapshot history for would
+                     * create a remote it can never place or retire. */
+                    const auto tracked = remotes_.find(presentation.account);
+                    if (tracked != remotes_.end() && tracked->second.entity == presentation.entity) {
+                        tracked->second.presentation = presentation.presentation;
+                    }
+                }
                 if (delta.kind == ResourceKind::Town) {
                     TownOccupancy occupancy;
                     if (!decode_town_delta(delta.payload, occupancy)) {
@@ -451,15 +466,25 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     case EconomyOpType::DiscardMail:
                         baseline_.mailbox.revision = economy_result_->auxiliary_revision;
                         break;
+                    case EconomyOpType::HoldItem:
                     case EconomyOpType::Donate:
                     case EconomyOpType::AdminGrantBells:
                     case EconomyOpType::AdminSendMail:
-                        /* The museum is not mirrored, and the operator
-                         * operations never reach a client. */
+                        /* Holding touches only the inventory, the museum is not
+                         * mirrored, and the operator operations never reach a
+                         * client. */
                         break;
                 }
-                if (economy_result_->item != 0 &&
-                    economy_result_->inventory_slot < baseline_.inventory.slots.size()) {
+                if (economy_result_->type == EconomyOpType::HoldItem) {
+                    /* Mirror the swap rather than the "item appeared in a slot"
+                     * heuristic below, which cannot express two slots changing
+                     * at once and would drop whatever was already in the hand. */
+                    if (economy_result_->inventory_slot < baseline_.inventory.slots.size()) {
+                        std::swap(baseline_.inventory.slots[economy_result_->inventory_slot],
+                                  baseline_.inventory.equipped);
+                    }
+                } else if (economy_result_->item != 0 &&
+                           economy_result_->inventory_slot < baseline_.inventory.slots.size()) {
                     ItemSlot& slot = baseline_.inventory.slots[economy_result_->inventory_slot];
                     if (slot.item == economy_result_->item) slot = {};
                     else slot.item = economy_result_->item;
@@ -648,6 +673,7 @@ bool ClientRuntime::frame(std::uint64_t now_ms,
                           std::int16_t stick_y,
                           std::uint16_t buttons,
                           std::uint16_t action,
+                          const PlayerAnimation& animation,
                           const Transform& diagnostic_local,
                           Transform& corrected_local,
                           bool& has_correction,
@@ -658,7 +684,8 @@ bool ClientRuntime::frame(std::uint64_t now_ms,
     if (state_ != ClientConnectionState::Connected) return true;
     const std::uint64_t input_interval = std::max<std::uint64_t>(1, 1000 / config_.input_rate);
     if (now_ms - last_input_send_ms_ >= input_interval) {
-        InputCommand command = predictor_.predict(stick_x, stick_y, buttons, action, estimated_server_tick(now_ms));
+        InputCommand command =
+            predictor_.predict(stick_x, stick_y, buttons, action, animation, estimated_server_tick(now_ms));
         /* The game client owns movement. Send the transform produced by the
          * original player controller/collision code instead of asking the
          * server to reinterpret camera-relative stick axes. */
@@ -778,8 +805,9 @@ std::vector<RemotePresentation> ClientRuntime::remote_players() const {
         const auto sampled = item.second.history.sample(render_tick, 2.0, 1.0 / config_.simulation_rate);
         if (!sampled.has_value()) continue;
         output.push_back({item.second.entity, item.second.account, item.second.zone, *sampled,
-                          item.second.appearance, item.second.pattern, item.second.transition_phase,
-                          item.second.transition_door, item.second.transition_expires_tick});
+                          item.second.appearance, item.second.presentation, item.second.pattern,
+                          item.second.transition_phase, item.second.transition_door,
+                          item.second.transition_expires_tick});
     }
     std::sort(output.begin(), output.end(), [](const RemotePresentation& a, const RemotePresentation& b) {
         return a.account < b.account;

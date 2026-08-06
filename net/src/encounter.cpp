@@ -126,18 +126,16 @@ EncounterResult EncounterAuthority::resolve(const EncounterRequest& request,
     const PlayerView* player = players_ == nullptr ? nullptr : players_->by_account(request.account);
     const InventoryState* current = world_ == nullptr ? nullptr : world_->inventory(request.account);
     if (request.account == 0 || !request.idempotency.valid() || player == nullptr || current == nullptr ||
-        request.tool_slot >= kInventorySlots ||
         static_cast<std::uint8_t>(request.kind) > static_cast<std::uint8_t>(EncounterKind::Insect)) {
         result.code = ResultCode::Malformed;
     } else if (request.expected_inventory_revision != current->revision) {
         result.code = ResultCode::StaleRevision;
         result.inventory_revision = current->revision;
     } else if ((request.kind == EncounterKind::Fish &&
-                current->slots[request.tool_slot].item != 0x2203 &&
-                current->slots[request.tool_slot].item != 0x223C) ||
+                current->equipped.item != 0x2203 && current->equipped.item != 0x223C) ||
                (request.kind == EncounterKind::Insect &&
-                current->slots[request.tool_slot].item != 0x2200 &&
-                current->slots[request.tool_slot].item != 0x2239)) {
+                current->equipped.item != 0x2200 && current->equipped.item != 0x2239)) {
+        /* The rod or net has to be in the hand, not merely owned. */
         result.code = ResultCode::InvalidState;
     } else if (cooldowns_[request.account] > tick) {
         result.code = ResultCode::RateLimited;

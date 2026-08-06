@@ -94,6 +94,10 @@ static int gameplay_ready_reported = FALSE;
 static int appearance_sent = FALSE;
 static AcNetPlayerAppearance last_sent_appearance;
 static int encounter_pending = 0;
+/* Hold swaps awaiting a result. While any is outstanding the local hand and the
+ * authoritative one are expected to disagree, and reconciling that disagreement
+ * again would issue a second swap. */
+static int hold_requests_pending = 0;
 static int quickstart_enabled = FALSE;
 static int quickstart_gender = mPr_SEX_MALE;
 static u8 quickstart_name[PLAYER_NAME_LEN];
@@ -108,7 +112,6 @@ static int Net_CaptureAppearance(AcNetPlayerAppearance* appearance) {
     appearance->gender = Now_Private->gender;
     appearance->face = Now_Private->face;
     appearance->clothing = Now_Private->cloth.item;
-    appearance->equipped_item = Now_Private->equipment;
     appearance->clothing_index = Now_Private->cloth.idx;
     design = (int)Now_Private->cloth.idx - (CLOTH_NUM + 1);
     if (mPr_ORIGINAL_DESIGN_IDX_VALID(design)) {
@@ -580,6 +583,39 @@ void Net_BeginSceneTransition(GAME_PLAY* play, int next_scene) {
     }
 }
 
+/* What the local skeleton is doing, in the same indices the original player
+ * uses: Player_actor_InitAnimation_Base* stores them on the actor, so nothing
+ * has to be intercepted -- they are read once a frame alongside the transform.
+ * Every field is clamped, because an out-of-range index would be indexed into
+ * an animation table on someone else's machine. */
+typedef struct net_animation_s {
+    u8 body;
+    u8 overlay;
+    u8 part_table;
+    u8 item_state;
+    u8 looping;
+    u8 reversed;
+} NET_ANIMATION;
+
+static void Net_CapturePlayerAnimation(const PLAYER_ACTOR* player, NET_ANIMATION* animation) {
+    const cKF_FrameControl_c* frame_control;
+    memset(animation, 0, sizeof(*animation));
+    if (player == NULL) return;
+    if (player->animation0_idx >= 0 && player->animation0_idx < mPlayer_ANIM_NUM)
+        animation->body = (u8)player->animation0_idx;
+    if (player->animation1_idx >= 0 && player->animation1_idx < mPlayer_ANIM_NUM)
+        animation->overlay = (u8)player->animation1_idx;
+    if (player->part_table_idx >= 0 && player->part_table_idx < mPlayer_PART_TABLE_NUM)
+        animation->part_table = (u8)player->part_table_idx;
+    if (mPlayer_ITEM_MAIN_VALID(player->now_item_main_index))
+        animation->item_state = (u8)player->now_item_main_index;
+    frame_control = &player->keyframe0.frame_control;
+    animation->looping = frame_control->mode == cKF_FRAMECONTROL_REPEAT;
+    /* cKF_SkeletonInfo_R_init_reverse_* starts at the last frame and ends at
+     * the first, which is the only thing that distinguishes it. */
+    animation->reversed = frame_control->start_frame > frame_control->end_frame;
+}
+
 static int Net_CapturePlayerTransform(GAME_PLAY* play, AcNetTransform* transform) {
     PLAYER_ACTOR* player;
     if (play == NULL || transform == NULL) return FALSE;
@@ -592,7 +628,10 @@ static int Net_CapturePlayerTransform(GAME_PLAY* play, AcNetTransform* transform
     transform->velocity_y = player->actor_class.position_speed.y;
     transform->velocity_z = player->actor_class.position_speed.z;
     transform->yaw = player->actor_class.shape_info.rotation.y;
-    transform->action = (u16)player->now_main_index;
+    /* The server refuses an input command whose action is out of range, and
+     * that would drop the movement in the same packet, so an unexpected value
+     * degrades to "idle" rather than to "frozen". */
+    transform->action = mPlayer_MAIN_INDEX_VALID(player->now_main_index) ? (u16)player->now_main_index : 0;
     return TRUE;
 }
 
@@ -970,16 +1009,18 @@ int Net_RequestDrop(int ut_x, int ut_z, mActor_name_t item) {
                                             acnet_client_inventory_revision(), (u8)slot, item);
 }
 
-static int Net_FindToolSlot(const AcNetItemSlot* slots, size_t count, int tool_kind) {
-    size_t i;
-    for (i = 0; i < count; ++i) {
-        mActor_name_t item = slots[i].item;
-        if ((tool_kind == 1 && (ITEM_IS_SCOOP(item) || ITEM_IS_GOLD_SCOOP(item))) ||
-            (tool_kind == 2 && (IS_ITEM_AXE(item) || item == ITM_GOLDEN_AXE)) ||
-            (tool_kind == 3 && (item == ITM_ROD || item == ITM_GOLDEN_ROD)) ||
-            (tool_kind == 4 && (item == ITM_NET || item == ITM_GOLDEN_NET))) return (int)i;
+/* Whether the authoritative hand holds a tool of this kind. The server asks the
+ * same question of its own inventory, so a mismatch here only costs a rejected
+ * request -- it can never let a request through that the server would refuse. */
+static int Net_HoldingToolKind(int tool_kind) {
+    const mActor_name_t item = (mActor_name_t)acnet_client_equipped_item();
+    switch (tool_kind) {
+        case 1: return ITEM_IS_SCOOP(item) || ITEM_IS_GOLD_SCOOP(item);
+        case 2: return IS_ITEM_AXE(item) || item == ITM_GOLDEN_AXE;
+        case 3: return item == ITM_ROD || item == ITM_GOLDEN_ROD;
+        case 4: return item == ITM_NET || item == ITM_GOLDEN_NET;
+        default: return TRUE;
     }
-    return -1;
 }
 
 static int Net_RequestTerrain(u8 operation_type,
@@ -991,7 +1032,6 @@ static int Net_RequestTerrain(u8 operation_type,
     AcNetItemSlot slots[15];
     const u32 zone = Net_TileZone();
     size_t count;
-    int tool_slot = 0xFF;
     int ut_x;
     int ut_z;
     if (position == NULL || zone == 0 ||
@@ -999,15 +1039,11 @@ static int Net_RequestTerrain(u8 operation_type,
         !acnet_client_tile(zone, (s16)ut_x, (s16)ut_z, &tile)) return FALSE;
     count = acnet_client_inventory(slots, ARRAY_COUNT(slots));
     if (inventory_slot >= 0 && ((size_t)inventory_slot >= count || slots[inventory_slot].item != item)) return FALSE;
-    if (tool_kind != 0) {
-        tool_slot = Net_FindToolSlot(slots, count, tool_kind);
-        if (tool_slot < 0) return FALSE;
-    }
+    if (tool_kind != 0 && !Net_HoldingToolKind(tool_kind)) return FALSE;
     last_inventory_revision = 0;
-    return acnet_client_request_world_with_tool_auto(operation_type, zone, (s16)ut_x, (s16)ut_z,
-                                                      tile.revision, acnet_client_inventory_revision(),
-                                                      inventory_slot < 0 ? 0 : (u8)inventory_slot,
-                                                      (u8)tool_slot, item);
+    return acnet_client_request_world_auto(operation_type, zone, (s16)ut_x, (s16)ut_z,
+                                            tile.revision, acnet_client_inventory_revision(),
+                                            inventory_slot < 0 ? 0 : (u8)inventory_slot, item);
 }
 
 int Net_RequestDig(const xyz_t* position) {
@@ -1035,19 +1071,107 @@ int Net_RequestChop(const xyz_t* position) {
 }
 
 int Net_RequestEncounter(int kind, mActor_name_t species) {
-    AcNetItemSlot slots[15];
-    size_t count;
-    int tool_slot;
     if (!Net_IsConnected() || (kind != 0 && kind != 1)) return FALSE;
-    count = acnet_client_inventory(slots, ARRAY_COUNT(slots));
-    tool_slot = Net_FindToolSlot(slots, count, kind == 0 ? 3 : 4);
-    if (tool_slot < 0) return FALSE;
+    if (!Net_HoldingToolKind(kind == 0 ? 3 : 4)) return FALSE;
     last_inventory_revision = 0;
-    if (!acnet_client_request_encounter_auto((u8)kind, (u16)species, acnet_client_inventory_revision(),
-                                             (u8)tool_slot))
+    if (!acnet_client_request_encounter_auto((u8)kind, (u16)species, acnet_client_inventory_revision()))
         return FALSE;
     encounter_pending++;
     return TRUE;
+}
+
+int Net_EquipmentAuthoritative(void) {
+    return Net_IsConnected();
+}
+
+int Net_RequestHoldItem(int inventory_slot, mActor_name_t item) {
+    if (!Net_IsConnected() || inventory_slot < 0 || inventory_slot >= mPr_POCKETS_SLOT_COUNT) return FALSE;
+    if (!acnet_client_request_hold_item((u8)inventory_slot, (u16)item)) return FALSE;
+    /* Whatever the server decides, the next projection must run: an accepted
+     * swap arrives with a new revision, and a refusal has to undo the local
+     * move the player already saw. Clearing the watermark forces both. */
+    last_inventory_revision = 0;
+    hold_requests_pending++;
+    return TRUE;
+}
+
+/* Mirrors acnet::EconomyOpType. The wire refuses anything above HoldItem. */
+#define NET_ECONOMY_BUY 0
+#define NET_ECONOMY_SELL 1
+#define NET_ECONOMY_DEPOSIT 2
+#define NET_ECONOMY_WITHDRAW 3
+#define NET_ECONOMY_PAY_DEBT 4
+#define NET_ECONOMY_DONATE 5
+#define NET_ECONOMY_ATTACH_MAIL 6
+#define NET_ECONOMY_HOLD_ITEM 10
+
+/* Nothing else in the game reads economy results, so they are drained here to
+ * learn when a hold swap has been decided. A refusal is not reported to the
+ * player: the projection simply puts the item back where the server has it. */
+static void Net_UpdateHoldResults(void) {
+    AcNetEconomyResult result;
+    while (acnet_client_take_economy_result(&result)) {
+        if (result.operation_type != NET_ECONOMY_HOLD_ITEM) continue;
+        if (hold_requests_pending > 0) hold_requests_pending--;
+        last_inventory_revision = 0;
+    }
+}
+
+/* The original writes Private_c::equipment from several places -- the L/R tool
+ * cycle, the pocket submenu's drag onto the player, closing the menu with a
+ * tool in the cursor -- and each one also rewrites the pocket array. Rather
+ * than hooking every one of those UI paths, the single net effect is detected
+ * here and reported as the one transaction that describes it: a swap between
+ * the hand and a pocket slot. That keeps the submenu state machine untouched
+ * and cannot miss a path.
+ *
+ * Local writes are left to stand so the menu stays responsive; they are
+ * optimistic, and Net_ApplyAuthoritativeState reconciles them either way. */
+static void Net_ReconcileEquipment(void) {
+    AcNetItemSlot slots[15];
+    const mActor_name_t authoritative = (mActor_name_t)acnet_client_equipped_item();
+    mActor_name_t local;
+    size_t count;
+    size_t i;
+    if (!Net_IsConnected() || Now_Private == NULL || acnet_client_inventory_revision() == 0) return;
+    /* A request already in flight is what the difference describes. Acting on
+     * it again would swap twice. */
+    if (hold_requests_pending != 0) return;
+    local = Now_Private->equipment;
+    if (local == authoritative) return;
+
+    count = acnet_client_inventory(slots, ARRAY_COUNT(slots));
+    if (local != EMPTY_NO) {
+        /* Equipping or swapping: the item now in hand must have come out of
+         * whichever pocket the server still believes holds it. Duplicates are
+         * not ambiguous -- swapping with either slot yields the same pockets. */
+        for (i = 0; i < count; ++i) {
+            if (slots[i].item == local) {
+                (void)Net_RequestHoldItem((int)i, local);
+                return;
+            }
+        }
+        /* The server has no such item to give: the local write was not a move
+         * out of a pocket at all. Let the projection put the hand back. */
+        last_inventory_revision = 0;
+        return;
+    }
+    /* Putting away: find the slot the player dropped it into, which is one the
+     * server still reports as empty. */
+    for (i = 0; i < count; ++i) {
+        if (slots[i].item == EMPTY_NO && Now_Private->inventory.pockets[i] == authoritative) {
+            (void)Net_RequestHoldItem((int)i, EMPTY_NO);
+            return;
+        }
+    }
+    for (i = 0; i < count; ++i) {
+        if (slots[i].item == EMPTY_NO) {
+            (void)Net_RequestHoldItem((int)i, EMPTY_NO);
+            return;
+        }
+    }
+    /* No room to stow it, so it stays in the hand. */
+    last_inventory_revision = 0;
 }
 
 int Net_EncounterRecordsPending(void) {
@@ -1068,15 +1192,6 @@ static void Net_UpdateEncounters(void) {
         else if (ITEM_IS_INSECT(result.item)) mSM_COLLECT_INSECT_SET(result.item - ITM_INSECT_START);
     }
 }
-
-/* Mirrors acnet::EconomyOpType. The wire refuses anything above ClaimMail. */
-#define NET_ECONOMY_BUY 0
-#define NET_ECONOMY_SELL 1
-#define NET_ECONOMY_DEPOSIT 2
-#define NET_ECONOMY_WITHDRAW 3
-#define NET_ECONOMY_PAY_DEBT 4
-#define NET_ECONOMY_DONATE 5
-#define NET_ECONOMY_ATTACH_MAIL 6
 
 int Net_BankingAuthoritative(void) {
     return Net_IsConnected() && acnet_client_bank_revision() != 0;
@@ -1234,6 +1349,11 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
         }
         Now_Private->inventory.item_conditions = conditions;
         Now_Private->inventory.wallet = acnet_client_bells();
+        /* The hand is part of the same authoritative inventory. Projecting the
+         * pockets without it is what let a tool exist in both at once: the
+         * local equip cleared a pocket slot that the next projection filled
+         * back in while the tool was still held. */
+        Now_Private->equipment = (mActor_name_t)acnet_client_equipped_item();
         last_inventory_revision = inventory_revision;
     }
     /* The bank is watched separately so an operator gift, which touches the
@@ -1378,21 +1498,32 @@ void Net_PreSimulation(GAME_PLAY* play) {
                    acnet_client_last_error()[0] != '\0' ? " error=" : "",
                    acnet_client_last_error());
         }
-        if (status != ACNET_CONNECTED) appearance_sent = FALSE;
+        if (status != ACNET_CONNECTED) {
+            appearance_sent = FALSE;
+            /* Results for anything still in flight will never arrive, and a
+             * stuck counter would suppress reconciliation for the rest of the
+             * session. */
+            hold_requests_pending = 0;
+        }
         last_status = status;
     }
     Net_UpdateEncounters();
+    Net_UpdateHoldResults();
     Net_ApplyAuthoritativeClock();
     Net_UpdateHouseState(play);
     Net_UpdateGameplayReadiness(play);
     Net_UpdateAppearance();
     Net_SynchronizeRemoteActors(play, gameplay_ready);
-    if (gameplay_ready) Net_ApplyAuthoritativeState(play);
+    if (gameplay_ready) {
+        Net_ApplyAuthoritativeState(play);
+        Net_ReconcileEquipment();
+    }
 }
 
 void Net_PostSimulation(GAME_PLAY* play) {
     ACTOR* player_actor;
     AcNetTransform transform;
+    NET_ANIMATION animation;
     pad_t* pad;
     int menu_open;
     if (play == NULL || (!gameplay_ready && zone_arrival_stream_frames == 0) ||
@@ -1405,10 +1536,17 @@ void Net_PostSimulation(GAME_PLAY* play) {
      * back to the server spawn point. */
     pad = &play->game.pads[PAD0];
     menu_open = play->submenu.process_status != mSM_PROCESS_WAIT;
+    Net_CapturePlayerAnimation((PLAYER_ACTOR*)player_actor, &animation);
     if (acnet_client_frame(menu_open ? 0 : (s16)pad->now.stick_x * 512,
                            menu_open ? 0 : (s16)pad->now.stick_y * 512,
                            menu_open ? 0 : pad->now.button,
                            transform.action,
+                           animation.body,
+                           animation.overlay,
+                           animation.part_table,
+                           animation.item_state,
+                           animation.looping,
+                           animation.reversed,
                            &transform)) {
         player_actor->world.position.x = transform.x;
         player_actor->world.position.y = transform.y;
@@ -1438,6 +1576,7 @@ void Net_OnSceneLoaded(GAME_PLAY* play) {
         gameplay_ready_reported = FALSE;
         zone_arrival_stream_frames = 0;
         encounter_pending = 0;
+        hold_requests_pending = 0;
         acnet_scene_loaded(play->scene_id);
     }
 }

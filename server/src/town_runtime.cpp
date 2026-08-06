@@ -66,7 +66,6 @@ acnet::PlayerAppearance default_appearance(acnet::AccountId account) {
     appearance.gender = static_cast<std::uint8_t>(account & 1U);
     appearance.face = static_cast<std::uint8_t>(account % 8U);
     appearance.clothing = static_cast<std::uint16_t>(0x2400U + account % 0xFFU);
-    appearance.equipped_item = 0x2203;
     appearance.clothing_index = static_cast<std::uint16_t>(appearance.clothing - 0x2400U);
     appearance.revision = 1;
     return appearance;
@@ -635,6 +634,13 @@ bool TownRuntime::allow_message(Connection& connection, acnet::MessageType type,
     double burst = 40.0;
     if (type == acnet::MessageType::InputCommand) { rate = 60.0; burst = 120.0; }
     else if (type == acnet::MessageType::Ping || type == acnet::MessageType::Pong) { rate = 4.0; burst = 8.0; }
+    else if (type == acnet::MessageType::AppearanceUpdate) {
+        /* Each accepted one journals and re-baselines every connection, and a
+         * baseline is up to two acres of tiles plus a 512-byte pattern. Changing
+         * clothes is a once-in-a-while action, so this is deliberately the
+         * tightest bucket on the server. */
+        rate = 1.0; burst = 4.0;
+    }
     else if (type == acnet::MessageType::WorldRequest || type == acnet::MessageType::InventoryRequest ||
              type == acnet::MessageType::TradeRequest || type == acnet::MessageType::FurnitureRequest ||
              type == acnet::MessageType::HouseUpdate ||
@@ -779,6 +785,8 @@ bool TownRuntime::handle_hello(const acnet::Datagram& datagram,
             accounts_[hello.account] = account;
             acnet::InventoryState inventory;
             inventory.bells = 1000;
+            /* A rod in the pocket, hands empty: holding it is a transaction the
+             * player makes, not a state they start in. */
             inventory.slots[0].item = 0x2203;
             if (!world_.register_inventory(hello.account, inventory) ||
                 !economy_.register_account(hello.account, {})) {
@@ -803,6 +811,11 @@ bool TownRuntime::handle_hello(const acnet::Datagram& datagram,
         player.transform = account.transform;
         player.appearance = account.appearance;
         player.pattern = account.pattern;
+        /* Whatever this account was holding when it last logged out: the hand
+         * survives a session because the inventory does. */
+        if (const acnet::InventoryState* stored = world_.inventory(hello.account)) {
+            player.presentation.equipped_item = stored->equipped.item;
+        }
         if (!players_.upsert(player) ||
             !movement_.add_player(player.account, player.entity, player.zone, player.transform) ||
             !zones_.join(player.account, player.zone, player.transform.position, movement_.current_tick())) {
@@ -967,6 +980,35 @@ void TownRuntime::publish_population_change() {
     deltas_.append(std::move(delta));
     last_published_population_ = occupancy.population;
     last_published_capacity_ = occupancy.capacity;
+}
+
+/* Zone-scoped, so it reaches exactly the viewers whose interest set already
+ * contains this player and who therefore have a remote actor to apply it to. */
+void TownRuntime::publish_presentation(const acnet::PlayerView& player) {
+    acnet::PlayerPresentationDelta presentation;
+    presentation.account = player.account;
+    presentation.entity = player.entity;
+    presentation.presentation = player.presentation;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Player;
+    delta.zone = player.zone;
+    delta.entity = player.entity;
+    delta.reliable = true;
+    if (!acnet::encode_player_delta(presentation, delta.payload)) return;
+    deltas_.append(std::move(delta));
+}
+
+/* The hand is inventory state, so the presentation mirror is refreshed from the
+ * authority rather than tracked alongside it. */
+void TownRuntime::refresh_equipped_item(acnet::AccountId account) {
+    acnet::PlayerView* player = players_.by_account(account);
+    const acnet::InventoryState* inventory = world_.inventory(account);
+    if (player == nullptr || inventory == nullptr ||
+        player->presentation.equipped_item == inventory->equipped.item) {
+        return;
+    }
+    player->presentation.equipped_item = inventory->equipped.item;
+    publish_presentation(*player);
 }
 
 bool TownRuntime::publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error) {
@@ -1232,29 +1274,48 @@ bool TownRuntime::dispatch(Connection& connection,
                 ++metrics_.malformed_packets;
                 return true;
             }
+            /* A re-baseline is only warranted when something visible actually
+             * moved. Clients resend their appearance whenever any captured
+             * field changes, and an unchanged resend used to cost every
+             * connection a full baseline. */
+            bool appearance_changed = false;
             if (account == accounts_.end()) {
                 result.code = acnet::ResultCode::Unauthorized;
             } else {
                 AccountState& state = account->second;
-                request.appearance.revision = state.appearance.revision == std::numeric_limits<acnet::Revision>::max()
-                                                  ? 1
-                                                  : state.appearance.revision + 1;
-                state.appearance = request.appearance;
-                state.pattern = request.pattern;
-                if (acnet::PlayerView* player = players_.by_account(connection.account)) {
-                    player->appearance = request.appearance;
-                    player->pattern = request.pattern;
-                }
-                if (!commit_state(113, error)) return false;
+                const acnet::Revision revision = state.appearance.revision;
+                appearance_changed = state.appearance.name != request.appearance.name ||
+                                     state.appearance.gender != request.appearance.gender ||
+                                     state.appearance.face != request.appearance.face ||
+                                     state.appearance.clothing != request.appearance.clothing ||
+                                     state.appearance.clothing_index != request.appearance.clothing_index ||
+                                     state.pattern.present != request.pattern.present ||
+                                     state.pattern.palette != request.pattern.palette ||
+                                     (request.pattern.present && state.pattern.texture != request.pattern.texture);
                 result.code = acnet::ResultCode::Ok;
-                result.revision = request.appearance.revision;
-                record_event("Appearance updated for account " + std::to_string(connection.account));
+                if (!appearance_changed) {
+                    /* Confirm against the revision the sender already has so it
+                     * stops resending, but touch neither storage nor the wire. */
+                    result.revision = revision;
+                } else {
+                    request.appearance.revision =
+                        revision == std::numeric_limits<acnet::Revision>::max() ? 1 : revision + 1;
+                    state.appearance = request.appearance;
+                    state.pattern = request.pattern;
+                    if (acnet::PlayerView* player = players_.by_account(connection.account)) {
+                        player->appearance = request.appearance;
+                        player->pattern = request.pattern;
+                    }
+                    if (!commit_state(113, error)) return false;
+                    result.revision = request.appearance.revision;
+                    record_event("Appearance updated for account " + std::to_string(connection.account));
+                }
             }
             std::vector<std::uint8_t> response;
             if (!acnet::encode(result, response) ||
                 !send_payload(connection, acnet::MessageType::AppearanceResult,
                               acnet::Channel::Transactions, response, monotonic_ms, error)) return false;
-            if (result.code == acnet::ResultCode::Ok) {
+            if (result.code == acnet::ResultCode::Ok && appearance_changed) {
                 for (auto& connected : connections_) {
                     if (!send_baseline(connected.second, monotonic_ms, error)) return false;
                 }
@@ -1328,6 +1389,9 @@ bool TownRuntime::dispatch(Connection& connection,
                 } else if (request.type == acnet::EconomyOpType::DiscardMail) {
                     if (!publish_mail_change(discarded, true, error)) return false;
                 }
+                /* Holding, and only holding, changes what onlookers see in this
+                 * player's hand. */
+                if (request.type == acnet::EconomyOpType::HoldItem) refresh_equipped_item(connection.account);
                 acnet::ReplicationDelta delta;
                 delta.kind = request.type == acnet::EconomyOpType::Donate ? acnet::ResourceKind::Event
                                                                           : acnet::ResourceKind::Shop;
@@ -1679,7 +1743,16 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
     for (const auto& active : connections_) {
         const acnet::MovementPlayer* movement = movement_.player(active.second.account);
         acnet::PlayerView* mutable_view = players_.by_account(active.second.account);
-        if (movement != nullptr && mutable_view != nullptr) mutable_view->transform = movement->transform;
+        if (movement == nullptr || mutable_view == nullptr) continue;
+        mutable_view->transform = movement->transform;
+        /* Animation rides the input command but is republished only when it
+         * actually changes, which is a handful of times a second even while
+         * running -- far cheaper than putting it in every snapshot, and
+         * reliable, so a viewer cannot miss a transition and hold a pose. */
+        if (mutable_view->presentation.animation != movement->animation) {
+            mutable_view->presentation.animation = movement->animation;
+            publish_presentation(*mutable_view);
+        }
     }
     if (!clock_.advance(wall_seconds, connections_.empty())) {
         error = background_error_.empty() ? "town clock update failed" : background_error_;

@@ -27,6 +27,7 @@ struct MovementPlayer {
     EntityId entity = 0;
     ZoneId zone = 1;
     Transform transform;
+    PlayerAnimation animation;
     std::uint32_t last_received_sequence = 0;
     std::uint32_t last_processed_sequence = 0;
     std::deque<InputCommand> queued_inputs;
@@ -67,6 +68,7 @@ public:
                          std::int16_t stick_y,
                          std::uint16_t buttons,
                          std::uint16_t action,
+                         const PlayerAnimation& animation,
                          Tick estimated_server_tick);
     bool reconcile(const Transform& authoritative, std::uint32_t acknowledged_sequence);
 

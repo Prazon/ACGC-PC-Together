@@ -25,7 +25,6 @@ struct EncounterRequest {
     IdempotencyKey idempotency;
     EncounterKind kind = EncounterKind::Fish;
     Revision expected_inventory_revision = 0;
-    std::uint8_t tool_slot = 0;
     /* The item the client observed itself hooking or swinging at, so the
      * encyclopedia entry and the pocket agree. Spawns are still simulated on
      * the client, so this is a claim, not an outcome: the server accepts it

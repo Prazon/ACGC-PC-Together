@@ -274,7 +274,7 @@ void encounters_are_server_authoritative_and_idempotent() {
     CHECK(players.upsert(player));
     acnet::WorldAuthority world(&players);
     acnet::InventoryState inventory;
-    inventory.slots[0].item = 0x2203;
+    inventory.equipped.item = 0x2203;
     CHECK(world.register_inventory(player.account, inventory));
     acnet::EncounterAuthority encounters(&players, &world, 12345);
     acnet::EncounterRequest request;
@@ -282,7 +282,15 @@ void encounters_are_server_authoritative_and_idempotent() {
     request.idempotency = {1, 2};
     request.kind = acnet::EncounterKind::Fish;
     request.expected_inventory_revision = inventory.revision;
-    request.tool_slot = 0;
+    /* A rod in a pocket is not a rod in the hand. */
+    acnet::InventoryState pocketed = inventory;
+    pocketed.equipped = {};
+    pocketed.slots[0].item = 0x2203;
+    CHECK(world.set_inventory(player.account, pocketed));
+    acnet::EncounterRequest stowed = request;
+    stowed.idempotency = {1, 3};
+    CHECK(encounters.resolve(stowed, 100, 1700000000, 0).code == acnet::ResultCode::InvalidState);
+    CHECK(world.set_inventory(player.account, inventory));
     const acnet::EncounterResult first = encounters.resolve(request, 100, 1700000000, 0);
     CHECK(first.code == acnet::ResultCode::Ok);
     CHECK(first.next_allowed_tick == 190);
@@ -292,6 +300,175 @@ void encounters_are_server_authoritative_and_idempotent() {
     CHECK(replay.code == first.code);
     CHECK(replay.item == first.item);
     CHECK(replay.caught == first.caught);
+}
+
+void held_items_are_a_conserving_server_swap() {
+    acnet::PlayerDirectory players;
+    acnet::PlayerView player;
+    player.account = 7;
+    player.entity = 11;
+    player.zone = 1;
+    CHECK(players.upsert(player));
+    acnet::WorldAuthority world(&players);
+    acnet::InventoryState inventory;
+    inventory.slots[0].item = 0x2202; /* shovel */
+    inventory.slots[1].item = 0x2203; /* rod */
+    CHECK(world.register_inventory(player.account, inventory));
+    acnet::EconomyAuthority economy(&world, &players);
+    CHECK(economy.register_account(player.account, {}));
+
+    const auto units = [&]() {
+        const acnet::InventoryState* state = world.inventory(player.account);
+        std::size_t count = state->equipped.item != 0 ? 1U : 0U;
+        for (const acnet::ItemSlot& slot : state->slots) count += slot.item != 0 ? 1U : 0U;
+        return count;
+    };
+    CHECK(units() == 2);
+
+    acnet::EconomyRequest hold;
+    hold.type = acnet::EconomyOpType::HoldItem;
+    hold.account = player.account;
+    hold.idempotency = {1, 1};
+    hold.expected_inventory_revision = world.inventory(player.account)->revision;
+    hold.inventory_slot = 0;
+    hold.expected_item = 0x2202;
+    const acnet::EconomyResult equipped = economy.apply(hold);
+    CHECK(equipped.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(player.account)->equipped.item == 0x2202);
+    CHECK(world.inventory(player.account)->slots[0].item == 0);
+    CHECK(units() == 2);
+
+    /* A replay must not swap a second time. */
+    const acnet::EconomyResult replay = economy.apply(hold);
+    CHECK(replay.replayed);
+    CHECK(world.inventory(player.account)->equipped.item == 0x2202);
+    CHECK(world.inventory(player.account)->slots[0].item == 0);
+
+    /* Swapping straight to the other tool puts the shovel back where the rod was. */
+    acnet::EconomyRequest swap = hold;
+    swap.idempotency = {1, 2};
+    swap.expected_inventory_revision = world.inventory(player.account)->revision;
+    swap.inventory_slot = 1;
+    swap.expected_item = 0x2203;
+    CHECK(economy.apply(swap).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(player.account)->equipped.item == 0x2203);
+    CHECK(world.inventory(player.account)->slots[1].item == 0x2202);
+    CHECK(units() == 2);
+
+    /* Putting away is the same swap against an empty slot. */
+    acnet::EconomyRequest putaway = hold;
+    putaway.idempotency = {1, 3};
+    putaway.expected_inventory_revision = world.inventory(player.account)->revision;
+    putaway.inventory_slot = 4;
+    putaway.expected_item = 0;
+    CHECK(economy.apply(putaway).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(player.account)->equipped.item == 0);
+    CHECK(world.inventory(player.account)->slots[4].item == 0x2203);
+    CHECK(units() == 2);
+
+    /* Swapping an empty hand with an empty slot is not a move. */
+    acnet::EconomyRequest nothing = hold;
+    nothing.idempotency = {1, 4};
+    nothing.expected_inventory_revision = world.inventory(player.account)->revision;
+    nothing.inventory_slot = 7;
+    nothing.expected_item = 0;
+    CHECK(economy.apply(nothing).code == acnet::ResultCode::InvalidState);
+
+    /* A stale view of the pocket is refused rather than silently retargeted. */
+    acnet::EconomyRequest mismatched = hold;
+    mismatched.idempotency = {1, 5};
+    mismatched.expected_inventory_revision = world.inventory(player.account)->revision;
+    mismatched.inventory_slot = 4;
+    mismatched.expected_item = 0x2202;
+    CHECK(economy.apply(mismatched).code == acnet::ResultCode::InvalidState);
+
+    /* Out of bounds is malformed, not a crash. */
+    acnet::EconomyRequest oob = hold;
+    oob.idempotency = {1, 6};
+    oob.expected_inventory_revision = world.inventory(player.account)->revision;
+    oob.inventory_slot = 200;
+    oob.expected_item = 0;
+    CHECK(economy.apply(oob).code == acnet::ResultCode::Malformed);
+    CHECK(units() == 2);
+}
+
+void player_presentation_round_trips_and_is_bounded() {
+    acnet::PlayerAnimation animation;
+    animation.body = acnet::kPlayerAnimationCount - 1;
+    animation.overlay = 3;
+    animation.part_table = acnet::kPlayerPartTableCount - 1;
+    animation.item_state = acnet::kPlayerItemStateCount - 1;
+    animation.looping = false;
+    animation.reversed = true;
+
+    /* The input command carries it to the server. */
+    acnet::InputCommand command;
+    command.sequence = 9;
+    command.estimated_server_tick = 4;
+    command.action = acnet::kPlayerActionCount - 1;
+    command.animation = animation;
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode(command, payload));
+    acnet::InputCommand decoded_command;
+    CHECK(acnet::decode(payload, decoded_command));
+    CHECK(decoded_command.animation == animation);
+
+    /* The Player delta carries it back out to every viewer. */
+    acnet::PlayerPresentationDelta delta;
+    delta.account = 12;
+    delta.entity = 34;
+    delta.presentation.animation = animation;
+    delta.presentation.equipped_item = 0x2202;
+    std::vector<std::uint8_t> delta_bytes;
+    CHECK(acnet::encode_player_delta(delta, delta_bytes));
+    acnet::PlayerPresentationDelta decoded_delta;
+    CHECK(acnet::decode_player_delta(delta_bytes, decoded_delta));
+    CHECK(decoded_delta.account == delta.account);
+    CHECK(decoded_delta.entity == delta.entity);
+    CHECK(decoded_delta.presentation == delta.presentation);
+
+    /* Truncation and trailing bytes are both refused. */
+    std::vector<std::uint8_t> truncated(delta_bytes.begin(), delta_bytes.end() - 1);
+    CHECK(!acnet::decode_player_delta(truncated, decoded_delta));
+    std::vector<std::uint8_t> extended = delta_bytes;
+    extended.push_back(0);
+    CHECK(!acnet::decode_player_delta(extended, decoded_delta));
+
+    /* Every index is a table lookup on the receiving client, so out-of-range
+     * values must never survive the decoder. */
+    const std::size_t body_offset = delta_bytes.size() - 7;
+    std::vector<std::uint8_t> bad_body = delta_bytes;
+    bad_body[body_offset] = static_cast<std::uint8_t>(acnet::kPlayerAnimationCount);
+    CHECK(!acnet::decode_player_delta(bad_body, decoded_delta));
+    std::vector<std::uint8_t> bad_part_table = delta_bytes;
+    bad_part_table[body_offset + 2] = acnet::kPlayerPartTableCount;
+    CHECK(!acnet::decode_player_delta(bad_part_table, decoded_delta));
+    std::vector<std::uint8_t> bad_item_state = delta_bytes;
+    bad_item_state[body_offset + 3] = acnet::kPlayerItemStateCount;
+    CHECK(!acnet::decode_player_delta(bad_item_state, decoded_delta));
+    std::vector<std::uint8_t> bad_flags = delta_bytes;
+    bad_flags[body_offset + 4] = 0xFF;
+    CHECK(!acnet::decode_player_delta(bad_flags, decoded_delta));
+
+    /* The same bounds apply on the way in, and the movement authority refuses
+     * a command that fails them rather than forwarding it. */
+    acnet::MovementSimulator movement;
+    CHECK(movement.add_player(3, 4, 1, {}));
+    acnet::InputCommand accepted;
+    accepted.sequence = 1;
+    accepted.animation = animation;
+    accepted.client_transform.action = acnet::kPlayerActionCount - 1;
+    CHECK(movement.submit(3, accepted) == acnet::ResultCode::Ok);
+    acnet::InputCommand out_of_range = accepted;
+    out_of_range.sequence = 2;
+    out_of_range.animation.body = acnet::kPlayerAnimationCount;
+    CHECK(movement.submit(3, out_of_range) == acnet::ResultCode::Malformed);
+    acnet::InputCommand bad_action = accepted;
+    bad_action.sequence = 3;
+    bad_action.client_transform.action = acnet::kPlayerActionCount;
+    CHECK(movement.submit(3, bad_action) == acnet::ResultCode::Malformed);
+    movement.tick();
+    CHECK(movement.snapshot(3).presentation.animation == animation);
 }
 
 void runtime_replays_uncheckpointed_world_journal() {
@@ -612,7 +789,6 @@ void town_bootstrap_messages_are_bounded_and_round_trip() {
     original.appearance.gender = 1;
     original.appearance.face = 6;
     original.appearance.clothing = 0xFE20;
-    original.appearance.equipped_item = 0x2001;
     original.appearance.clothing_index = 0x103;
     original.pattern.present = true;
     original.pattern.palette = 5;
@@ -1189,7 +1365,12 @@ void world_transactions_are_atomic_idempotent_and_conserved() {
     dig.tile = unrelated;
     dig.expected_tile_revision = 1;
     dig.expected_inventory_revision = tools.revision;
-    dig.tool_slot = 1;
+    /* Owning the shovel is not enough while it is still in slot 1. */
+    CHECK(world.apply(dig).code == acnet::ResultCode::InvalidState);
+    tools.slots[1] = {};
+    tools.equipped.item = 0x2202;
+    CHECK(world.set_inventory(1, tools));
+    dig.idempotency = {1, 7};
     CHECK(world.apply(dig).code == acnet::ResultCode::Ok);
     CHECK(world.tile(unrelated)->terrain == acnet::TerrainState::Hole);
     acnet::WorldOperation fill = dig;
@@ -1203,7 +1384,6 @@ void world_transactions_are_atomic_idempotent_and_conserved() {
     plant.idempotency = {1, 6};
     plant.expected_tile_revision = world.tile(unrelated)->revision;
     plant.inventory_slot = 2;
-    plant.tool_slot = 0xFF;
     plant.expected_item = 0x2900;
     CHECK(world.apply(plant).code == acnet::ResultCode::Ok);
     CHECK(world.tile(unrelated)->terrain == acnet::TerrainState::Planted);
@@ -2613,10 +2793,10 @@ void production_clients_connect_move_and_render_each_other() {
         second_local.position.x -= 0.5F;
         second_local.velocity.x = -30.0F;
         second_local.yaw = -8192;
-        CHECK(first.frame(now, 26000, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(first.frame(now, 26000, 0, 0, 0, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) first_local = corrected;
-        CHECK(second.frame(now, -26000, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(second.frame(now, -26000, 0, 0, 0, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
@@ -2630,10 +2810,10 @@ void production_clients_connect_move_and_render_each_other() {
         bool has_correction = false;
         first_local.velocity.x = 0.0F;
         second_local.velocity.x = 0.0F;
-        CHECK(first.frame(now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(first.frame(now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) first_local = corrected;
-        CHECK(second.frame(now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(second.frame(now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
@@ -2670,9 +2850,9 @@ void production_clients_connect_move_and_render_each_other() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(++settle_now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(first.frame(++settle_now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -2693,7 +2873,6 @@ void production_clients_connect_move_and_render_each_other() {
     patterned.appearance.gender = 0;
     patterned.appearance.face = 2;
     patterned.appearance.clothing = 0xFE20;
-    patterned.appearance.equipped_item = 0x2203;
     patterned.appearance.clothing_index = 0x106;
     patterned.pattern.present = true;
     patterned.pattern.palette = 13;
@@ -2716,14 +2895,30 @@ void production_clients_connect_move_and_render_each_other() {
     }
     CHECK(pattern_converged);
 
+    /* Each client swings something distinctive so the presentation delta is
+     * exercised end to end: neither animation is what the other started in, so
+     * arriving at it can only have come over the wire. */
+    acnet::PlayerAnimation first_animation;
+    first_animation.body = 31;  /* mPlayer_ANIM_NET1 */
+    first_animation.overlay = 32;
+    first_animation.part_table = 3; /* mPlayer_PART_TABLE_NET */
+    first_animation.item_state = 2; /* mPlayer_ITEM_MAIN_NET_NORMAL */
+    first_animation.looping = false;
+    acnet::PlayerAnimation second_animation;
+    second_animation.body = 2; /* mPlayer_ANIM_AXE1 */
+    second_animation.overlay = 2;
+    second_animation.part_table = 1; /* mPlayer_PART_TABLE_AXE */
+    second_animation.item_state = 1; /* mPlayer_ITEM_MAIN_AXE_NORMAL */
+    second_animation.reversed = true;
+
     bool actions_converged = false;
     for (std::uint64_t i = 0; i < 120 && !actions_converged; ++i) {
         ++settle_now;
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(settle_now, 0, 0, 0, 121, first_local, corrected, has_correction, error));
+        CHECK(first.frame(settle_now, 0, 0, 0, 119, first_animation, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 122, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 120, second_animation, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -2731,17 +2926,19 @@ void production_clients_connect_move_and_render_each_other() {
         first_remotes = first.remote_players();
         second_remotes = second.remote_players();
         actions_converged = first_remotes.size() == 1 && second_remotes.size() == 1 &&
-                            first_remotes[0].transform.action == 122 &&
-                            second_remotes[0].transform.action == 121;
+                            first_remotes[0].transform.action == 120 &&
+                            second_remotes[0].transform.action == 119 &&
+                            first_remotes[0].presentation.animation == second_animation &&
+                            second_remotes[0].presentation.animation == first_animation;
     }
     CHECK(actions_converged);
     settle_now += 40;
     {
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(settle_now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(first.frame(settle_now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -2921,11 +3118,48 @@ void production_clients_connect_move_and_render_each_other() {
     const std::int16_t transaction_x = static_cast<std::int16_t>(transaction_origin->position.x / 40.0F);
     const std::int16_t transaction_z = static_cast<std::int16_t>(transaction_origin->position.z / 40.0F);
 
+    /* Catching needs the rod in hand, not merely owned, so hold it first --
+     * the same transaction the pocket menu and the L/R tool cycle issue. */
+    acnet::EconomyRequest hold;
+    hold.type = acnet::EconomyOpType::HoldItem;
+    hold.idempotency = {704, 705};
+    hold.expected_inventory_revision = first.baseline()->inventory.revision;
+    hold.inventory_slot = 0;
+    hold.expected_item = 0x2203;
+    CHECK(first.baseline()->inventory.slots[0].item == 0x2203);
+    CHECK(first.baseline()->inventory.equipped.item == 0);
+    CHECK(first.request(hold, transaction_now, error));
+    std::optional<acnet::EconomyResult> hold_result;
+    for (std::uint64_t i = 0; i < 30 && !hold_result.has_value(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++transaction_now;
+        CHECK(server.step(transaction_now, wall + 5, error));
+        CHECK(first.poll(transaction_now, error));
+        hold_result = first.take_economy_result();
+    }
+    CHECK(hold_result.has_value());
+    CHECK(hold_result->code == acnet::ResultCode::Ok);
+    /* A swap: the rod left the pocket rather than being copied out of it. */
+    CHECK(first.baseline()->inventory.equipped.item == 0x2203);
+    CHECK(first.baseline()->inventory.slots[0].item == 0);
+    /* And the other client can see it in their hand. */
+    bool held_item_converged = false;
+    for (std::uint64_t i = 0; i < 60 && !held_item_converged; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++transaction_now;
+        CHECK(server.step(transaction_now, wall + 5, error));
+        CHECK(first.poll(transaction_now, error));
+        CHECK(second.poll(transaction_now, error));
+        second_remotes = second.remote_players();
+        held_item_converged = second_remotes.size() == 1 &&
+                              second_remotes[0].presentation.equipped_item == 0x2203;
+    }
+    CHECK(held_item_converged);
+
     acnet::EncounterRequest encounter;
     encounter.account = 999999; // The server must replace this with the authenticated account.
     encounter.idempotency = {700, 701};
-    encounter.expected_inventory_revision = 1;
-    encounter.tool_slot = 0;
+    encounter.expected_inventory_revision = first.baseline()->inventory.revision;
     CHECK(first.request(encounter, transaction_now, error));
     std::optional<acnet::EncounterResult> encounter_result;
     for (std::uint64_t i = 0; i < 30 && !encounter_result.has_value(); ++i) {
@@ -2948,6 +3182,28 @@ void production_clients_connect_move_and_render_each_other() {
     auto target = find_tile(first, transaction_x, transaction_z);
     CHECK(target != first.baseline()->tiles.end());
     CHECK(target->second.item == 0);
+    /* Put the rod away again -- the same swap in the other direction, into a
+     * slot the catch above cannot have filled -- so there is something in a
+     * pocket to drop. */
+    acnet::EconomyRequest putaway;
+    putaway.type = acnet::EconomyOpType::HoldItem;
+    putaway.idempotency = {706, 707};
+    putaway.expected_inventory_revision = first.baseline()->inventory.revision;
+    putaway.inventory_slot = 5;
+    CHECK(first.request(putaway, ++transaction_now, error));
+    std::optional<acnet::EconomyResult> putaway_result;
+    for (std::uint64_t i = 0; i < 30 && !putaway_result.has_value(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ++transaction_now;
+        CHECK(server.step(transaction_now, wall + 5, error));
+        CHECK(first.poll(transaction_now, error));
+        putaway_result = first.take_economy_result();
+    }
+    CHECK(putaway_result.has_value());
+    CHECK(putaway_result->code == acnet::ResultCode::Ok);
+    CHECK(first.baseline()->inventory.equipped.item == 0);
+    CHECK(first.baseline()->inventory.slots[5].item == 0x2203);
+
     acnet::WorldOperation drop;
     drop.type = acnet::WorldOpType::DropItem;
     drop.account = 999999;
@@ -2955,7 +3211,7 @@ void production_clients_connect_move_and_render_each_other() {
     drop.tile = {1, transaction_x, transaction_z};
     drop.expected_tile_revision = target->second.revision;
     drop.expected_inventory_revision = first.baseline()->inventory.revision;
-    drop.inventory_slot = 0;
+    drop.inventory_slot = 5;
     drop.expected_item = 0x2203;
     CHECK(first.request(drop, ++transaction_now, error));
     std::optional<acnet::WorldResult> world_result;
@@ -2997,7 +3253,7 @@ void production_clients_connect_move_and_render_each_other() {
                                      std::to_string(authoritative->position.z)
                                : std::string("missing")));
     }
-    CHECK(first.baseline()->inventory.slots[0].item == 0);
+    CHECK(first.baseline()->inventory.slots[5].item == 0);
     CHECK(find_tile(first, transaction_x, transaction_z)->second.item == 0x2203);
     CHECK(find_tile(second, transaction_x, transaction_z)->second.item == 0x2203);
 
@@ -3445,6 +3701,8 @@ int main() {
         {"large payload fragmentation", fragmentation_reassembles_large_payloads},
         {"transaction message codecs", transaction_messages_round_trip},
         {"server-authoritative encounters", encounters_are_server_authoritative_and_idempotent},
+        {"held items are a conserving swap", held_items_are_a_conserving_server_swap},
+        {"player presentation replication", player_presentation_round_trips_and_is_bounded},
         {"runtime journal replay", runtime_replays_uncheckpointed_world_journal},
         {"SQLite WAL metadata", sqlite_metadata_uses_wal_and_migrations},
         {"IANA timezone DST", named_timezone_applies_dst_transitions},

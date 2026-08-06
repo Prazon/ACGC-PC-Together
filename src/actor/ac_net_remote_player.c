@@ -4,7 +4,11 @@
 
 #include "acnet/c_api.h"
 #include "ac_my_house.h"
+#include "ac_shop_goods_h.h"
+#include "bg_item_h.h"
 #include "c_keyframe.h"
+#include "m_common_data.h"
+#include "m_field_info.h"
 #include "m_malloc.h"
 #include "m_name_table.h"
 #include "m_needlework.h"
@@ -28,9 +32,18 @@ static void Net_Remote_Player_draw(ACTOR* actor, GAME* game);
  * the original player skeleton and resident-specific face/clothing resources
  * so another client appears as their real character instead of a proxy mesh. */
 typedef struct net_remote_render_data_s {
-    cKF_SkeletonInfo_R_c keyframe;
-    s_xyz joint_data[mPlayer_JOINT_NUM + 1];
-    s_xyz morph_data[mPlayer_JOINT_NUM + 1];
+    /* Two keyframes combined through a part table, exactly as the original
+     * player does: keyframe0 drives the body, keyframe1 the upper body, and
+     * mPlayer_PART_TABLE_* selects which joints come from which. Replicating
+     * only keyframe0 would leave a remote player swinging an axe with idle
+     * arms. */
+    cKF_SkeletonInfo_R_c keyframe0;
+    cKF_SkeletonInfo_R_c keyframe1;
+    s_xyz joint_data0[mPlayer_JOINT_NUM + 1];
+    s_xyz morph_data0[mPlayer_JOINT_NUM + 1];
+    s_xyz joint_data1[mPlayer_JOINT_NUM + 1];
+    s_xyz morph_data1[mPlayer_JOINT_NUM + 1];
+    s8 part_table[mPlayer_JOINT_NUM + 1];
     Mtx work_mtx[2][13] ATTRIBUTE_ALIGN(32);
     u8 clothing_texture[mNW_DESIGN_TEX_SIZE] ATTRIBUTE_ALIGN(32);
     u16 clothing_palette[mNW_PALETTE_SIZE / sizeof(u16)] ATTRIBUTE_ALIGN(32);
@@ -42,16 +55,20 @@ typedef struct net_remote_render_data_s {
     u32 loaded_appearance_revision;
     u8 loaded_pattern_present;
     u8 loaded_pattern_palette;
-    s8 animation_mode;
+    /* The replicated animation currently playing, so a repeat of the same
+     * state does not restart it every frame. */
+    u16 loaded_body;
+    u16 loaded_overlay;
+    u8 loaded_part_table;
+    u8 loaded_looping;
+    u8 loaded_reversed;
+    u8 animation_loaded;
+    /* Captured from the hand joint during the skeleton draw and used to place
+     * the held item afterwards. */
+    xyz_t hand_pos;
+    u8 hand_pos_valid;
     u8 initialized;
 } NET_REMOTE_RENDER_DATA;
-
-enum {
-    NET_REMOTE_ANIM_WAIT,
-    NET_REMOTE_ANIM_WALK,
-    NET_REMOTE_ANIM_PUSH,
-    NET_REMOTE_ANIM_PULL
-};
 
 static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
                                                 const AcNetRemotePlayer* state) {
@@ -95,19 +112,70 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
     }
     if (!mPlib_Load_PlayerFaceTexAndPallet(render->face_texture, render->face_palette, gender, face)) return FALSE;
 
-    cKF_SkeletonInfo_R_dt(&render->keyframe);
-    cKF_SkeletonInfo_R_ct(&render->keyframe, mPlib_get_player_mdl_for_gender(gender), NULL,
-                          render->joint_data, render->morph_data);
-    cKF_SkeletonInfo_R_init_standard_repeat(&render->keyframe, mPlib_Get_Pointer_Animation(0), NULL);
+    if (render->initialized) {
+        cKF_SkeletonInfo_R_dt(&render->keyframe0);
+        cKF_SkeletonInfo_R_dt(&render->keyframe1);
+    }
+    cKF_SkeletonInfo_R_ct(&render->keyframe0, mPlib_get_player_mdl_for_gender(gender), NULL,
+                          render->joint_data0, render->morph_data0);
+    cKF_SkeletonInfo_R_ct(&render->keyframe1, mPlib_get_player_mdl_for_gender(gender), NULL,
+                          render->joint_data1, render->morph_data1);
+    cKF_SkeletonInfo_R_init_standard_repeat(&render->keyframe0, mPlib_Get_Pointer_Animation(mPlayer_ANIM_WAIT1), NULL);
+    cKF_SkeletonInfo_R_init_standard_repeat(&render->keyframe1, mPlib_Get_Pointer_Animation(mPlayer_ANIM_WAIT1), NULL);
+    mPlib_DMA_player_Part_Table(render->part_table, mPlayer_PART_TABLE_NORMAL);
     render->loaded_gender = (u8)gender;
     render->loaded_face = (u8)face;
     render->loaded_clothing = remote->clothing;
     render->loaded_appearance_revision = remote->appearance_revision;
     render->loaded_pattern_present = state->pattern_present;
     render->loaded_pattern_palette = state->pattern_palette;
-    render->animation_mode = NET_REMOTE_ANIM_WAIT;
+    /* The skeletons were rebuilt, so whatever was playing is gone. */
+    render->animation_loaded = FALSE;
+    render->loaded_part_table = mPlayer_PART_TABLE_NORMAL;
     render->initialized = TRUE;
     return TRUE;
+}
+
+/* Drive the two keyframes from the replicated indices. The originating client
+ * runs the state machine that chose them; every value has already been range
+ * checked by the protocol decoder, so they can index the animation table
+ * directly. */
+static void Net_Remote_Player_apply_animation(NET_REMOTE_RENDER_DATA* render, const AcNetRemotePlayer* state) {
+    if (render->animation_loaded && render->loaded_body == state->animation_body &&
+        render->loaded_overlay == state->animation_overlay &&
+        render->loaded_looping == state->animation_looping &&
+        render->loaded_reversed == state->animation_reversed) {
+        if (render->loaded_part_table != state->animation_part_table) {
+            mPlib_DMA_player_Part_Table(render->part_table, state->animation_part_table);
+            render->loaded_part_table = state->animation_part_table;
+        }
+        return;
+    }
+
+    if (render->loaded_part_table != state->animation_part_table) {
+        mPlib_DMA_player_Part_Table(render->part_table, state->animation_part_table);
+        render->loaded_part_table = state->animation_part_table;
+    }
+    if (state->animation_reversed) {
+        cKF_SkeletonInfo_R_init_reverse_setspeedandmorphandmode(
+            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, 1.0f, 0.5f,
+            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+        cKF_SkeletonInfo_R_init_reverse_setspeedandmorphandmode(
+            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, 1.0f, 0.5f,
+            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+    } else {
+        cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
+            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, 1.0f, 1.0f, 0.5f,
+            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+        cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
+            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, 1.0f, 1.0f, 0.5f,
+            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+    }
+    render->loaded_body = state->animation_body;
+    render->loaded_overlay = state->animation_overlay;
+    render->loaded_looping = state->animation_looping;
+    render->loaded_reversed = state->animation_reversed;
+    render->animation_loaded = TRUE;
 }
 
 ACTOR_PROFILE Net_Remote_Player_Profile = {
@@ -148,7 +216,7 @@ static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
         render->loaded_appearance_revision = 0;
         render->loaded_pattern_present = 0xFF;
         render->loaded_pattern_palette = 0xFF;
-        render->animation_mode = -1;
+        render->loaded_part_table = 0xFF;
     }
     remote->render_data = render;
 }
@@ -158,7 +226,10 @@ static void Net_Remote_Player_dt(ACTOR* actor, GAME* game) {
     (void)game;
     if (remote->render_data != NULL) {
         NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
-        if (render->initialized) cKF_SkeletonInfo_R_dt(&render->keyframe);
+        if (render->initialized) {
+            cKF_SkeletonInfo_R_dt(&render->keyframe0);
+            cKF_SkeletonInfo_R_dt(&render->keyframe1);
+        }
         zelda_free(render);
         remote->render_data = NULL;
     }
@@ -232,34 +303,54 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
             remote->missing_frames = 0;
             if (Net_Remote_Player_refresh_appearance(remote, &states[i])) {
                 NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
-                const f32 speed_squared = actor->position_speed.x * actor->position_speed.x +
-                                          actor->position_speed.z * actor->position_speed.z;
-                int animation;
-                int animation_index;
-                if (states[i].transform.action == mPlayer_INDEX_PUSH) {
-                    animation = NET_REMOTE_ANIM_PUSH;
-                    animation_index = mPlayer_ANIM_PUSH1;
-                } else if (states[i].transform.action == mPlayer_INDEX_PULL) {
-                    animation = NET_REMOTE_ANIM_PULL;
-                    animation_index = mPlayer_ANIM_PULL1;
-                } else if (speed_squared > 1.0f) {
-                    animation = NET_REMOTE_ANIM_WALK;
-                    animation_index = mPlayer_ANIM_WALK1;
-                } else {
-                    animation = NET_REMOTE_ANIM_WAIT;
-                    animation_index = mPlayer_ANIM_WAIT1;
-                }
-                if (render->animation_mode != animation) {
-                    cKF_SkeletonInfo_R_init_standard_repeat(
-                        &render->keyframe, mPlib_Get_Pointer_Animation(animation_index), NULL);
-                    render->animation_mode = (s8)animation;
-                }
-                cKF_SkeletonInfo_R_play(&render->keyframe);
+                Net_Remote_Player_apply_animation(render, &states[i]);
+                cKF_SkeletonInfo_R_combine_play(&render->keyframe0, &render->keyframe1, render->part_table);
             }
             return;
         }
     }
     if (++remote->missing_frames > 180) Actor_delete(actor);
+}
+
+/* The hand joint's matrix is only available while the skeleton is being walked,
+ * so the position is captured here and the item drawn after the skeleton --
+ * the same order Player_actor_draw_After_hand and Player_actor_Item_draw use
+ * for the local player. */
+static int Net_Remote_Player_draw_after(GAME* game, cKF_SkeletonInfo_R_c* kf, int joint_no, Gfx** gfx_pp,
+                                        u8* work_flag, void* arg, s_xyz* rot, xyz_t* pos) {
+    AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)arg;
+    NET_REMOTE_RENDER_DATA* render;
+    (void)game;
+    (void)kf;
+    (void)gfx_pp;
+    (void)work_flag;
+    (void)rot;
+    (void)pos;
+    if (remote == NULL || joint_no != mPlayer_JOINT_HAND) return TRUE;
+    render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
+    if (render == NULL) return TRUE;
+    Matrix_Position_Zero(&render->hand_pos);
+    render->hand_pos_valid = TRUE;
+    return TRUE;
+}
+
+/* A presentation actor has no tool sub-actors and no item state machine, so the
+ * held item is drawn as a plain model in the hand rather than by reproducing
+ * Player_actor_Item_draw_*. That is enough to see who is carrying an axe and
+ * who is carrying a net; the swing itself comes from the animation. */
+static void Net_Remote_Player_draw_held_item(AC_NET_REMOTE_PLAYER* remote, GAME* game) {
+    NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
+    const mActor_name_t item = (mActor_name_t)remote->equipped_item;
+
+    if (render == NULL || !render->hand_pos_valid || item == EMPTY_NO) return;
+    if (mFI_GET_TYPE(mFI_GetFieldId()) == mFI_FIELD_FG) {
+        if (Common_Get(clip).bg_item_clip != NULL && Common_Get(clip).bg_item_clip->single_draw_proc != NULL) {
+            Common_Get(clip).bg_item_clip->single_draw_proc(game, item, &render->hand_pos, 1.0f, NULL, NULL, NULL);
+        }
+    } else if (Common_Get(clip).shop_goods_clip != NULL &&
+               Common_Get(clip).shop_goods_clip->single_draw_proc != NULL) {
+        Common_Get(clip).shop_goods_clip->single_draw_proc(game, item, &render->hand_pos, 1.0f, 0, FALSE);
+    }
 }
 
 static void Net_Remote_Player_draw(ACTOR* actor, GAME* game) {
@@ -277,7 +368,10 @@ static void Net_Remote_Player_draw(ACTOR* actor, GAME* game) {
     gSPSegment(POLY_OPA_DISP++, ANIME_4_TXT_SEG, render->clothing_palette);
     gSPSegment(POLY_OPA_DISP++, ANIME_5_TXT_SEG, render->face_palette);
     CLOSE_POLY_OPA_DISP(graph);
-    cKF_Si3_draw_R_SV(game, &render->keyframe, render->work_mtx[game->frame_counter & 1], NULL, NULL, remote);
+    render->hand_pos_valid = FALSE;
+    cKF_Si3_draw_R_SV(game, &render->keyframe0, render->work_mtx[game->frame_counter & 1], NULL,
+                      &Net_Remote_Player_draw_after, remote);
+    Net_Remote_Player_draw_held_item(remote, game);
 }
 
 #endif

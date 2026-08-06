@@ -211,6 +211,8 @@ private:
     bool send_baseline(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     void publish_population_change();
     bool publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error);
+    void publish_presentation(const acnet::PlayerView& player);
+    void refresh_equipped_item(acnet::AccountId account);
     acnet::TownOccupancy current_occupancy() const;
     bool send_deltas(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool refresh_interest_chunk(Connection& connection, std::uint64_t monotonic_ms, std::string& error);

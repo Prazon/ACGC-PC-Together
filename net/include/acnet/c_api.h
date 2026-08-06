@@ -39,12 +39,23 @@ typedef struct AcNetRemotePlayer {
     uint8_t gender;
     uint8_t face;
     uint16_t clothing;
-    uint16_t equipped_item;
     uint16_t clothing_index;
     uint32_t appearance_revision;
     uint8_t pattern_present;
     uint8_t pattern_palette;
     uint8_t pattern_texture[ACNET_CUSTOM_PATTERN_TEXTURE_BYTES];
+    /* What this player is holding and what their skeleton is doing, in the
+     * original game's own indices: mPlayer_ANIM_* for the two keyframes,
+     * mPlayer_PART_TABLE_* for the blend, mPlayer_ITEM_MAIN_* for the tool.
+     * Already range-checked by the decoder, so a viewer may index its tables
+     * with them directly. */
+    uint16_t equipped_item;
+    uint8_t animation_body;
+    uint8_t animation_overlay;
+    uint8_t animation_part_table;
+    uint8_t animation_item_state;
+    uint8_t animation_looping;
+    uint8_t animation_reversed;
     uint8_t transition_phase;
     uint32_t transition_door;
     uint32_t transition_expires_tick;
@@ -107,7 +118,6 @@ typedef struct AcNetPlayerAppearance {
     uint8_t gender;
     uint8_t face;
     uint16_t clothing;
-    uint16_t equipped_item;
     uint16_t clothing_index;
     uint32_t appearance_revision;
     uint8_t pattern_present;
@@ -232,10 +242,21 @@ int acnet_client_start(const char* host,
                        const char* invite_key);
 void acnet_client_stop(void);
 int acnet_client_poll(void);
+/* `action` is mPlayer_INDEX_*; the four animation arguments are the local
+ * player's own animation0_idx, animation1_idx, part_table_idx, and
+ * now_item_main_index, with the keyframe's playback mode. They are what other
+ * clients draw this player with, so they are range-checked before they are
+ * sent and again when they arrive. */
 int acnet_client_frame(int16_t stick_x,
                        int16_t stick_y,
                        uint16_t buttons,
                        uint16_t action,
+                       uint8_t animation_body,
+                       uint8_t animation_overlay,
+                       uint8_t animation_part_table,
+                       uint8_t animation_item_state,
+                       uint8_t animation_looping,
+                       uint8_t animation_reversed,
                        AcNetTransform* local_transform);
 size_t acnet_client_remote_players(AcNetRemotePlayer* output, size_t capacity);
 size_t acnet_client_baseline_tiles(AcNetTileState* output, size_t capacity);
@@ -247,6 +268,15 @@ int acnet_client_house(AcNetHouseState* output);
 size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);
 size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity);
 uint32_t acnet_client_inventory_revision(void);
+/* The item this account is authoritatively holding, or 0 for an empty hand.
+ * Shares the inventory revision: it moved out of a pocket to get there. */
+uint16_t acnet_client_equipped_item(void);
+/* Swap pocket slot `inventory_slot` with the hand. Equipping names the slot the
+ * tool is in, putting away names an empty slot, and swapping tools names the
+ * next one -- the same move in all three cases, so nothing is created or
+ * destroyed. `expected_item` is the item the caller believes is in that slot,
+ * or 0 to skip the check. */
+int acnet_client_request_hold_item(uint8_t inventory_slot, uint16_t expected_item);
 uint32_t acnet_client_bells(void);
 uint64_t acnet_client_bank_balance(void);
 uint64_t acnet_client_debt(void);
@@ -299,15 +329,6 @@ int acnet_client_request_world_auto(uint8_t operation_type,
                                     uint32_t expected_inventory_revision,
                                     uint8_t inventory_slot,
                                     uint16_t expected_item);
-int acnet_client_request_world_with_tool_auto(uint8_t operation_type,
-                                              uint32_t zone_id,
-                                              int16_t x,
-                                              int16_t z,
-                                              uint32_t expected_tile_revision,
-                                              uint32_t expected_inventory_revision,
-                                              uint8_t inventory_slot,
-                                              uint8_t tool_slot,
-                                              uint16_t expected_item);
 int acnet_client_take_world_result(AcNetWorldResult* output);
 int acnet_client_request_economy_auto(uint8_t operation_type,
                                       uint32_t expected_inventory_revision,
@@ -350,17 +371,18 @@ int acnet_client_take_conversation_result(AcNetConversationResult* output);
 /* `species` is the item the client observed itself hooking or swinging at.
  * Spawns are still simulated on the client, so the server treats it as a claim:
  * it is committed only if that species can legally appear at the town's current
- * month, hour, and weather. Pass 0 to let the server choose. */
+ * month, hour, and weather. Pass 0 to let the server choose.
+ *
+ * The rod or net is not named: the server reads whatever this account is
+ * authoritatively holding, so a tool sitting in a pocket cannot catch. */
 int acnet_client_request_encounter(uint8_t kind,
                                    uint16_t species,
                                    uint32_t expected_inventory_revision,
-                                   uint8_t tool_slot,
                                    uint64_t idempotency_high,
                                    uint64_t idempotency_low);
 int acnet_client_request_encounter_auto(uint8_t kind,
                                         uint16_t species,
-                                        uint32_t expected_inventory_revision,
-                                        uint8_t tool_slot);
+                                        uint32_t expected_inventory_revision);
 int acnet_client_take_encounter_result(AcNetEncounterResult* output);
 int acnet_client_request_furniture_auto(uint8_t operation_type,
                                         uint64_t house_id,

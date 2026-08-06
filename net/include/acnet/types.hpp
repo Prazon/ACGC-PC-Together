@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 12;
+constexpr std::uint16_t kProtocolVersion = 14;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -25,6 +25,18 @@ constexpr std::size_t kMaxPlaintextPayloadBytes = kMaxPayloadBytes - kEncryption
 constexpr std::size_t kMaxPlayersPerZone = 16;
 constexpr std::size_t kReconnectTokenBytes = 32;
 constexpr std::size_t kCustomPatternTextureBytes = 32U * 32U / 2U;
+
+/* Bounds of the original player state machines, mirrored here so the portable
+ * core can reject a presentation field without including a game header:
+ * mPlayer_INDEX_NUM, mPlayer_ANIM_NUM, mPlayer_ITEM_MAIN_NUM and
+ * mPlayer_PART_TABLE_NUM in include/m_player.h. These are indices into fixed
+ * tables the receiving client dereferences, so an out-of-range value is not a
+ * cosmetic lie -- it reads past an animation or part table. Validate on the
+ * wire, never on arrival. Raise them only together with the game enum. */
+constexpr std::uint16_t kPlayerActionCount = 121;
+constexpr std::uint16_t kPlayerAnimationCount = 157;
+constexpr std::uint8_t kPlayerItemStateCount = 24;
+constexpr std::uint8_t kPlayerPartTableCount = 5;
 
 enum class Channel : std::uint8_t {
     Control = 0,
@@ -112,15 +124,59 @@ struct Transform {
     std::uint16_t action = 0;
 };
 
+/* Who a player *is*. Deliberately no equipment: what is in the hand belongs to
+ * the inventory the server commits (InventoryState::equipped), not to the
+ * presentation the client authors, and mixing the two made every tool swap a
+ * reliable appearance broadcast. */
 struct PlayerAppearance {
     std::array<std::uint8_t, 8> name{};
     std::uint8_t gender = 0;
     std::uint8_t face = 0;
     std::uint16_t clothing = 0;
-    std::uint16_t equipped_item = 0;
     std::uint16_t clothing_index = 0;
     Revision revision = 0;
 };
+
+/* What a player's skeleton is doing this instant, in the original game's own
+ * terms: two animation indices combined through a part table, exactly as
+ * Player_actor_InitAnimation_Base* drives keyframe0/keyframe1. It is authored
+ * by the acting client -- only that client runs the state machine that decides
+ * a swing has begun -- so every field is bounds-checked on arrival before any
+ * viewer indexes a table with it. */
+struct PlayerAnimation {
+    std::uint8_t body = 0;       /* mPlayer_ANIM_*, keyframe0 */
+    std::uint8_t overlay = 0;    /* mPlayer_ANIM_*, keyframe1 */
+    std::uint8_t part_table = 0; /* mPlayer_PART_TABLE_* */
+    std::uint8_t item_state = 0; /* mPlayer_ITEM_MAIN_*, which tool is in use */
+    bool looping = true;         /* cKF_FRAMECONTROL_REPEAT, else _STOP */
+    bool reversed = false;
+
+    bool operator==(const PlayerAnimation& other) const {
+        return body == other.body && overlay == other.overlay && part_table == other.part_table &&
+               item_state == other.item_state && looping == other.looping && reversed == other.reversed;
+    }
+    bool operator!=(const PlayerAnimation& other) const { return !(*this == other); }
+};
+
+/* Everything a viewer needs to draw another player beyond their transform and
+ * appearance. Sent as a reliable Player delta on change rather than in the
+ * 15 Hz snapshot: a full 16-player snapshot already sits near the unfragmented
+ * MTU, and a dropped animation transition is a stuck pose, not a stale one. */
+struct PlayerPresentation {
+    PlayerAnimation animation;
+    /* Server-owned, mirrored from InventoryState::equipped. */
+    std::uint16_t equipped_item = 0;
+
+    bool operator==(const PlayerPresentation& other) const {
+        return animation == other.animation && equipped_item == other.equipped_item;
+    }
+    bool operator!=(const PlayerPresentation& other) const { return !(*this == other); }
+};
+
+inline bool valid(const PlayerAnimation& animation) {
+    return animation.body < kPlayerAnimationCount && animation.overlay < kPlayerAnimationCount &&
+           animation.part_table < kPlayerPartTableCount && animation.item_state < kPlayerItemStateCount;
+}
 
 /* A custom shirt is process-independent presentation data. It is kept out of
  * the high-rate transform snapshot and sent only in reliable appearance and
@@ -144,6 +200,9 @@ struct PlayerSnapshot {
     std::uint32_t acknowledged_input = 0;
     Transform transform;
     PlayerAppearance appearance;
+    /* Baseline-only, like appearance: the unreliable snapshot carries neither.
+     * Player deltas keep it live between baselines. */
+    PlayerPresentation presentation;
     CustomPattern pattern;
     DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
     std::uint32_t transition_door = 0;
@@ -205,6 +264,11 @@ struct InputCommand {
      * representation, so re-simulating raw stick axes on the server produces
      * visible pulling and mirrored motion. */
     Transform client_transform;
+    /* Same reasoning as the transform: only the originating client runs the
+     * state machine that knows a swing has started, so it reports what its
+     * skeleton is doing. The server bounds-checks it and forwards it -- it is
+     * presentation, and nothing gameplay-authoritative reads it. */
+    PlayerAnimation animation;
 };
 
 struct TransformSnapshot {

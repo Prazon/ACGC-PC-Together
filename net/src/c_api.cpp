@@ -56,7 +56,6 @@ void appearance_from_c(const AcNetPlayerAppearance& source,
     appearance.gender = source.gender;
     appearance.face = source.face;
     appearance.clothing = source.clothing;
-    appearance.equipped_item = source.equipped_item;
     appearance.clothing_index = source.clothing_index;
     appearance.revision = source.appearance_revision;
     pattern.present = source.pattern_present != 0;
@@ -135,16 +134,35 @@ extern "C" int acnet_client_frame(int16_t stick_x,
                                    int16_t stick_y,
                                    uint16_t buttons,
                                    uint16_t action,
+                                   uint8_t animation_body,
+                                   uint8_t animation_overlay,
+                                   uint8_t animation_part_table,
+                                   uint8_t animation_item_state,
+                                   uint8_t animation_looping,
+                                   uint8_t animation_reversed,
                                    AcNetTransform* local_transform) {
     try {
         if (!client || local_transform == nullptr) return 1;
         acnet::Transform corrected;
+        acnet::PlayerAnimation animation;
         bool has_correction = false;
+        animation.body = animation_body;
+        animation.overlay = animation_overlay;
+        animation.part_table = animation_part_table;
+        animation.item_state = animation_item_state;
+        animation.looping = animation_looping != 0;
+        animation.reversed = animation_reversed != 0;
+        /* A caller that has not loaded a skeleton yet passes zeroes, which are
+         * already in range. Anything else out of range is a caller bug, and
+         * sending it would have the server drop the whole input command --
+         * including the movement -- so it is clamped to a resting pose here. */
+        if (!acnet::valid(animation)) animation = {};
         if (!client->frame(acnet::client_monotonic_milliseconds(),
                            stick_x,
                            stick_y,
                            buttons,
                            action,
+                           animation,
                            from_c(*local_transform),
                            corrected,
                            has_correction,
@@ -172,8 +190,14 @@ extern "C" size_t acnet_client_remote_players(AcNetRemotePlayer* output, size_t 
                 output[i].gender = remotes[i].appearance.gender;
                 output[i].face = remotes[i].appearance.face;
                 output[i].clothing = remotes[i].appearance.clothing;
-                output[i].equipped_item = remotes[i].appearance.equipped_item;
                 output[i].clothing_index = remotes[i].appearance.clothing_index;
+                output[i].equipped_item = remotes[i].presentation.equipped_item;
+                output[i].animation_body = remotes[i].presentation.animation.body;
+                output[i].animation_overlay = remotes[i].presentation.animation.overlay;
+                output[i].animation_part_table = remotes[i].presentation.animation.part_table;
+                output[i].animation_item_state = remotes[i].presentation.animation.item_state;
+                output[i].animation_looping = remotes[i].presentation.animation.looping ? 1 : 0;
+                output[i].animation_reversed = remotes[i].presentation.animation.reversed ? 1 : 0;
                 output[i].appearance_revision = remotes[i].appearance.revision;
                 output[i].pattern_present = remotes[i].pattern.present ? 1 : 0;
                 output[i].pattern_palette = remotes[i].pattern.palette;
@@ -293,6 +317,24 @@ extern "C" size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity)
 
 extern "C" uint32_t acnet_client_inventory_revision(void) {
     return client && client->baseline() != nullptr ? client->baseline()->inventory.revision : 0;
+}
+
+extern "C" uint16_t acnet_client_equipped_item(void) {
+    return client && client->baseline() != nullptr ? client->baseline()->inventory.equipped.item : 0;
+}
+
+extern "C" int acnet_client_request_hold_item(uint8_t inventory_slot, uint16_t expected_item) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        acnet::EconomyRequest request;
+        request.type = acnet::EconomyOpType::HoldItem;
+        request.idempotency = random_idempotency();
+        request.expected_inventory_revision = client->baseline()->inventory.revision;
+        request.inventory_slot = inventory_slot;
+        request.expected_item = expected_item;
+        return request.idempotency.valid() &&
+               client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
 }
 
 extern "C" uint32_t acnet_client_bells(void) {
@@ -478,31 +520,6 @@ extern "C" int acnet_client_request_world_auto(uint8_t operation_type,
     } catch (...) { capture_exception(); return 0; }
 }
 
-extern "C" int acnet_client_request_world_with_tool_auto(uint8_t operation_type,
-                                                            uint32_t zone_id,
-                                                            int16_t x,
-                                                            int16_t z,
-                                                            uint32_t expected_tile_revision,
-                                                            uint32_t expected_inventory_revision,
-                                                            uint8_t inventory_slot,
-                                                            uint8_t tool_slot,
-                                                            uint16_t expected_item) {
-    try {
-        if (!client || operation_type > static_cast<uint8_t>(acnet::WorldOpType::FillHole)) return 0;
-        acnet::WorldOperation request;
-        request.type = static_cast<acnet::WorldOpType>(operation_type);
-        request.idempotency = random_idempotency();
-        request.tile = {zone_id, x, z};
-        request.expected_tile_revision = expected_tile_revision;
-        request.expected_inventory_revision = expected_inventory_revision;
-        request.inventory_slot = inventory_slot;
-        request.tool_slot = tool_slot;
-        request.expected_item = expected_item;
-        return request.idempotency.valid() &&
-               client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
-    } catch (...) { capture_exception(); return 0; }
-}
-
 extern "C" int acnet_client_request_economy_auto(uint8_t operation_type,
                                                    uint32_t expected_inventory_revision,
                                                    uint32_t expected_aux_revision,
@@ -671,7 +688,6 @@ extern "C" int acnet_client_take_conversation_result(AcNetConversationResult* ou
 extern "C" int acnet_client_request_encounter(uint8_t kind,
                                                uint16_t species,
                                                uint32_t expected_inventory_revision,
-                                               uint8_t tool_slot,
                                                uint64_t idempotency_high,
                                                uint64_t idempotency_low) {
     try {
@@ -680,7 +696,6 @@ extern "C" int acnet_client_request_encounter(uint8_t kind,
         request.kind = static_cast<acnet::EncounterKind>(kind);
         request.species = species;
         request.expected_inventory_revision = expected_inventory_revision;
-        request.tool_slot = tool_slot;
         request.idempotency = {idempotency_high, idempotency_low};
         return client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }
@@ -688,11 +703,10 @@ extern "C" int acnet_client_request_encounter(uint8_t kind,
 
 extern "C" int acnet_client_request_encounter_auto(uint8_t kind,
                                                       uint16_t species,
-                                                      uint32_t expected_inventory_revision,
-                                                      uint8_t tool_slot) {
+                                                      uint32_t expected_inventory_revision) {
     try {
         const acnet::IdempotencyKey key = random_idempotency();
-        return key.valid() && acnet_client_request_encounter(kind, species, expected_inventory_revision, tool_slot,
+        return key.valid() && acnet_client_request_encounter(kind, species, expected_inventory_revision,
                                                               key.high, key.low);
     } catch (...) { capture_exception(); return 0; }
 }

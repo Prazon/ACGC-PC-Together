@@ -146,7 +146,9 @@ void patch_save(std::vector<std::uint8_t>& bytes,
                   bytes.begin() + static_cast<std::ptrdiff_t>(base));
         bytes[base + kPrivateGenderOffset] = resident.appearance.gender;
         bytes[base + kPrivateFaceOffset] = resident.appearance.face;
-        write_be16(bytes, base + kPrivateEquipmentOffset, resident.appearance.equipped_item);
+        /* Private_c::equipment is the held item, which lives in the inventory
+         * rather than the appearance -- same field, same offset. */
+        write_be16(bytes, base + kPrivateEquipmentOffset, resident.inventory.equipped.item);
         write_be16(bytes, base + kPrivateClothingIndexOffset, resident.appearance.clothing_index);
         write_be16(bytes, base + kPrivateClothingOffset, resident.appearance.clothing);
         if (resident.pattern.present && resident.appearance.clothing_index >= 0x100 &&
@@ -220,7 +222,7 @@ bool decode_gci_town(const std::vector<std::uint8_t>& bytes,
                   resident.appearance.name.begin());
         resident.appearance.gender = bytes[base + kPrivateGenderOffset];
         resident.appearance.face = bytes[base + kPrivateFaceOffset];
-        resident.appearance.equipped_item = read_be16(bytes, base + kPrivateEquipmentOffset);
+        resident.inventory.equipped.item = read_be16(bytes, base + kPrivateEquipmentOffset);
         resident.appearance.clothing_index = read_be16(bytes, base + kPrivateClothingIndexOffset);
         resident.appearance.clothing = read_be16(bytes, base + kPrivateClothingOffset);
         resident.appearance.revision = 1;

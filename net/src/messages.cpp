@@ -67,7 +67,7 @@ bool valid_appearance(const PlayerAppearance& value, const CustomPattern& patter
 bool appearance(ByteWriter& writer, const PlayerAppearance& value, const CustomPattern& pattern) {
     if (!valid_appearance(value, pattern) ||
         !writer.bytes(value.name.data(), value.name.size()) || !writer.u8(value.gender) ||
-        !writer.u8(value.face) || !writer.u16(value.clothing) || !writer.u16(value.equipped_item) ||
+        !writer.u8(value.face) || !writer.u16(value.clothing) ||
         !writer.u16(value.clothing_index) || !writer.u32(value.revision) ||
         !writer.u8(pattern.present ? 1 : 0) || !writer.u8(pattern.palette)) return false;
     return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
@@ -77,7 +77,7 @@ bool appearance(ByteReader& reader, PlayerAppearance& value, CustomPattern& patt
     std::uint8_t present;
     pattern = {};
     if (!reader.bytes(value.name.data(), value.name.size()) || !reader.u8(value.gender) ||
-        !reader.u8(value.face) || !reader.u16(value.clothing) || !reader.u16(value.equipped_item) ||
+        !reader.u8(value.face) || !reader.u16(value.clothing) ||
         !reader.u16(value.clothing_index) || !reader.u32(value.revision) || !reader.u8(present) ||
         !reader.u8(pattern.palette) || present > 1) return false;
     pattern.present = present != 0;
@@ -191,7 +191,7 @@ bool encode(const WorldOperation& value, std::vector<std::uint8_t>& output) {
         !writer.u8(static_cast<std::uint8_t>(value.type)) || !writer.u64(value.account) ||
         !idempotency(writer, value.idempotency) || !tile(writer, value.tile) ||
         !writer.u32(value.expected_tile_revision) || !writer.u32(value.expected_inventory_revision) ||
-        !writer.u8(value.inventory_slot) || !writer.u8(value.tool_slot) || !writer.u16(value.expected_item)) return false;
+        !writer.u8(value.inventory_slot) || !writer.u16(value.expected_item)) return false;
     output = writer.data();
     return true;
 }
@@ -202,8 +202,7 @@ bool decode(const std::vector<std::uint8_t>& input, WorldOperation& value) {
     if (!reader.u8(type) || type > static_cast<std::uint8_t>(WorldOpType::FillHole) ||
         !reader.u64(value.account) || !idempotency(reader, value.idempotency) || !tile(reader, value.tile) ||
         !reader.u32(value.expected_tile_revision) || !reader.u32(value.expected_inventory_revision) ||
-        !reader.u8(value.inventory_slot) || !reader.u8(value.tool_slot) ||
-        !reader.u16(value.expected_item) || !reader.finished()) return false;
+        !reader.u8(value.inventory_slot) || !reader.u16(value.expected_item) || !reader.finished()) return false;
     value.type = static_cast<WorldOpType>(type);
     return true;
 }
@@ -545,7 +544,7 @@ bool encode(const EncounterRequest& value, std::vector<std::uint8_t>& output) {
     if (static_cast<std::uint8_t>(value.kind) > static_cast<std::uint8_t>(EncounterKind::Insect) ||
         !writer.u64(value.account) || !idempotency(writer, value.idempotency) ||
         !writer.u8(static_cast<std::uint8_t>(value.kind)) || !writer.u32(value.expected_inventory_revision) ||
-        !writer.u8(value.tool_slot) || !writer.u16(value.species)) return false;
+        !writer.u16(value.species)) return false;
     output = writer.data();
     return true;
 }
@@ -555,8 +554,8 @@ bool decode(const std::vector<std::uint8_t>& input, EncounterRequest& value) {
     std::uint8_t kind;
     if (!reader.u64(value.account) || !idempotency(reader, value.idempotency) || !reader.u8(kind) ||
         kind > static_cast<std::uint8_t>(EncounterKind::Insect) ||
-        !reader.u32(value.expected_inventory_revision) || !reader.u8(value.tool_slot) ||
-        !reader.u16(value.species) || !reader.finished()) return false;
+        !reader.u32(value.expected_inventory_revision) || !reader.u16(value.species) ||
+        !reader.finished()) return false;
     /* Zero means "no claim"; anything else must name a real species so a
      * malformed identifier is rejected at the parser rather than deep in the
      * authority. */

@@ -69,6 +69,10 @@ ResultCode MovementSimulator::submit(AccountId account, const InputCommand& comm
     if (target->queued_inputs.size() >= config_.maximum_queued_inputs) return ResultCode::RateLimited;
     if (std::abs(static_cast<int>(command.stick_x)) > 32767 ||
         std::abs(static_cast<int>(command.stick_y)) > 32767) return ResultCode::Malformed;
+    /* Both of these end up indexing a fixed table on every other client, so
+     * they are bounded here rather than trusted and forwarded. */
+    if (command.action >= kPlayerActionCount || command.client_transform.action >= kPlayerActionCount ||
+        !valid(command.animation)) return ResultCode::Malformed;
     if (!valid_transform(command.client_transform)) return ResultCode::OutOfRange;
     target->last_received_sequence = command.sequence;
     target->queued_inputs.push_back(command);
@@ -113,6 +117,7 @@ void MovementSimulator::tick() {
         while (!target.queued_inputs.empty()) {
             const InputCommand& input = target.queued_inputs.front();
             target.transform = input.client_transform;
+            target.animation = input.animation;
             target.last_processed_sequence = input.sequence;
             target.queued_inputs.pop_front();
         }
@@ -138,6 +143,7 @@ PlayerSnapshot MovementSimulator::snapshot(AccountId account) const {
     result.zone = source->zone;
     result.acknowledged_input = source->last_processed_sequence;
     result.transform = source->transform;
+    result.presentation.animation = source->animation;
     return result;
 }
 
@@ -154,6 +160,7 @@ InputCommand ClientPredictor::predict(std::int16_t stick_x,
                                       std::int16_t stick_y,
                                       std::uint16_t buttons,
                                       std::uint16_t action,
+                                      const PlayerAnimation& animation,
                                       Tick estimated_server_tick) {
     InputCommand command;
     command.sequence = next_sequence_++;
@@ -162,6 +169,7 @@ InputCommand ClientPredictor::predict(std::int16_t stick_x,
     command.stick_y = stick_y;
     command.buttons = buttons;
     command.action = action;
+    command.animation = animation;
     MovementSimulator::simulate_step(predicted_, command, config_);
     command.client_transform = predicted_;
     pending_.push_back(command);

@@ -53,6 +53,20 @@ struct MailDelta {
 bool encode_mail_delta(const MailDelta& delta, std::vector<std::uint8_t>& output);
 bool decode_mail_delta(const std::vector<std::uint8_t>& input, MailDelta& delta);
 
+/* One player's presentation changing: a new animation, or a different item in
+ * the hand. Sent zone-scoped on the reliable Events channel rather than folded
+ * into the snapshot, because a full 16-player snapshot already sits close to
+ * the unfragmented MTU and because a lost transition would leave a viewer
+ * holding the previous pose indefinitely. */
+struct PlayerPresentationDelta {
+    AccountId account = 0;
+    EntityId entity = 0;
+    PlayerPresentation presentation;
+};
+
+bool encode_player_delta(const PlayerPresentationDelta& delta, std::vector<std::uint8_t>& output);
+bool decode_player_delta(const std::vector<std::uint8_t>& input, PlayerPresentationDelta& delta);
+
 struct ZoneBaseline {
     Tick server_tick = 0;
     Revision revision = 0;

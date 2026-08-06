@@ -29,11 +29,15 @@ enum class EconomyOpType : std::uint8_t {
     ClaimMail,
     TakeMail,
     DiscardMail,
+    /* Swap a pocket slot with the hand: equipping, putting away, and the
+     * pocket-menu drag onto the player are all the same move, exactly as
+     * mHD_drop_item performs it locally. */
+    HoldItem,
     AdminGrantBells,
     AdminSendMail,
 };
 
-constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::DiscardMail);
+constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::HoldItem);
 
 /* The original game moves a letter in two steps: the house mailbox holds ten,
  * the player then carries up to ten in their pockets, and only a carried letter

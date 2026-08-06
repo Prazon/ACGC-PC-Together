@@ -32,6 +32,12 @@ struct InventoryState {
     Revision revision = 1;
     std::uint32_t bells = 0;
     std::array<ItemSlot, kInventorySlots> slots{};
+    /* What the player is holding. The original stores this outside the pocket
+     * array too (Private_c::equipment), and holding is a move out of a pocket,
+     * so it shares the inventory revision: a client that observed the pockets
+     * observed the hand at the same instant. Tool checks read this and nothing
+     * else -- a shovel sitting in a pocket does not dig. */
+    ItemSlot equipped{};
 };
 
 struct TileAddress {
@@ -85,7 +91,6 @@ struct WorldOperation {
     Revision expected_tile_revision = 0;
     Revision expected_inventory_revision = 0;
     std::uint8_t inventory_slot = 0;
-    std::uint8_t tool_slot = 0xFF;
     std::uint16_t expected_item = 0;
 };
 

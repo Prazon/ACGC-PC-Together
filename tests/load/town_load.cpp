@@ -38,6 +38,8 @@ int main(int argc, char** argv) {
     struct Bot {
         std::unique_ptr<acnet::ClientRuntime> client;
         acnet::Transform transform;
+        acnet::PlayerAnimation animation;
+        bool holding = false;
     };
     std::vector<Bot> bots;
     for (std::size_t i = 0; i < bot_count; ++i) {
@@ -60,14 +62,26 @@ int main(int argc, char** argv) {
             const std::int16_t z = ((tick / 120 + i) & 1U) == 0 ? 6000 : -6000;
             acnet::Transform corrected;
             bool correction = false;
-            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].transform,
+            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].animation, bots[i].transform,
                                        corrected, correction, error)) { std::cerr << error << '\n'; return 5; }
             if (correction) bots[i].transform = corrected;
+            /* Catching requires the rod in hand, so each bot holds the one it
+             * spawns with before any encounter is attempted. */
+            if (!bots[i].holding && bots[i].client->baseline() != nullptr) {
+                acnet::EconomyRequest hold;
+                hold.type = acnet::EconomyOpType::HoldItem;
+                hold.idempotency = {i + 1, 0xB01DU};
+                hold.expected_inventory_revision = bots[i].client->baseline()->inventory.revision;
+                hold.inventory_slot = 0;
+                (void)bots[i].client->request(hold, now, error);
+                error.clear();
+                bots[i].holding = true;
+            }
             if ((tick % 600) == 300 && i == static_cast<std::size_t>(random() % bots.size())) {
                 acnet::EncounterRequest request;
                 request.idempotency = {tick + 1, i + 1};
-                request.expected_inventory_revision = 1;
-                request.tool_slot = 0;
+                request.expected_inventory_revision =
+                    bots[i].client->baseline() != nullptr ? bots[i].client->baseline()->inventory.revision : 1;
                 (void)bots[i].client->request(request, now, error);
                 error.clear();
             }

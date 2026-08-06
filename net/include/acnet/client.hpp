@@ -48,6 +48,7 @@ struct RemotePresentation {
     ZoneId zone = 0;
     Transform transform;
     PlayerAppearance appearance;
+    PlayerPresentation presentation;
     CustomPattern pattern;
     DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
     std::uint32_t transition_door = 0;
@@ -66,6 +67,7 @@ public:
                std::int16_t stick_y,
                std::uint16_t buttons,
                std::uint16_t action,
+               const PlayerAnimation& animation,
                const Transform& diagnostic_local,
                Transform& corrected_local,
                bool& has_correction,
@@ -128,6 +130,9 @@ private:
         Tick last_tick = 0;
         TransformHistory history{32};
         PlayerAppearance appearance;
+        /* Seeded by the baseline, kept live by Player deltas. Snapshots never
+         * carry it, so it must survive every snapshot that arrives between. */
+        PlayerPresentation presentation;
         CustomPattern pattern;
         DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
         std::uint32_t transition_door = 0;

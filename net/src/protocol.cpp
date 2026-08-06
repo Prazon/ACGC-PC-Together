@@ -86,6 +86,26 @@ bool decode_transform(ByteReader& reader, Transform& transform) {
     return finite(transform.position) && finite(transform.velocity);
 }
 
+/* Five bytes: two animation indices, a part table, a tool state, and the two
+ * playback bits. Every one is a table index on the receiving client, so the
+ * decoder refuses an out-of-range value instead of letting the authority
+ * forward it. */
+bool encode_animation(ByteWriter& writer, const PlayerAnimation& animation) {
+    const std::uint8_t flags = static_cast<std::uint8_t>((animation.looping ? 1U : 0U) |
+                                                         (animation.reversed ? 2U : 0U));
+    return valid(animation) && writer.u8(animation.body) && writer.u8(animation.overlay) &&
+           writer.u8(animation.part_table) && writer.u8(animation.item_state) && writer.u8(flags);
+}
+
+bool decode_animation(ByteReader& reader, PlayerAnimation& animation) {
+    std::uint8_t flags = 0;
+    if (!reader.u8(animation.body) || !reader.u8(animation.overlay) || !reader.u8(animation.part_table) ||
+        !reader.u8(animation.item_state) || !reader.u8(flags) || (flags & 0xFCU) != 0) return false;
+    animation.looping = (flags & 1U) != 0;
+    animation.reversed = (flags & 2U) != 0;
+    return valid(animation);
+}
+
 bool encode_appearance(ByteWriter& writer, const PlayerAppearance& appearance) {
     /* Reliable baselines own appearance data. The high-rate snapshot carries
      * only the authority's watermark, keeping a full 16-player packet below
@@ -416,7 +436,8 @@ bool encode(const InputCommand& message, std::vector<std::uint8_t>& output) {
     ByteWriter w;
     if (!w.u32(message.sequence) || !w.u32(message.estimated_server_tick) ||
         !w.i16(message.stick_x) || !w.i16(message.stick_y) || !w.u16(message.buttons) ||
-        !w.u16(message.action) || !encode_transform(w, message.client_transform)) return false;
+        !w.u16(message.action) || !encode_transform(w, message.client_transform) ||
+        !encode_animation(w, message.animation)) return false;
     output = w.data();
     return true;
 }
@@ -425,7 +446,8 @@ bool decode(const std::vector<std::uint8_t>& input, InputCommand& message) {
     ByteReader r(input);
     if (!r.u32(message.sequence) || !r.u32(message.estimated_server_tick) ||
         !r.i16(message.stick_x) || !r.i16(message.stick_y) || !r.u16(message.buttons) ||
-        !r.u16(message.action) || !decode_transform(r, message.client_transform)) return false;
+        !r.u16(message.action) || !decode_transform(r, message.client_transform) ||
+        !decode_animation(r, message.animation)) return false;
     return r.finished();
 }
 

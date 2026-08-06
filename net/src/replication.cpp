@@ -151,7 +151,7 @@ bool encode_appearance(ByteWriter& writer,
                          : appearance.clothing_index >= 0x100)) return false;
     if (!writer.bytes(appearance.name.data(), appearance.name.size()) || !writer.u8(appearance.gender) ||
         !writer.u8(appearance.face) || !writer.u16(appearance.clothing) ||
-        !writer.u16(appearance.equipped_item) || !writer.u16(appearance.clothing_index) ||
+        !writer.u16(appearance.clothing_index) ||
         !writer.u32(appearance.revision) || !writer.u8(pattern.present ? 1 : 0) ||
         !writer.u8(pattern.palette)) return false;
     return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
@@ -164,7 +164,7 @@ bool decode_appearance(ByteReader& reader,
     pattern = {};
     if (!reader.bytes(appearance.name.data(), appearance.name.size()) || !reader.u8(appearance.gender) ||
         !reader.u8(appearance.face) || !reader.u16(appearance.clothing) ||
-        !reader.u16(appearance.equipped_item) || !reader.u16(appearance.clothing_index) ||
+        !reader.u16(appearance.clothing_index) ||
         !reader.u32(appearance.revision) || !reader.u8(present) || !reader.u8(pattern.palette) ||
         present > 1 || appearance.gender > 2 || appearance.face >= 8 || pattern.palette >= 16) return false;
     pattern.present = present != 0;
@@ -173,11 +173,46 @@ bool decode_appearance(ByteReader& reader,
     return !pattern.present || reader.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
+bool encode_presentation(ByteWriter& writer, const PlayerPresentation& presentation) {
+    const PlayerAnimation& animation = presentation.animation;
+    const std::uint8_t flags = static_cast<std::uint8_t>((animation.looping ? 1U : 0U) |
+                                                         (animation.reversed ? 2U : 0U));
+    return valid(animation) && writer.u8(animation.body) && writer.u8(animation.overlay) &&
+           writer.u8(animation.part_table) && writer.u8(animation.item_state) && writer.u8(flags) &&
+           writer.u16(presentation.equipped_item);
+}
+
+bool decode_presentation(ByteReader& reader, PlayerPresentation& presentation) {
+    PlayerAnimation& animation = presentation.animation;
+    std::uint8_t flags = 0;
+    if (!reader.u8(animation.body) || !reader.u8(animation.overlay) || !reader.u8(animation.part_table) ||
+        !reader.u8(animation.item_state) || !reader.u8(flags) || (flags & 0xFCU) != 0 ||
+        !reader.u16(presentation.equipped_item)) return false;
+    animation.looping = (flags & 1U) != 0;
+    animation.reversed = (flags & 2U) != 0;
+    return valid(animation);
+}
+
 Revision next_revision(Revision revision) {
     return revision == std::numeric_limits<Revision>::max() ? 1 : revision + 1;
 }
 
 } // namespace
+
+bool encode_player_delta(const PlayerPresentationDelta& delta, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (delta.account == 0 || delta.entity == 0 || !writer.u64(delta.account) || !writer.u64(delta.entity) ||
+        !encode_presentation(writer, delta.presentation)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_player_delta(const std::vector<std::uint8_t>& input, PlayerPresentationDelta& delta) {
+    ByteReader reader(input);
+    return reader.u64(delta.account) && reader.u64(delta.entity) &&
+           decode_presentation(reader, delta.presentation) && delta.account != 0 && delta.entity != 0 &&
+           reader.finished();
+}
 
 bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& output) {
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
@@ -200,6 +235,8 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     for (const ItemSlot& slot : baseline.inventory.slots) {
         if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return false;
     }
+    if (!writer.u16(baseline.inventory.equipped.item) || !writer.u8(baseline.inventory.equipped.condition))
+        return false;
     if (!writer.u32(baseline.ledger.revision) || !writer.u64(baseline.ledger.bank_balance) ||
         !writer.u64(baseline.ledger.debt) || !writer.u32(baseline.mailbox.revision) ||
         !writer.u8(static_cast<std::uint8_t>(baseline.mail.size()))) return false;
@@ -223,6 +260,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (!writer.u64(player.entity) || !writer.u64(player.account) || !writer.u32(player.zone) ||
             !writer.u32(player.acknowledged_input) || !encode_transform(writer, player.transform) ||
             !encode_appearance(writer, player.appearance, player.pattern) ||
+            !encode_presentation(writer, player.presentation) ||
             !writer.u8(static_cast<std::uint8_t>(player.transition_phase)) ||
             !writer.u32(player.transition_door) || !writer.u32(player.transition_expires_tick)) return false;
     }
@@ -259,6 +297,8 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     for (ItemSlot& slot : baseline.inventory.slots) {
         if (!reader.u16(slot.item) || !reader.u8(slot.condition)) return false;
     }
+    if (!reader.u16(baseline.inventory.equipped.item) || !reader.u8(baseline.inventory.equipped.condition))
+        return false;
     std::uint8_t mail_count;
     if (!reader.u32(baseline.ledger.revision) || !reader.u64(baseline.ledger.bank_balance) ||
         !reader.u64(baseline.ledger.debt) || !reader.u32(baseline.mailbox.revision) ||
@@ -314,7 +354,8 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         std::uint8_t transition_phase;
         if (!reader.u64(player.entity) || !reader.u64(player.account) || !reader.u32(player.zone) ||
             !reader.u32(player.acknowledged_input) || !decode_transform(reader, player.transform) ||
-            !decode_appearance(reader, player.appearance, player.pattern) || !reader.u8(transition_phase) ||
+            !decode_appearance(reader, player.appearance, player.pattern) ||
+            !decode_presentation(reader, player.presentation) || !reader.u8(transition_phase) ||
             !reader.u32(player.transition_door) || !reader.u32(player.transition_expires_tick) ||
             transition_phase > static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) ||
             player.entity == 0 || player.account == 0 || player.zone != baseline.zone) return false;
@@ -458,6 +499,7 @@ ZoneBaseline build_baseline(ZoneId zone,
         snapshot.zone = player->zone;
         snapshot.transform = player->transform;
         snapshot.appearance = player->appearance;
+        snapshot.presentation = player->presentation;
         snapshot.pattern = player->pattern;
         result.players.push_back(snapshot);
     }

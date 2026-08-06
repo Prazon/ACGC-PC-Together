@@ -46,6 +46,19 @@ int Net_RequestChop(const xyz_t* position);
  * whether the catch lands, so the encyclopedia entry is not written here — see
  * Net_EncounterRecordsPending(). */
 int Net_RequestEncounter(int kind, mActor_name_t species);
+/* TRUE while the server owns what this player is holding, which is any online
+ * session. Private_c::equipment is then a projection of the authoritative
+ * inventory, refreshed whenever the server reports a change, so nothing may
+ * write to it locally -- Net_RequestHoldItem is how an item reaches the hand.
+ * Equipping used to be a purely local move out of a pocket, which the next
+ * authoritative projection undid by restoring the pocket while the tool was
+ * still held, duplicating it. */
+int Net_EquipmentAuthoritative(void);
+/* Swap pocket slot `inventory_slot` with the hand: equipping names the slot the
+ * item is in, putting away names an empty slot, and swapping tools names the
+ * next one. `item` is what the caller believes is in that slot, or EMPTY_NO to
+ * skip the check. */
+int Net_RequestHoldItem(int inventory_slot, mActor_name_t item);
 /* TRUE once a request is in flight, meaning the caller must leave the
  * encyclopedia alone: the original writes it the instant the animation starts,
  * which would record a fish the server may still refuse. The hook writes it
@@ -104,6 +117,8 @@ int Net_RequestDiscardMail(u64 mail_id);
 #define Net_RequestPlant(position, item, inventory_slot) FALSE
 #define Net_RequestChop(position) FALSE
 #define Net_RequestEncounter(kind, species) FALSE
+#define Net_EquipmentAuthoritative() FALSE
+#define Net_RequestHoldItem(inventory_slot, item) FALSE
 #define Net_EncounterRecordsPending() FALSE
 #define Net_BankingAuthoritative() FALSE
 #define Net_RequestBankTransfer(amount) FALSE

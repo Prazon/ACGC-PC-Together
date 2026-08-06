@@ -9,7 +9,7 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 7;
+constexpr std::uint16_t kTownStateVersion = 8;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -32,18 +32,24 @@ bool write_appearance(acnet::ByteWriter& writer,
         pattern.palette >= 16 ||
         (pattern.present ? value.clothing_index < 0x100 : value.clothing_index >= 0x100)) return false;
     if (!writer.bytes(value.name.data(), value.name.size()) || !writer.u8(value.gender) || !writer.u8(value.face) ||
-        !writer.u16(value.clothing) || !writer.u16(value.equipped_item) ||
+        !writer.u16(value.clothing) ||
         !writer.u16(value.clothing_index) || !writer.u32(value.revision) ||
         !writer.u8(pattern.present ? 1 : 0) || !writer.u8(pattern.palette)) return false;
     return !pattern.present || writer.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
+/* `legacy_equipment` receives the held item for checkpoints written before
+ * version 8, which stored it inside the appearance. From 8 on it belongs to the
+ * inventory and is read with the rest of the pockets, so this stays 0. */
 bool read_appearance(acnet::ByteReader& reader,
                      std::uint16_t version,
                      acnet::PlayerAppearance& value,
-                     acnet::CustomPattern& pattern) {
+                     acnet::CustomPattern& pattern,
+                     std::uint16_t& legacy_equipment) {
+    legacy_equipment = 0;
     if (!reader.bytes(value.name.data(), value.name.size()) || !reader.u8(value.gender) || !reader.u8(value.face) ||
-        !reader.u16(value.clothing) || !reader.u16(value.equipped_item) || value.gender > 2 || value.face >= 8)
+        !reader.u16(value.clothing) || (version < 8 && !reader.u16(legacy_equipment)) ||
+        value.gender > 2 || value.face >= 8)
         return false;
     pattern = {};
     if (version < 7) {
@@ -108,6 +114,7 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
         for (const acnet::ItemSlot& slot : inventory->slots) {
             if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return {};
         }
+        if (!writer.u16(inventory->equipped.item) || !writer.u8(inventory->equipped.condition)) return {};
         if (!writer.u32(ledger->revision) || !writer.u64(ledger->bank_balance) || !writer.u64(ledger->debt)) return {};
         /* Only the mailbox revision is stored: the letter list is rebuilt from
          * the mail records below, which carry their own recipient and are
@@ -236,10 +243,12 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         std::uint8_t kind;
         acnet::InventoryState inventory;
         acnet::AccountLedger ledger;
+        std::uint16_t legacy_equipment = 0;
         if (!reader.u64(account) || !reader.u64(state.entity) || !reader.u8(kind) ||
             kind > static_cast<std::uint8_t>(acnet::PlayerKind::Visitor) || !reader.u32(state.zone) ||
             !read_transform(reader, state.transform) || !reader.u8(state.resident_slot) ||
-            (version >= 2 && !read_appearance(reader, version, state.appearance, state.pattern)) ||
+            (version >= 2 &&
+             !read_appearance(reader, version, state.appearance, state.pattern, legacy_equipment)) ||
             !reader.u32(inventory.revision) || !reader.u32(inventory.bells)) {
             error = "invalid account state"; return false;
         }
@@ -247,6 +256,13 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         state.kind = static_cast<acnet::PlayerKind>(kind);
         for (acnet::ItemSlot& slot : inventory.slots) {
             if (!reader.u16(slot.item) || !reader.u8(slot.condition)) { error = "invalid inventory"; return false; }
+        }
+        if (version >= 8) {
+            if (!reader.u16(inventory.equipped.item) || !reader.u8(inventory.equipped.condition)) {
+                error = "invalid held item"; return false;
+            }
+        } else {
+            inventory.equipped.item = legacy_equipment;
         }
         acnet::Revision mailbox_revision = 1;
         if (!reader.u32(ledger.revision) || !reader.u64(ledger.bank_balance) || !reader.u64(ledger.debt) ||

@@ -428,6 +428,33 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
             result.mail_id = letter->second.id;
             break;
         }
+        case EconomyOpType::HoldItem: {
+            /* A swap, not a take: equipping moves the pocket item into the hand
+             * and whatever was held back into that pocket, putting away names
+             * an empty slot, and swapping tools names the slot of the next one.
+             * One operation covers all three, and because it is a swap it can
+             * neither create nor destroy an item -- the failure that let a tool
+             * exist in the hand and the pocket at once. */
+            if (request.inventory_slot >= inventory.slots.size()) {
+                result.code = ResultCode::Malformed;
+                break;
+            }
+            ItemSlot& slot = inventory.slots[request.inventory_slot];
+            if (request.expected_item != 0 && slot.item != request.expected_item) {
+                result.code = ResultCode::InvalidState;
+                break;
+            }
+            if (slot.item == 0 && inventory.equipped.item == 0) {
+                result.code = ResultCode::InvalidState;
+                break;
+            }
+            const ItemSlot held = inventory.equipped;
+            inventory.equipped = slot;
+            slot = held;
+            result.item = inventory.equipped.item;
+            inventory_changed = true;
+            break;
+        }
         case EconomyOpType::AdminGrantBells:
         case EconomyOpType::AdminSendMail:
             result.code = ResultCode::Unauthorized;
@@ -573,6 +600,10 @@ bool EconomyAuthority::validate_context(const EconomyRequest& request) const {
         case EconomyOpType::ClaimMail:
         case EconomyOpType::DiscardMail:
             required_zone = config_.mailbox_zone;
+            break;
+        case EconomyOpType::HoldItem:
+            /* Reaching into your own pocket works anywhere the original lets
+             * the submenu open, which is everywhere. */
             break;
         case EconomyOpType::AdminGrantBells:
         case EconomyOpType::AdminSendMail:
