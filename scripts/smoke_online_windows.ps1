@@ -62,6 +62,19 @@ try {
     if ($combined -match "(?i)(unable to start online client|server initialization failed|fatal error)") {
         throw "Online smoke logs contain a fatal startup error"
     }
+    # Discord Rich Presence is opt-in, so only assert it when the build directory
+    # has a client ID configured. The presence text is composed regardless of
+    # whether a Discord client is listening, so this needs no Discord running.
+    $settings = Join-Path $BuildDirectory "settings.ini"
+    if ((Test-Path -LiteralPath $settings -PathType Leaf) -and
+        ((Get-Content -LiteralPath $settings -Raw) -match '(?m)^\s*discord_client_id\s*=\s*\S+')) {
+        $clientOutput = Get-Content -LiteralPath `
+            (Join-Path $BuildDirectory "smoke-x64-online-final.stdout.log") -Raw
+        if ($clientOutput -notmatch '\[Discord\] presence: "Online in the town of') {
+            throw "Discord presence never reported the online town"
+        }
+        Write-Output "ONLINE_SMOKE_DISCORD_OK"
+    }
     Write-Output "ONLINE_SMOKE_OK client_seconds=$Seconds port=$Port rom=$($rom.Name)"
 } finally {
     $server.Refresh()

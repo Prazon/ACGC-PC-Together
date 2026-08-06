@@ -15,11 +15,13 @@
  */
 #include "pc_platform.h"
 #include "pc_discord.h"
+#include "pc_discord_text.h"
 #include "pc_settings.h"
 #include "m_common_data.h"
-#include "m_font.h"
 #include "m_land.h"
-#include "m_scene_table.h"
+#ifdef NETCODE_ENABLED
+#include "acnet/c_api.h"
+#endif
 
 #ifdef _WIN32
 
@@ -30,9 +32,6 @@
  * presence updates to roughly one per 15s anyway). */
 #define DISCORD_UPDATE_INTERVAL_MS 5000
 #define DISCORD_RECONNECT_DELAY_MS 5000
-
-/* Default when no save is loaded or the town has no printable name. */
-static const char DEFAULT_DETAILS[] = "Playing Animal Crossing";
 
 typedef struct {
     char details[128];
@@ -206,7 +205,8 @@ void pc_discord_init(void) {
     }
 
     memset(&s_desired, 0, sizeof(s_desired));
-    snprintf(s_desired.details, sizeof(s_desired.details), "%s", DEFAULT_DETAILS);
+    pc_discord_compose(NULL, s_desired.details, sizeof(s_desired.details), s_desired.state,
+                       sizeof(s_desired.state));
 
     SDL_AtomicSet(&s_running, 1);
     s_thread = SDL_CreateThread(pc_discord_worker, "DiscordRPC", NULL);
@@ -216,83 +216,37 @@ void pc_discord_init(void) {
     }
 }
 
-/* Town names use the game's own font character codes. The 32..122 block
- * mostly coincides with ASCII, but a handful of codes in it are game
- * symbols or accented letters (see m_font.h): those map to a base letter
- * where one exists and are dropped ('\0') otherwise. */
-static char pc_discord_font_to_ascii(u8 c) {
-    switch (c) {
-        case CHAR_ACUTE_a:
-        case CHAR_CIRCUMFLEX_a:
-        case CHAR_TILDE_a:
-        case CHAR_DIARESIS_a:
-        case CHAR_ANGSTROM_a:
-            return 'a';
-        case CHAR_TILDE:
-            return '~';
-        case CHAR_SYMBOL_HEART:
-        case CHAR_SYMBOL_MUSIC_NOTE:
-        case CHAR_SYMBOL_DROPLET:
-        case CHAR_SYMBOL_ANNOYED:
-            return '\0';
-        default:
-            if ((c >= CHAR_SPACE && c <= CHAR_UNDERSCORE) || (c >= CHAR_a && c <= CHAR_z)) {
-                return (char)c; /* these font codes coincide with ASCII */
-            }
-            return '\0';
+/* Mapped explicitly rather than cast: REJECTED and FAILED must read as an
+ * ordinary offline session, and an added AcNetClientStatus should land in the
+ * offline default instead of silently becoming some other wording. */
+static int pc_discord_net_status(void) {
+#ifdef NETCODE_ENABLED
+    switch (acnet_client_status()) {
+        case ACNET_CONNECTING: return PC_DISCORD_NET_CONNECTING;
+        case ACNET_CONNECTED: return PC_DISCORD_NET_CONNECTED;
+        case ACNET_RECONNECTING: return PC_DISCORD_NET_RECONNECTING;
+        case ACNET_OFFLINE:
+        case ACNET_REJECTED:
+        case ACNET_FAILED:
+        default: return PC_DISCORD_NET_OFFLINE;
     }
+#else
+    return PC_DISCORD_NET_OFFLINE;
+#endif
 }
 
-static void pc_discord_get_town_name(char* out, size_t out_size) {
-    u8* raw = mLd_GetLandName();
-    size_t len = 0;
-    int i;
-
-    for (i = 0; i < LAND_NAME_SIZE && len + 1 < out_size; i++) {
-        char c = pc_discord_font_to_ascii(raw[i]);
-        if (c != '\0') {
-            out[len++] = c;
-        }
-    }
-    while (len > 0 && out[len - 1] == ' ') len--;
-    out[len] = '\0';
-}
-
-static const char* pc_discord_location_for_scene(int scene_no) {
-    switch (scene_no) {
-        case SCENE_FG: return "Outside";
-        case SCENE_SHOP0: return "Inside Nook's Cranny";
-        case SCENE_BROKER_SHOP: return "Inside Crazy Redd's tent";
-        case SCENE_POST_OFFICE: return "Inside the Post Office";
-        case SCENE_POLICE_BOX: return "Inside the Police Station";
-        case SCENE_CONVENI: return "Inside Nook 'n' Go";
-        case SCENE_SUPER: return "Inside Nookway";
-        case SCENE_DEPART:
-        case SCENE_DEPART_2: return "Inside Nookington's";
-        case SCENE_NEEDLEWORK: return "Inside Able Sisters";
-        case SCENE_NPC_HOUSE:
-        case SCENE_COTTAGE_NPC: return "Visiting a neighbor's house";
-        case SCENE_MY_ROOM_S:
-        case SCENE_MY_ROOM_M:
-        case SCENE_MY_ROOM_L:
-        case SCENE_MY_ROOM_LL1:
-        case SCENE_MY_ROOM_LL2:
-        case SCENE_MY_ROOM_BASEMENT_S:
-        case SCENE_MY_ROOM_BASEMENT_M:
-        case SCENE_MY_ROOM_BASEMENT_L:
-        case SCENE_MY_ROOM_BASEMENT_LL1:
-        case SCENE_COTTAGE_MY: return "At home";
-        default:
-            if (mSc_IS_SCENE_MUSEUM_ROOM(scene_no)) return "At the Museum";
-            return NULL; /* menus, demos, and scenes we're not confident labeling */
-    }
-}
-
+/* Runs on the game thread, the same one that drives acnet_client_poll/frame -
+ * the netcode C API must never be touched from the worker thread. */
 void pc_discord_update(void) {
     static Uint32 next_update = 0;
+    pc_discord_inputs_t in;
     char details[128];
-    char state[128] = "";
+    char state[128];
     Uint32 now;
+    int changed;
+#ifdef NETCODE_ENABLED
+    uint8_t server_town[LAND_NAME_SIZE];
+#endif
 
     if (!s_mutex) return; /* not initialized (no client ID configured) */
 
@@ -303,28 +257,49 @@ void pc_discord_update(void) {
     if (next_update != 0 && (Sint32)(now - next_update) < 0) return;
     next_update = now + DISCORD_UPDATE_INTERVAL_MS;
 
-    snprintf(details, sizeof(details), "%s", DEFAULT_DETAILS);
+    memset(&in, 0, sizeof(in));
+    in.net_status = pc_discord_net_status();
+    in.save_loaded = pc_save_loaded;
     if (pc_save_loaded) {
-        char town[32];
-        pc_discord_get_town_name(town, sizeof(town));
-
-        if (town[0] != '\0') {
-            const char* loc = pc_discord_location_for_scene(Save_Get(scene_no));
-
-            snprintf(details, sizeof(details), "In the town of %s", town);
-            if (loc) {
-                snprintf(state, sizeof(state), "%s", loc);
-            }
-        }
+        in.scene_no = Save_Get(scene_no);
     }
 
+#ifdef NETCODE_ENABLED
+    if (in.net_status == PC_DISCORD_NET_CONNECTED) {
+        /* The server's copy is authoritative and is available before the save
+         * finishes loading; it decodes to empty while the town is still
+         * bootstrapping, which falls back below. */
+        size_t name_len = acnet_client_town_name(server_town, sizeof(server_town));
+        if (name_len > 0) {
+            in.town_name = server_town;
+            in.town_name_len = name_len;
+        }
+        /* NULL/0 asks for the count without copying the snapshots. */
+        in.nearby_players = (int)acnet_client_remote_players(NULL, 0);
+    }
+#endif
+    if (in.town_name == NULL && pc_save_loaded) {
+        in.town_name = mLd_GetLandName();
+        in.town_name_len = LAND_NAME_SIZE;
+    }
+
+    pc_discord_compose(&in, details, sizeof(details), state, sizeof(state));
+
     SDL_LockMutex(s_mutex);
-    if (strcmp(s_desired.details, details) != 0 || strcmp(s_desired.state, state) != 0) {
+    changed = strcmp(s_desired.details, details) != 0 || strcmp(s_desired.state, state) != 0;
+    if (changed) {
         snprintf(s_desired.details, sizeof(s_desired.details), "%s", details);
         snprintf(s_desired.state, sizeof(s_desired.state), "%s", state);
         s_desired.version++;
     }
     SDL_UnlockMutex(s_mutex);
+
+    /* Logged outside the lock so a slow console never stalls the worker.
+     * smoke_online_windows.ps1 greps for this line to verify the online
+     * wording without a Discord client in the loop. */
+    if (changed && g_pc_verbose) {
+        printf("[Discord] presence: \"%s\" | \"%s\"\n", details, state);
+    }
 }
 
 void pc_discord_shutdown(void) {

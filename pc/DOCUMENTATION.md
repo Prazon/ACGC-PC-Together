@@ -309,9 +309,36 @@ or third-party dependency. Disabled unless `discord_client_id` is set in `settin
 
 All pipe I/O runs on an SDL worker thread; `pc_discord_update()` (called from
 `pc_platform_poll_events`) only writes a mutex-guarded desired-presence struct, throttled to once
-every 5 s, so an absent or wedged Discord client can never stall the frame loop. Presence text is
-derived from `mLd_GetLandName()` and `Save_Get(scene_no)`; town names are game font codes, so they
-go through a small font→ASCII mapping (accented letters folded, symbols dropped).
+every 5 s, so an absent or wedged Discord client can never stall the frame loop.
+
+`pc/src/pc_discord_text.c` holds the wording rules — a pure `pc_discord_compose()` over a plain
+inputs struct, with no SDL, no `windows.h` and no globals, so the strings can be checked on any
+host and a future non-Windows IPC backend reuses them unchanged. Town names arrive as game font
+codes and go through a font→ASCII mapping (accented letters folded to a base letter, symbols
+dropped); output stays ASCII-only because the JSON escape downstream clamps by byte and a clamp
+that split a multi-byte sequence would make Discord reject the frame.
+
+Online (`NETCODE_ENABLED`) presence comes from `acnet_client_status()`:
+
+|Status|details|state|
+|-|-|-|
+|CONNECTED|`Online in the town of X`|location, plus `with N others nearby`|
+|CONNECTING / RECONNECTING|`Connecting to a town...`|—|
+|OFFLINE / REJECTED / FAILED|`In the town of X` (local save)|location|
+
+The town name prefers `acnet_client_town_name()` when connected — it is authoritative and
+available before the save finishes loading — and falls back to `mLd_GetLandName()`. A failed
+online attempt deliberately reads as an ordinary offline session rather than surfacing an error
+on a public profile.
+
+"Nearby" is literal: `acnet_client_remote_players()` reports the interest set, not the town's
+population. A town-wide count would need the server to replicate one (see
+`docs/netcode/CURRENT_STATUS.md`). All netcode calls happen in `pc_discord_update()` on the game
+thread — the same thread as `acnet_client_poll`/`frame`; the worker thread must never touch the
+netcode API.
+
+`--verbose` logs each composed presence line, which is how `scripts/smoke_online_windows.ps1`
+verifies the online wording without a Discord client in the loop.
 
 ## Input
 

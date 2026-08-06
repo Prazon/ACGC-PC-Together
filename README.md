@@ -170,6 +170,8 @@ Graphics settings are stored in `settings.ini` (next to the executable) and can 
 
 Optional, Windows builds only for now. To show your current town and location (e.g. "In the town of Foo" / "Inside Nook's Cranny") on your Discord profile, create a free Application at the [Discord Developer Portal](https://discord.com/developers/applications) and paste its Client ID into `discord_client_id` in `settings.ini`. Leave it blank to disable (default).
 
+On a dedicated town it reads "Online in the town of Foo", plus how many other players are nearby. Nothing that identifies the server, your account, or an invitation key is ever sent to Discord.
+
 ## Texture Packs
 
 Custom textures can be placed in the `texture_pack/` folder next to the executable. Dolphin-compatible format (XXHash64, DDS).
