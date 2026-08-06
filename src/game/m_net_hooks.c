@@ -3,6 +3,7 @@
 #ifdef NETCODE_ENABLED
 
 #include "ac_net_remote_player.h"
+#include "ac_my_room.h"
 #include "acnet/c_api.h"
 #include "m_common_data.h"
 #include "m_demo.h"
@@ -10,9 +11,12 @@
 #include "m_field_make.h"
 #include "m_kankyo.h"
 #include "m_name_table.h"
+#include "m_collision_bg.h"
+#include "m_home_h.h"
 #include "m_player.h"
 #include "m_player_lib.h"
 #include "m_scene_table.h"
+#include "m_room_type.h"
 #include "padmgr.h"
 
 #include <stdio.h>
@@ -22,6 +26,13 @@
 static int last_status = -1;
 static u32 last_world_revision = 0;
 static u32 last_inventory_revision = 0;
+static u32 last_house_revision = 0;
+static u64 last_house_id = 0;
+static u64 house_candidate_hash = 0;
+static u64 house_submitted_hash = 0;
+static int house_candidate_frames = 0;
+static int house_update_pending = FALSE;
+static AcNetHouseFurniture house_furniture[3 * 4 * 16 * 16];
 static u32 pending_destination_zone = 0;
 static int zone_transfer_phase = 0;
 static int zone_retry_frames = 0;
@@ -31,6 +42,212 @@ static int gameplay_ready_reported = FALSE;
 static int quickstart_enabled = FALSE;
 static int quickstart_gender = mPr_SEX_MALE;
 static u8 quickstart_name[PLAYER_NAME_LEN];
+
+static u32 Net_SceneZone(int scene);
+
+static MY_ROOM_ACTOR* Net_FindMyRoom(GAME_PLAY* play) {
+    ACTOR* actor;
+    if (play == NULL) return NULL;
+    actor = play->actor_info.list[ACTOR_PART_BG].actor;
+    while (actor != NULL) {
+        if (actor->id == mAc_PROFILE_MY_ROOM) return (MY_ROOM_ACTOR*)actor;
+        actor = actor->next_actor;
+    }
+    return NULL;
+}
+
+static u64 Net_HashBytes(u64 hash, const void* data, size_t size) {
+    const u8* bytes = (const u8*)data;
+    size_t i;
+    for (i = 0; i < size; ++i) {
+        hash ^= bytes[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static size_t Net_CaptureHouse(int slot,
+                               const AcNetHouseState* baseline,
+                               MY_ROOM_ACTOR* my_room,
+                               int16_t music_tracks[3],
+                               uint64_t switches[12],
+                               u64* hash_out) {
+    mHm_hs_c* home;
+    size_t count = 0;
+    int floor;
+    int layer;
+    int z;
+    int x;
+    u64 hash = 1469598103934665603ULL;
+    if (slot < 0 || slot >= PLAYER_NUM || baseline == NULL) return 0;
+    home = &Save_Get(homes[slot]);
+    memcpy(music_tracks, baseline->music_tracks, sizeof(baseline->music_tracks));
+    if (my_room != NULL) {
+        const int active_floor = mFI_GetPlayerHouseFloorNo(my_room->scene);
+        aMR_NetFlushSwitches(my_room);
+        if (active_floor >= 0 && active_floor < mHm_ROOM_NUM)
+            music_tracks[active_floor] = (int16_t)aMR_NetCurrentMusic(my_room);
+    }
+    for (floor = 0; floor < mHm_ROOM_NUM; ++floor) {
+        mHm_lyr_c* layers = &home->floors[floor].layer_main;
+        for (layer = 0; layer < mCoBG_LAYER_NUM; ++layer) {
+            switches[floor * mCoBG_LAYER_NUM + layer] = layers[layer].ftr_switch;
+            hash = Net_HashBytes(hash, &layers[layer].ftr_switch, sizeof(layers[layer].ftr_switch));
+            for (z = 0; z < UT_Z_NUM; ++z) {
+                for (x = 0; x < UT_X_NUM; ++x) {
+                    const mActor_name_t item = layers[layer].items[z][x];
+                    mActor_name_t canonical_item = item;
+                    u8 orientation = 0;
+                    hash = Net_HashBytes(hash, &item, sizeof(item));
+                    if (item == EMPTY_NO || count >= ARRAY_COUNT(house_furniture)) continue;
+                    if (ITEM_IS_FTR(item)) {
+                        canonical_item = mRmTp_FtrItemNo2Item1ItemNo(item, TRUE);
+                        orientation = (u8)(item & 3);
+                        if (ITEM_IS_FTR(canonical_item)) canonical_item &= ~3;
+                    }
+                    house_furniture[count].x = (u8)x;
+                    house_furniture[count].z = (u8)z;
+                    house_furniture[count].floor = (u8)floor;
+                    house_furniture[count].layer = (u8)layer;
+                    house_furniture[count].item = canonical_item;
+                    house_furniture[count].condition = orientation;
+                    ++count;
+                }
+            }
+        }
+    }
+    {
+        const u8 upgrade_level = home->size_info.size;
+        hash = Net_HashBytes(hash, &upgrade_level, sizeof(upgrade_level));
+    }
+    hash = Net_HashBytes(hash, music_tracks, sizeof(baseline->music_tracks));
+    {
+        const int main_light = mRmTp_Index2LightSwitchStatus(slot * 2);
+        const int basement_light = mRmTp_Index2LightSwitchStatus(slot * 2 + 1);
+        hash = Net_HashBytes(hash, &main_light, sizeof(main_light));
+        hash = Net_HashBytes(hash, &basement_light, sizeof(basement_light));
+    }
+    if (hash_out != NULL) *hash_out = hash;
+    return count;
+}
+
+int Net_HouseOccupied(int house_index) {
+    if (!Net_IsConnected() || house_index < 0 || house_index >= PLAYER_NUM) return FALSE;
+    return (acnet_client_occupied_house_mask() & (1U << house_index)) != 0;
+}
+
+int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
+    AcNetHouseState state;
+    AcNetHouseFurniture authoritative[3 * 4 * 16 * 16];
+    mHm_hs_c* home;
+    size_t count;
+    size_t i;
+    int floor;
+    int layer;
+    int changed = FALSE;
+    if (play == NULL || !Net_IsConnected() || !mSc_IS_SCENE_PLAYER_ROOM(play->scene_id) ||
+        !acnet_client_house(&state) || state.zone_id != Net_SceneZone(play->scene_id) || !state.initialized ||
+        state.original_slot >= PLAYER_NUM) return FALSE;
+    if (last_house_id != state.house_id) {
+        last_house_id = state.house_id;
+        last_house_revision = 0;
+        house_candidate_hash = 0;
+        house_submitted_hash = 0;
+        house_candidate_frames = 0;
+        house_update_pending = FALSE;
+    }
+    if (last_house_revision == state.revision) return FALSE;
+    home = &Save_Get(homes[state.original_slot]);
+    if (home->size_info.size != state.upgrade_level) {
+        home->size_info.size = state.upgrade_level;
+        changed = TRUE;
+    }
+    for (floor = 0; floor < mHm_ROOM_NUM; ++floor) {
+        mHm_lyr_c* layers = &home->floors[floor].layer_main;
+        for (layer = 0; layer < mCoBG_LAYER_NUM; ++layer) {
+            if (layers[layer].ftr_switch != state.furniture_switches[floor * mCoBG_LAYER_NUM + layer]) changed = TRUE;
+            layers[layer].ftr_switch = state.furniture_switches[floor * mCoBG_LAYER_NUM + layer];
+            for (i = 0; i < UT_X_NUM * UT_Z_NUM; ++i) {
+                if (((mActor_name_t*)layers[layer].items)[i] != EMPTY_NO) changed = TRUE;
+                ((mActor_name_t*)layers[layer].items)[i] = EMPTY_NO;
+            }
+        }
+    }
+    count = acnet_client_house_furniture(authoritative, ARRAY_COUNT(authoritative));
+    for (i = 0; i < count; ++i) {
+        mHm_lyr_c* layers;
+        mActor_name_t* item;
+        mActor_name_t presentation_item;
+        if (authoritative[i].floor >= mHm_ROOM_NUM || authoritative[i].layer >= mCoBG_LAYER_NUM ||
+            authoritative[i].x >= UT_X_NUM || authoritative[i].z >= UT_Z_NUM) continue;
+        layers = &home->floors[authoritative[i].floor].layer_main;
+        item = &layers[authoritative[i].layer].items[authoritative[i].z][authoritative[i].x];
+        presentation_item = authoritative[i].item;
+        if ((presentation_item & 0xF000) != 0xF000) {
+            presentation_item = mRmTp_Item1ItemNo2FtrItemNo_AtPlayerRoom(presentation_item, TRUE);
+            if (ITEM_IS_FTR(presentation_item))
+                presentation_item = (presentation_item & ~3) | (authoritative[i].condition & 3);
+        }
+        if (*item != presentation_item) changed = TRUE;
+        *item = presentation_item;
+    }
+    if (state.main_light_on) mRmTp_IndexLightSwitchON(state.original_slot * 2);
+    else mRmTp_IndexLightSwitchOFF(state.original_slot * 2);
+    if (state.basement_light_on) mRmTp_IndexLightSwitchON(state.original_slot * 2 + 1);
+    else mRmTp_IndexLightSwitchOFF(state.original_slot * 2 + 1);
+    last_house_revision = state.revision;
+    return changed;
+}
+
+static void Net_UpdateHouseState(GAME_PLAY* play) {
+    AcNetHouseState state;
+    AcNetHouseUpdateResult result;
+    MY_ROOM_ACTOR* my_room;
+    int16_t music_tracks[3];
+    uint64_t switches[12];
+    u64 hash;
+    size_t count;
+    int floor;
+    int changed;
+    while (acnet_client_take_house_update_result(&result)) {
+        house_update_pending = FALSE;
+        if (result.result_code == 0) house_submitted_hash = house_candidate_hash;
+        else {
+            house_candidate_frames = 0;
+            /* A rejected optimistic local edit must be overwritten even when
+             * the authoritative room revision did not advance. */
+            last_house_revision = 0;
+        }
+    }
+    if (!mSc_IS_SCENE_PLAYER_ROOM(play->scene_id) || !acnet_client_house(&state) ||
+        state.zone_id != Net_SceneZone(play->scene_id)) return;
+    my_room = Net_FindMyRoom(play);
+    changed = Net_ApplyHouseStateBeforeRoom(play);
+    if (changed && my_room != NULL) aMR_NetReloadFurniture((ACTOR*)my_room, (GAME*)play);
+    floor = mFI_GetPlayerHouseFloorNo(play->scene_id);
+    if (state.initialized && my_room != NULL && floor >= 0 && floor < 3)
+        aMR_NetSetMusic(my_room, state.music_tracks[floor]);
+    if (state.owner_account_id != acnet_client_account() || state.original_slot >= PLAYER_NUM ||
+        house_update_pending) return;
+    count = Net_CaptureHouse(state.original_slot, &state, my_room, music_tracks, switches, &hash);
+    if (hash != house_candidate_hash) {
+        house_candidate_hash = hash;
+        house_candidate_frames = 0;
+        return;
+    }
+    if (house_candidate_frames < 30) {
+        ++house_candidate_frames;
+        return;
+    }
+    if (state.initialized && hash == house_submitted_hash) return;
+    if (acnet_client_submit_house_update(state.house_id, state.revision,
+                                         Save_Get(homes[state.original_slot]).size_info.size,
+                                         (u8)mRmTp_Index2LightSwitchStatus(state.original_slot * 2),
+                                         (u8)mRmTp_Index2LightSwitchStatus(state.original_slot * 2 + 1),
+                                         music_tracks, switches, house_furniture, count)) {
+        house_update_pending = TRUE;
+    }
+}
 
 static u32 Net_PlayerRoomZone(void) {
     mActor_name_t field_id = mFI_GetFieldId();
@@ -622,6 +839,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
         last_status = status;
     }
     Net_ApplyAuthoritativeClock();
+    Net_UpdateHouseState(play);
     Net_UpdateGameplayReadiness(play);
     Net_SynchronizeRemoteActors(play, gameplay_ready);
     if (gameplay_ready) Net_ApplyAuthoritativeState(play);

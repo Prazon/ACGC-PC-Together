@@ -9,7 +9,7 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 3;
+constexpr std::uint16_t kTownStateVersion = 4;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -140,16 +140,22 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
         if (house.furniture.size() > std::numeric_limits<std::uint32_t>::max() ||
             !writer.u64(house.house_id) || !writer.u64(house.owner) || !writer.u8(house.original_slot) ||
             !writer.u32(house.zone) || !writer.u8(house.upgrade_level) || !writer.u32(house.revision) ||
-            !writer.u32(static_cast<std::uint32_t>(house.furniture.size()))) return {};
+            !writer.u8(house.initialized ? 1 : 0) || !writer.u8(house.main_light_on ? 1 : 0) ||
+            !writer.u8(house.basement_light_on ? 1 : 0)) return {};
+        for (std::int16_t music : house.music_tracks) if (!writer.i16(music)) return {};
+        for (std::uint64_t switches : house.furniture_switches) if (!writer.u64(switches)) return {};
+        if (!writer.u32(static_cast<std::uint32_t>(house.furniture.size()))) return {};
         std::vector<std::pair<acnet::FurnitureAddress, acnet::ItemSlot>> furniture;
         for (const auto& item : house.furniture) furniture.push_back(item);
         std::sort(furniture.begin(), furniture.end(), [](const auto& a, const auto& b) {
+            if (a.first.floor != b.first.floor) return a.first.floor < b.first.floor;
             if (a.first.layer != b.first.layer) return a.first.layer < b.first.layer;
             if (a.first.z != b.first.z) return a.first.z < b.first.z;
             return a.first.x < b.first.x;
         });
         for (const auto& item : furniture) {
-            if (!writer.u8(item.first.x) || !writer.u8(item.first.z) || !writer.u8(item.first.layer) ||
+            if (!writer.u8(item.first.x) || !writer.u8(item.first.z) || !writer.u8(item.first.floor) ||
+                !writer.u8(item.first.layer) ||
                 !writer.u16(item.second.item) || !writer.u8(item.second.condition)) return {};
         }
     }
@@ -287,18 +293,40 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
     for (std::uint32_t i = 0; i < house_count; ++i) {
         acnet::HouseState house;
         std::uint32_t furniture_count;
+        std::uint8_t initialized = 0;
+        std::uint8_t main_light = 0;
+        std::uint8_t basement_light = 0;
         if (!reader.u64(house.house_id) || !reader.u64(house.owner) || !reader.u8(house.original_slot) ||
             !reader.u32(house.zone) || !reader.u8(house.upgrade_level) || !reader.u32(house.revision) ||
-            !reader.u32(furniture_count) || furniture_count > 4096) { error = "invalid house state"; return false; }
+            (version >= 4 && (!reader.u8(initialized) || !reader.u8(main_light) || !reader.u8(basement_light))) ||
+            (version >= 4 && (initialized > 1 || main_light > 1 || basement_light > 1))) {
+            error = "invalid house state"; return false;
+        }
+        if (version >= 4) {
+            for (std::int16_t& music : house.music_tracks) {
+                if (!reader.i16(music)) { error = "invalid house music state"; return false; }
+            }
+            for (std::uint64_t& switches : house.furniture_switches) {
+                if (!reader.u64(switches)) { error = "invalid furniture switch state"; return false; }
+            }
+        }
+        if (!reader.u32(furniture_count) || furniture_count > acnet::kMaximumHouseFurniture) {
+            error = "invalid house state"; return false;
+        }
+        house.initialized = initialized != 0;
+        house.main_light_on = main_light != 0;
+        house.basement_light_on = basement_light != 0;
         for (std::uint32_t j = 0; j < furniture_count; ++j) {
             acnet::FurnitureAddress address;
             acnet::ItemSlot item;
-            if (!reader.u8(address.x) || !reader.u8(address.z) || !reader.u8(address.layer) ||
+            if (!reader.u8(address.x) || !reader.u8(address.z) ||
+                (version >= 4 && !reader.u8(address.floor)) || !reader.u8(address.layer) ||
                 !reader.u16(item.item) || !reader.u8(item.condition) || item.item == 0) {
                 error = "invalid furniture state"; return false;
             }
             house.furniture[address] = item;
         }
+        if (version < 4) house.initialized = furniture_count != 0;
         if (!housing_.restore_house(house)) { error = "failed to restore house"; return false; }
     }
     if (!reader.finished()) { error = "trailing town state data"; return false; }

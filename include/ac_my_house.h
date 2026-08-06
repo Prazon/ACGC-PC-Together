@@ -16,6 +16,7 @@ struct my_house_actor_s {
 };
 
 extern ACTOR_PROFILE MyHouse_Profile;
+extern void aMHS_NetDoorAnimation(int house_index, int outward);
 
 #ifdef __cplusplus
 }

@@ -18,6 +18,7 @@
 #include "m_mark_room.h"
 #include "sys_matrix.h"
 #include "m_rcp.h"
+#include "m_net_hooks.h"
 
 enum {
     aMR_ICON_LEAF,
@@ -1787,6 +1788,7 @@ static void My_Room_Actor_ct(ACTOR* actorx, GAME* game) {
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
     GAME_PLAY* play = (GAME_PLAY*)game;
 
+    Net_ApplyHouseStateBeforeRoom(play);
     bzero(&l_aMR_work, sizeof(l_aMR_work));
     my_room->scene = Save_Get(scene_no);
     aMR_SetClip(actorx);
@@ -1913,6 +1915,58 @@ static void aMR_AllFurnitureDestruct(ACTOR* actorx, GAME* game) {
             ftr_actor++;
         }
     }
+}
+
+extern void aMR_NetReloadFurniture(ACTOR* actorx, GAME* game) {
+    MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
+    if (actorx == NULL || game == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != actorx ||
+        l_aMR_work.ftr_actor_list == NULL || l_aMR_work.used_list == NULL) return;
+    aMR_AllFurnitureDestruct(actorx, game);
+    aMR_InitFurnitureActorExistTable();
+    aMR_MakeFurnitureActor(actorx, (GAME_PLAY*)game, mCoBG_LAYER0);
+    aMR_MakeFurnitureActor(actorx, (GAME_PLAY*)game, mCoBG_LAYER1);
+    aMR_MakeItemDataInFurniture();
+    aMR_ClearSwitchSaveData(my_room);
+    aMR_OneMDFurnitureSwitchOn();
+}
+
+extern void aMR_NetFlushSwitches(MY_ROOM_ACTOR* my_room) {
+    if (my_room != NULL && aMR_CLIP != NULL && aMR_CLIP->my_room_actor_p == (ACTOR*)my_room)
+        aMR_SaveSwitchData(my_room);
+}
+
+extern int aMR_NetCurrentMusic(const MY_ROOM_ACTOR* my_room) {
+    return my_room != NULL && my_room->bgm_info.active_flag ? my_room->bgm_info.md_no : -1;
+}
+
+extern int aMR_NetSetMusic(MY_ROOM_ACTOR* my_room, int music_track) {
+    FTR_ACTOR* ftr_actor;
+    u8* used;
+    int i;
+    if (my_room == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != (ACTOR*)my_room ||
+        aMR_NetCurrentMusic(my_room) == music_track) return FALSE;
+    if (music_track < 0) {
+        aMR_AllMDSwitchOff();
+        aMR_ReserveDefaultBgm((ACTOR*)my_room, my_room->bgm_info.active_ftr_actor);
+        aMR_ChangeMDBgm((ACTOR*)my_room, my_room->bgm_info.active_ftr_actor);
+        return TRUE;
+    }
+    ftr_actor = l_aMR_work.ftr_actor_list;
+    used = l_aMR_work.used_list;
+    for (i = 0; ftr_actor != NULL && used != NULL && i < l_aMR_work.list_size; ++i, ++ftr_actor, ++used) {
+        aFTR_PROFILE* profile;
+        if (!*used) continue;
+        profile = aMR_GetFurnitureProfile(ftr_actor->name);
+        if (profile != NULL && aFTR_CHECK_INTERACTION(profile->interaction_type, aFTR_INTERACTION_TYPE_MUSIC_DISK) &&
+            ftr_actor->items[0] >= ITM_MINIDISK_START && ftr_actor->items[0] <= ITM_MINIDISK_END &&
+            BGM_MD0 + (ftr_actor->items[0] - ITM_MINIDISK_START) == music_track) {
+            aMR_OneMDSwitchOn_TheOtherSwitchOff(ftr_actor);
+            aMR_ReserveBgm((ACTOR*)my_room, music_track, ftr_actor, 0);
+            aMR_ChangeMDBgm((ACTOR*)my_room, ftr_actor);
+            return TRUE;
+        }
+    }
+    return FALSE;
 }
 
 static void aMR_LeafPickuped(void) {

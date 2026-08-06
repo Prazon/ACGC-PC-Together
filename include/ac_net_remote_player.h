@@ -18,6 +18,9 @@ typedef struct ac_net_remote_player_s {
     u8 face;
     u16 clothing;
     u16 equipped_item;
+    u8 transition_phase;
+    u32 transition_door;
+    u32 transition_expires_tick;
     void* render_data;
 } AC_NET_REMOTE_PLAYER;
 

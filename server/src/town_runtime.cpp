@@ -10,6 +10,7 @@
 #include <iostream>
 #include <limits>
 #include <utility>
+#include <unordered_set>
 #include <vector>
 
 namespace acserver {
@@ -163,6 +164,15 @@ std::vector<RuntimeEvent> TownRuntime::recent_events() const {
 void TownRuntime::record_event(std::string message) {
     recent_events_.push_back({next_event_sequence_++, wall_unix_seconds(), std::move(message)});
     while (recent_events_.size() > 12) recent_events_.pop_front();
+}
+
+std::uint8_t TownRuntime::occupied_house_mask() const {
+    std::uint8_t mask = 0;
+    for (std::uint8_t slot = 0; slot < acnet::kOriginalResidentSlots; ++slot) {
+        const acnet::ZoneState* house_zone = zones_.zone(100U + slot);
+        if (house_zone != nullptr && !house_zone->occupants.empty()) mask |= static_cast<std::uint8_t>(1U << slot);
+    }
+    return mask;
 }
 
 TownRuntime::TownRuntime(TownRuntimeConfig config)
@@ -450,6 +460,7 @@ bool TownRuntime::allow_message(Connection& connection, acnet::MessageType type,
     else if (type == acnet::MessageType::Ping || type == acnet::MessageType::Pong) { rate = 4.0; burst = 8.0; }
     else if (type == acnet::MessageType::WorldRequest || type == acnet::MessageType::InventoryRequest ||
              type == acnet::MessageType::TradeRequest || type == acnet::MessageType::FurnitureRequest ||
+             type == acnet::MessageType::HouseUpdate ||
              type == acnet::MessageType::EncounterRequest || type == acnet::MessageType::ConversationRequest ||
              type == acnet::MessageType::ZoneTransferRequest || type == acnet::MessageType::ZoneReady) {
         rate = 10.0; burst = 20.0;
@@ -476,6 +487,7 @@ void TownRuntime::deactivate_player(acnet::AccountId account, acnet::Tick tick) 
     zones_.leave(account, tick);
     movement_.remove_player(account);
     players_.remove(account);
+    door_transitions_.erase(account);
 }
 
 bool TownRuntime::handle_hello(const acnet::Datagram& datagram,
@@ -755,6 +767,35 @@ bool TownRuntime::send_ack(Connection& connection, acnet::Channel channel, std::
     return true;
 }
 
+/* Baselines only reach a client on join and zone transfer, so the count would
+ * otherwise be stale for most of a session. Published from the tick rather
+ * than from the join/leave paths so timeouts and kicks are covered too. */
+void TownRuntime::publish_population_change() {
+    const acnet::TownOccupancy occupancy = current_occupancy();
+    if (occupancy.population == last_published_population_ &&
+        occupancy.capacity == last_published_capacity_) {
+        return;
+    }
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Town;
+    delta.zone = 0; /* town-wide, not scoped to the viewer's zone */
+    delta.reliable = true;
+    if (!acnet::encode_town_delta(occupancy, delta.payload)) return;
+    deltas_.append(std::move(delta));
+    last_published_population_ = occupancy.population;
+    last_published_capacity_ = occupancy.capacity;
+}
+
+acnet::TownOccupancy TownRuntime::current_occupancy() const {
+    acnet::TownOccupancy occupancy;
+    occupancy.population = static_cast<std::uint8_t>(std::min<std::size_t>(connected_clients(), 255U));
+    /* Capacity stays >= population so the codec invariant holds whatever the
+     * operator configured. */
+    occupancy.capacity = static_cast<std::uint8_t>(
+        std::clamp<std::size_t>(config_.capacity, occupancy.population == 0 ? 1U : occupancy.population, 255U));
+    return occupancy;
+}
+
 bool TownRuntime::send_baseline(Connection& connection,
                                 std::uint64_t monotonic_ms,
                                 std::string& error) {
@@ -777,6 +818,19 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.inventory = *inventory;
     baseline.ledger = *ledger;
     baseline.shop = economy_.shop();
+    /* Town-wide occupancy, which the viewer's interest set cannot show. */
+    const acnet::TownOccupancy occupancy = current_occupancy();
+    baseline.town_population = occupancy.population;
+    baseline.town_capacity = occupancy.capacity;
+    baseline.occupied_house_mask = occupied_house_mask();
+    if (viewer->zone >= 100 && viewer->zone < 100 + acnet::kOriginalResidentSlots) {
+        for (const auto& entry : housing_.houses()) {
+            if (entry.second.zone != viewer->zone) continue;
+            baseline.has_house = true;
+            baseline.house = entry.second;
+            break;
+        }
+    }
     if (viewer->zone == 1) {
         const std::int16_t center_x = static_cast<std::int16_t>(viewer->transform.position.x / 40.0F);
         const std::int16_t center_z = static_cast<std::int16_t>(viewer->transform.position.z / 40.0F);
@@ -1069,6 +1123,19 @@ bool TownRuntime::dispatch(Connection& connection,
             acnet::TransferOffer offer = zones_.request_transfer(connection.account, request.door_id,
                                                                  movement_.current_tick());
             offer.baseline_revision = deltas_.current_revision();
+            if (offer.code == acnet::ResultCode::Ok) {
+                const acnet::PlayerView* player = players_.by_account(connection.account);
+                if (player != nullptr) {
+                    DoorTransition transition;
+                    transition.account = connection.account;
+                    transition.door_id = request.door_id;
+                    transition.source_zone = offer.source_zone;
+                    transition.destination_zone = offer.destination_zone;
+                    transition.source_transform = player->transform;
+                    transition.expires_tick = offer.expires_tick;
+                    door_transitions_[connection.account] = transition;
+                }
+            }
             std::vector<std::uint8_t> payload;
             if (!acnet::encode(offer, payload)) { error = "failed to serialize transfer offer"; return false; }
             return send_payload(connection, acnet::MessageType::ZoneTransferOffer, acnet::Channel::Transactions,
@@ -1080,7 +1147,11 @@ bool TownRuntime::dispatch(Connection& connection,
             acnet::TransferOffer reply;
             reply.account = connection.account;
             const acnet::TransferReservation* reservation = zones_.reservation(connection.account);
-            if (reservation != nullptr) reply = reservation->offer;
+            std::uint32_t transition_door = 0;
+            if (reservation != nullptr) {
+                reply = reservation->offer;
+                transition_door = reservation->door_id;
+            }
             reply.code = zones_.acknowledge_ready(connection.account, request.token, movement_.current_tick());
             if (reply.code == acnet::ResultCode::Ok) {
                 const acnet::PlayerView* player = players_.by_account(connection.account);
@@ -1091,6 +1162,13 @@ bool TownRuntime::dispatch(Connection& connection,
                 if (!commit_transaction(connection.account,
                                         static_cast<std::uint16_t>(acnet::MessageType::ZoneReady),
                                         reply.code, error)) return false;
+                DoorTransition& transition = door_transitions_[connection.account];
+                transition.account = connection.account;
+                transition.door_id = transition_door;
+                transition.source_zone = reply.source_zone;
+                transition.destination_zone = reply.destination_zone;
+                transition.ready = true;
+                transition.expires_tick = movement_.current_tick() + config_.tick_rate * 2U;
             }
             std::vector<std::uint8_t> payload;
             if (!acnet::encode(reply, payload) ||
@@ -1117,6 +1195,28 @@ bool TownRuntime::dispatch(Connection& connection,
             }
             return send_payload(connection, acnet::MessageType::FurnitureResult, acnet::Channel::Transactions,
                                 payload, monotonic_ms, error);
+        }
+        case acnet::MessageType::HouseUpdate: {
+            acnet::HouseUpdate request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            const acnet::HouseUpdateResult result = housing_.replace_contents(request);
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) { error = "failed to serialize house update result"; return false; }
+            if (result.code == acnet::ResultCode::Ok && !result.replayed &&
+                !commit_transaction(connection.account,
+                                    static_cast<std::uint16_t>(acnet::MessageType::HouseUpdate),
+                                    result.code, error)) return false;
+            if (!send_payload(connection, acnet::MessageType::HouseUpdateResult,
+                              acnet::Channel::Transactions, payload, monotonic_ms, error)) return false;
+            const acnet::HouseState* house = housing_.house(result.house_id);
+            if (house == nullptr) return true;
+            for (auto& active : connections_) {
+                const acnet::PlayerView* viewer = players_.by_account(active.second.account);
+                if (viewer != nullptr && viewer->zone == house->zone &&
+                    !send_baseline(active.second, monotonic_ms, error)) return false;
+            }
+            return true;
         }
         case acnet::MessageType::EncounterRequest: {
             acnet::EncounterRequest request;
@@ -1213,10 +1313,42 @@ bool TownRuntime::send_snapshots(std::uint64_t monotonic_ms, std::string& error)
         acnet::TransformSnapshot snapshot;
         snapshot.server_tick = movement_.current_tick();
         snapshot.baseline_revision = deltas_.current_revision();
+        snapshot.occupied_house_mask = occupied_house_mask();
+        std::unordered_set<acnet::AccountId> included;
         for (const acnet::PlayerView* player : players_.query_zone(viewer->zone, acnet::kMaxPlayersPerZone)) {
             acnet::PlayerSnapshot state = movement_.snapshot(player->account);
             state.appearance = player->appearance;
-            if (state.account != 0) snapshot.players.push_back(state);
+            const auto transition = door_transitions_.find(player->account);
+            if (transition != door_transitions_.end()) {
+                if (transition->second.source_zone == viewer->zone) {
+                    state.transition_phase = acnet::DoorTransitionPhase::Leaving;
+                    state.transition_door = transition->second.door_id;
+                    state.transition_expires_tick = transition->second.expires_tick;
+                } else if (transition->second.ready && transition->second.destination_zone == viewer->zone) {
+                    state.transition_phase = acnet::DoorTransitionPhase::Arriving;
+                    state.transition_door = transition->second.door_id;
+                    state.transition_expires_tick = transition->second.expires_tick;
+                }
+            }
+            if (state.account != 0) {
+                included.insert(state.account);
+                snapshot.players.push_back(state);
+            }
+        }
+        for (const auto& transition : door_transitions_) {
+            if (!transition.second.ready || transition.second.source_zone != viewer->zone ||
+                included.find(transition.first) != included.end() ||
+                snapshot.players.size() >= acnet::kMaxPlayersPerZone) continue;
+            const acnet::PlayerView* player = players_.by_account(transition.first);
+            if (player == nullptr) continue;
+            acnet::PlayerSnapshot state = movement_.snapshot(player->account);
+            state.zone = viewer->zone;
+            state.transform = transition.second.source_transform;
+            state.appearance = player->appearance;
+            state.transition_phase = acnet::DoorTransitionPhase::Leaving;
+            state.transition_door = transition.second.door_id;
+            state.transition_expires_tick = transition.second.expires_tick;
+            snapshot.players.push_back(state);
         }
         std::vector<std::uint8_t> payload;
         if (!acnet::encode(snapshot, payload) ||
@@ -1273,6 +1405,14 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
         last_weather_intensity_ = clock_.state().weather_intensity;
     }
     zones_.expire(movement_.current_tick());
+    for (auto transition = door_transitions_.begin(); transition != door_transitions_.end();) {
+        if ((transition->second.ready && movement_.current_tick() > transition->second.expires_tick) ||
+            (!transition->second.ready && zones_.reservation(transition->first) == nullptr)) {
+            transition = door_transitions_.erase(transition);
+        } else {
+            ++transition;
+        }
+    }
     zones_.update_sleep_states(movement_.current_tick());
     npcs_.expire(movement_.current_tick());
     const std::uint32_t interval = std::max<std::uint32_t>(1, config_.tick_rate / config_.snapshot_rate);
@@ -1287,6 +1427,7 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
         }
     }
     disconnect_timed_out(monotonic_ms);
+    publish_population_change();
     const acnet::Tick checkpoint_interval = config_.tick_rate * 300U;
     if (checkpoint_interval != 0 && movement_.current_tick() - last_checkpoint_tick_ >= checkpoint_interval) {
         const std::vector<std::uint8_t> state = encode_state();

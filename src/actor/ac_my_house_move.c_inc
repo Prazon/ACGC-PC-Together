@@ -355,7 +355,9 @@ static void aMHS_set_bgOffset(ACTOR* actorx, int flag) {
 }
 
 static int aMHS_light_ctrl(STRUCTURE_ACTOR* my_house) {
-    return mRmTp_Index2LightSwitchStatus((my_house->action & 3) * 2) != FALSE;
+    const int house_index = my_house->action & 3;
+    return Net_HouseOccupied(house_index) ||
+           mRmTp_Index2LightSwitchStatus(house_index * 2) != FALSE;
 }
 
 static void aMHS_wait(STRUCTURE_ACTOR* my_house, GAME_PLAY* play) {
@@ -455,11 +457,31 @@ static void aMHS_actor_move(ACTOR* actorx, GAME* game) {
 
     STRUCTURE_ACTOR* my_house = (STRUCTURE_ACTOR*)actorx;
     GAME_PLAY* play = (GAME_PLAY*)game;
+    const int house_index = my_house->action & 3;
 
-    my_house->arg2_f = drtbl[my_house->request_type];
-    aMHS_set_door_SE(my_house);
     actorx->actor_specific -= (s16)(mEnv_GetWindPowerF() * 1000.0f * (f32)game->graph->dt_num_60fps_frames);
-    (*my_house->action_proc)(my_house, play);
+    if (aMHS_net_door_request[house_index] && my_house->action_proc == &aMHS_wait) {
+        my_house->arg2_f = aMHS_net_door_outward[house_index] ? 1.0f : 0.0f;
+        aMHS_setup_animation(my_house, 0.5f);
+        aMHS_net_door_request[house_index] = FALSE;
+        aMHS_net_door_active[house_index] = TRUE;
+    }
+    if (aMHS_net_door_active[house_index]) {
+        my_house->arg2_f = aMHS_net_door_outward[house_index] ? 1.0f : 0.0f;
+        aMHS_set_door_SE(my_house);
+        if (cKF_SkeletonInfo_R_play(&my_house->keyframe) != cKF_STATE_STOPPED) {
+            aMHS_door_closed_flag[my_house->arg0] = FALSE;
+        } else {
+            aMHS_net_door_active[house_index] = FALSE;
+            aMHS_door_closed_flag[my_house->arg0] = TRUE;
+            aMHS_setup_animation(my_house, 0.0f);
+            cKF_SkeletonInfo_R_play(&my_house->keyframe);
+        }
+    } else {
+        my_house->arg2_f = drtbl[my_house->request_type];
+        aMHS_set_door_SE(my_house);
+        (*my_house->action_proc)(my_house, play);
+    }
 
     if (aMHS_light_ctrl(my_house)) {
         chase_s(&my_house->actor_class.world.angle.x, DEG2SHORT_ANGLE(90.0f) - 1, 320);

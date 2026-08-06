@@ -14,6 +14,80 @@ constexpr std::size_t kMaximumBaselineTiles = 65535;
 constexpr std::size_t kMaximumBaselineNpcs = 256;
 constexpr std::size_t kMaximumShopEntries = 256;
 
+bool valid_transition(const PlayerSnapshot& player) {
+    const std::uint8_t phase = static_cast<std::uint8_t>(player.transition_phase);
+    return phase <= static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) &&
+           ((phase == 0 && player.transition_door == 0 && player.transition_expires_tick == 0) ||
+            (phase != 0 && player.transition_door != 0 && player.transition_expires_tick != 0));
+}
+
+bool encode_house(ByteWriter& writer, const HouseState& house) {
+    if (house.house_id == 0 || house.owner == 0 || house.original_slot >= kOriginalResidentSlots ||
+        house.zone == 0 || house.upgrade_level > kMaximumHouseUpgradeLevel || house.revision == 0 ||
+        house.furniture.size() > kMaximumHouseFurniture) return false;
+    if (!writer.u64(house.house_id) || !writer.u64(house.owner) || !writer.u8(house.original_slot) ||
+        !writer.u32(house.zone) || !writer.u8(house.upgrade_level) || !writer.u32(house.revision) ||
+        !writer.u8(house.initialized ? 1 : 0) || !writer.u8(house.main_light_on ? 1 : 0) ||
+        !writer.u8(house.basement_light_on ? 1 : 0)) return false;
+    for (std::int16_t music : house.music_tracks) {
+        if (!writer.i16(music)) return false;
+    }
+    for (std::uint64_t switches : house.furniture_switches) {
+        if (!writer.u64(switches)) return false;
+    }
+    std::vector<std::pair<FurnitureAddress, ItemSlot>> furniture(house.furniture.begin(), house.furniture.end());
+    std::sort(furniture.begin(), furniture.end(), [](const auto& left, const auto& right) {
+        if (left.first.floor != right.first.floor) return left.first.floor < right.first.floor;
+        if (left.first.layer != right.first.layer) return left.first.layer < right.first.layer;
+        if (left.first.z != right.first.z) return left.first.z < right.first.z;
+        return left.first.x < right.first.x;
+    });
+    if (!writer.u16(static_cast<std::uint16_t>(furniture.size()))) return false;
+    for (const auto& entry : furniture) {
+        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= kHouseFloorCount ||
+            entry.first.layer >= kHouseLayerCount || entry.second.item == 0 ||
+            !writer.u8(entry.first.x) || !writer.u8(entry.first.z) || !writer.u8(entry.first.floor) ||
+            !writer.u8(entry.first.layer) || !writer.u16(entry.second.item) ||
+            !writer.u8(entry.second.condition)) return false;
+    }
+    return true;
+}
+
+bool decode_house(ByteReader& reader, HouseState& house) {
+    std::uint8_t initialized;
+    std::uint8_t main_light;
+    std::uint8_t basement_light;
+    std::uint16_t count;
+    if (!reader.u64(house.house_id) || !reader.u64(house.owner) || !reader.u8(house.original_slot) ||
+        !reader.u32(house.zone) || !reader.u8(house.upgrade_level) || !reader.u32(house.revision) ||
+        !reader.u8(initialized) || !reader.u8(main_light) || !reader.u8(basement_light) ||
+        initialized > 1 || main_light > 1 || basement_light > 1) return false;
+    for (std::int16_t& music : house.music_tracks) {
+        if (!reader.i16(music)) return false;
+    }
+    for (std::uint64_t& switches : house.furniture_switches) {
+        if (!reader.u64(switches)) return false;
+    }
+    if (!reader.u16(count) || count > kMaximumHouseFurniture || house.house_id == 0 || house.owner == 0 ||
+        house.original_slot >= kOriginalResidentSlots || house.zone == 0 ||
+        house.upgrade_level > kMaximumHouseUpgradeLevel ||
+        house.revision == 0) return false;
+    house.initialized = initialized != 0;
+    house.main_light_on = main_light != 0;
+    house.basement_light_on = basement_light != 0;
+    house.furniture.clear();
+    for (std::uint16_t i = 0; i < count; ++i) {
+        FurnitureAddress address;
+        ItemSlot item;
+        if (!reader.u8(address.x) || !reader.u8(address.z) || !reader.u8(address.floor) ||
+            !reader.u8(address.layer) || !reader.u16(item.item) || !reader.u8(item.condition) ||
+            address.x >= 16 || address.z >= 16 || address.floor >= kHouseFloorCount ||
+            address.layer >= kHouseLayerCount || item.item == 0 ||
+            !house.furniture.emplace(address, item).second) return false;
+    }
+    return true;
+}
+
 bool encode_transform(ByteWriter& writer, const Transform& value) {
     return writer.f32(value.position.x) && writer.f32(value.position.y) && writer.f32(value.position.z) &&
            writer.f32(value.velocity.x) && writer.f32(value.velocity.y) && writer.f32(value.velocity.z) &&
@@ -48,11 +122,15 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
         baseline.players.size() > kMaxPlayersPerZone || baseline.npcs.size() > kMaximumBaselineNpcs ||
         baseline.inventory.revision == 0 || baseline.ledger.revision == 0 || baseline.shop.revision == 0 ||
-        baseline.shop.stock.size() > kMaximumShopEntries) return false;
+        baseline.shop.stock.size() > kMaximumShopEntries || (baseline.occupied_house_mask & 0xF0U) != 0 ||
+        baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
+        (baseline.has_house && baseline.house.zone != baseline.zone)) return false;
     ByteWriter writer(kMaximumBaselineBytes);
     if (!writer.u32(baseline.server_tick) || !writer.u32(baseline.revision) || !writer.u32(baseline.zone) ||
         !writer.u64(static_cast<std::uint64_t>(baseline.town_unix_seconds)) || !writer.u8(baseline.weather) ||
-        !writer.u8(baseline.weather_intensity) ||
+        !writer.u8(baseline.weather_intensity) || !writer.u8(baseline.town_population) ||
+        !writer.u8(baseline.town_capacity) || !writer.u8(baseline.occupied_house_mask) ||
+        !writer.u8(baseline.has_house ? 1 : 0) ||
         !writer.u32(static_cast<std::uint32_t>(baseline.tiles.size())) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.players.size())) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.npcs.size())) ||
@@ -66,6 +144,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     for (const ShopEntry& entry : baseline.shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
     }
+    if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
             !writer.u16(entry.second.item) || !writer.u8(entry.second.condition) ||
@@ -73,9 +152,12 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
             !writer.u8(entry.second.buried ? 1 : 0) || !writer.u8(entry.second.placed_furniture ? 1 : 0)) return false;
     }
     for (const PlayerSnapshot& player : baseline.players) {
+        if (!valid_transition(player)) return false;
         if (!writer.u64(player.entity) || !writer.u64(player.account) || !writer.u32(player.zone) ||
             !writer.u32(player.acknowledged_input) || !encode_transform(writer, player.transform) ||
-            !encode_appearance(writer, player.appearance)) return false;
+            !encode_appearance(writer, player.appearance) ||
+            !writer.u8(static_cast<std::uint8_t>(player.transition_phase)) ||
+            !writer.u32(player.transition_door) || !writer.u32(player.transition_expires_tick)) return false;
     }
     for (const NpcState& npc : baseline.npcs) {
         if (!writer.u64(npc.entity) || !writer.u32(npc.zone) || !writer.u32(npc.revision) ||
@@ -94,8 +176,13 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     std::uint16_t player_count;
     std::uint16_t npc_count;
     std::uint16_t shop_count;
+    std::uint8_t has_house;
     if (!reader.u32(baseline.server_tick) || !reader.u32(baseline.revision) || !reader.u32(baseline.zone) ||
         !reader.u64(town_time) || !reader.u8(baseline.weather) || !reader.u8(baseline.weather_intensity) ||
+        !reader.u8(baseline.town_population) || !reader.u8(baseline.town_capacity) ||
+        baseline.town_capacity == 0 || baseline.town_population > baseline.town_capacity ||
+        !reader.u8(baseline.occupied_house_mask) || !reader.u8(has_house) || has_house > 1 ||
+        (baseline.occupied_house_mask & 0xF0U) != 0 ||
         !reader.u32(tile_count) || !reader.u16(player_count) || !reader.u16(npc_count) || baseline.zone == 0 ||
         baseline.revision == 0 || tile_count > kMaximumBaselineTiles || player_count > kMaxPlayersPerZone ||
         npc_count > kMaximumBaselineNpcs || town_time > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
@@ -114,6 +201,9 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     for (ShopEntry& entry : baseline.shop.stock) {
         if (!reader.u16(entry.item) || !reader.u32(entry.price) || !reader.u16(entry.quantity)) return false;
     }
+    baseline.has_house = has_house != 0;
+    baseline.house = {};
+    if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
     baseline.town_unix_seconds = static_cast<std::int64_t>(town_time);
     baseline.tiles.clear();
     baseline.players.clear();
@@ -138,10 +228,15 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     baseline.players.reserve(player_count);
     for (std::uint16_t i = 0; i < player_count; ++i) {
         PlayerSnapshot player;
+        std::uint8_t transition_phase;
         if (!reader.u64(player.entity) || !reader.u64(player.account) || !reader.u32(player.zone) ||
             !reader.u32(player.acknowledged_input) || !decode_transform(reader, player.transform) ||
-            !decode_appearance(reader, player.appearance) ||
+            !decode_appearance(reader, player.appearance) || !reader.u8(transition_phase) ||
+            !reader.u32(player.transition_door) || !reader.u32(player.transition_expires_tick) ||
+            transition_phase > static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) ||
             player.entity == 0 || player.account == 0 || player.zone != baseline.zone) return false;
+        player.transition_phase = static_cast<DoorTransitionPhase>(transition_phase);
+        if (!valid_transition(player)) return false;
         baseline.players.push_back(player);
     }
     baseline.npcs.reserve(npc_count);
@@ -184,6 +279,20 @@ bool decode_tile_delta(const std::vector<std::uint8_t>& input, TileStateDelta& d
     return true;
 }
 
+bool encode_town_delta(const TownOccupancy& occupancy, std::vector<std::uint8_t>& output) {
+    if (occupancy.capacity == 0 || occupancy.population > occupancy.capacity) return false;
+    ByteWriter writer(2);
+    if (!writer.u8(occupancy.population) || !writer.u8(occupancy.capacity)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_town_delta(const std::vector<std::uint8_t>& input, TownOccupancy& occupancy) {
+    ByteReader reader(input);
+    if (!reader.u8(occupancy.population) || !reader.u8(occupancy.capacity)) return false;
+    return occupancy.capacity != 0 && occupancy.population <= occupancy.capacity;
+}
+
 DeltaLog::DeltaLog(std::size_t capacity) : capacity_(std::max<std::size_t>(1, capacity)) {}
 
 Revision DeltaLog::append(ReplicationDelta delta) {
@@ -196,7 +305,8 @@ Revision DeltaLog::append(ReplicationDelta delta) {
 
 bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& interest) {
     if (delta.target_account != 0 && delta.target_account != interest.account) return false;
-    if (delta.kind == ResourceKind::Clock || delta.kind == ResourceKind::Weather) return true;
+    if (delta.kind == ResourceKind::Clock || delta.kind == ResourceKind::Weather ||
+        delta.kind == ResourceKind::Town) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

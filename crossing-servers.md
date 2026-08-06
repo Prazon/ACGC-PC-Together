@@ -23,7 +23,10 @@ AnimalCrossing.exe
 Use a different stable nonzero account ID for every player. The first four
 resident accounts map to the original save slots; later accounts are visitors.
 The server relays movement and owns inventory/economy, foreground changes,
-tools/catches, NPC leases, zones/houses, clock/weather, and persistence.
+tools/catches, NPC leases, zones/houses, clock/weather, and persistence. Shared
+houses replicate furniture layout and facing, furniture switches, lights, and
+music. Occupied houses light up outside, and remote arrivals/departures drive
+the original house-door animation instead of disappearing at the threshold.
 
 ## Operate and verify
 
@@ -32,7 +35,9 @@ tools/catches, NPC leases, zones/houses, clock/weather, and persistence.
 - Stop with Ctrl+C for an orderly checkpoint and back up the whole town folder.
 - Use `--checkpoint-now`, `--ban`, `--unban`, `--import-gci`, or `--export-gci`
   as one-shot commands while the main process is stopped.
-- Run `make check` and `make sanitize` for the automated suite.
+- Run `make check` and `make sanitize` for the automated suite. With a disc in
+  the build directory, `scripts/smoke_two_clients_windows.ps1` passively boots
+  a server and two real x64 clients without sending synthetic input.
 - Build an asset-free release with `package_release.bat -Version VERSION`.
 
 Never distribute a disc image, save, live server database, journal, invitation

@@ -11,6 +11,7 @@
 #include "sys_matrix.h"
 #include "m_rcp.h"
 #include "libforest/gbi_extensions.h"
+#include "m_net_hooks.h"
 
 enum {
     aMHS_ACTION_WAIT,
@@ -120,6 +121,15 @@ static bIT_ShadowData_c* aMHS_lv4_shadow_data[2] = { &aMHS_lv4_shadowW_data, &aM
 static f32 aMHS_posX_table[2] = { 20.0f, -20.0f };
 
 static int aMHS_door_closed_flag[mHm_HOMESIZE_NUM - 1];
+static u8 aMHS_net_door_request[PLAYER_NUM];
+static u8 aMHS_net_door_active[PLAYER_NUM];
+static u8 aMHS_net_door_outward[PLAYER_NUM];
+
+extern void aMHS_NetDoorAnimation(int house_index, int outward) {
+    if (house_index < 0 || house_index >= PLAYER_NUM) return;
+    aMHS_net_door_outward[house_index] = outward != FALSE;
+    aMHS_net_door_request[house_index] = TRUE;
+}
 
 extern cKF_Skeleton_R_c cKF_bs_r_obj_s_myhome1;
 extern cKF_Skeleton_R_c cKF_bs_r_obj_w_myhome1;

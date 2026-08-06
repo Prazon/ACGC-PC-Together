@@ -51,6 +51,8 @@ bool valid_message(std::uint16_t value) {
         case MessageType::TradeResult:
         case MessageType::FurnitureRequest:
         case MessageType::FurnitureResult:
+        case MessageType::HouseUpdate:
+        case MessageType::HouseUpdateResult:
         case MessageType::ConversationRequest:
         case MessageType::ConversationResult:
         case MessageType::EncounterRequest:
@@ -426,14 +428,19 @@ bool decode(const std::vector<std::uint8_t>& input, InputCommand& message) {
 }
 
 bool encode(const TransformSnapshot& message, std::vector<std::uint8_t>& output) {
-    if (message.players.size() > kMaxPlayersPerZone) return false;
+    if (message.players.size() > kMaxPlayersPerZone || (message.occupied_house_mask & 0xF0U) != 0) return false;
     ByteWriter w;
     if (!w.u32(message.server_tick) || !w.u32(message.baseline_revision) ||
+        !w.u8(message.occupied_house_mask) ||
         !w.u8(static_cast<std::uint8_t>(message.players.size()))) return false;
     for (const PlayerSnapshot& player : message.players) {
+        if (static_cast<std::uint8_t>(player.transition_phase) >
+            static_cast<std::uint8_t>(DoorTransitionPhase::Arriving)) return false;
         if (!w.u64(player.entity) || !w.u64(player.account) || !w.u32(player.zone) ||
             !w.u32(player.acknowledged_input) || !encode_transform(w, player.transform) ||
-            !encode_appearance(w, player.appearance)) return false;
+            !encode_appearance(w, player.appearance) ||
+            !w.u8(static_cast<std::uint8_t>(player.transition_phase)) ||
+            !w.u32(player.transition_door) || !w.u32(player.transition_expires_tick)) return false;
     }
     output = w.data();
     return true;
@@ -442,16 +449,23 @@ bool encode(const TransformSnapshot& message, std::vector<std::uint8_t>& output)
 bool decode(const std::vector<std::uint8_t>& input, TransformSnapshot& message) {
     ByteReader r(input);
     std::uint8_t count;
-    if (!r.u32(message.server_tick) || !r.u32(message.baseline_revision) || !r.u8(count) ||
-        count > kMaxPlayersPerZone) return false;
+    if (!r.u32(message.server_tick) || !r.u32(message.baseline_revision) ||
+        !r.u8(message.occupied_house_mask) || !r.u8(count) || count > kMaxPlayersPerZone ||
+        (message.occupied_house_mask & 0xF0U) != 0) return false;
     message.players.clear();
     message.players.reserve(count);
     for (std::uint8_t i = 0; i < count; ++i) {
         PlayerSnapshot player;
+        std::uint8_t transition_phase;
         if (!r.u64(player.entity) || !r.u64(player.account) || !r.u32(player.zone) ||
             !r.u32(player.acknowledged_input) || !decode_transform(r, player.transform) ||
-            !decode_appearance(r, player.appearance)) return false;
-        if (player.entity == 0 || player.account == 0 || player.zone == 0) return false;
+            !decode_appearance(r, player.appearance) || !r.u8(transition_phase) ||
+            !r.u32(player.transition_door) || !r.u32(player.transition_expires_tick)) return false;
+        if (player.entity == 0 || player.account == 0 || player.zone == 0 ||
+            transition_phase > static_cast<std::uint8_t>(DoorTransitionPhase::Arriving) ||
+            (transition_phase == 0 && (player.transition_door != 0 || player.transition_expires_tick != 0)) ||
+            (transition_phase != 0 && (player.transition_door == 0 || player.transition_expires_tick == 0))) return false;
+        player.transition_phase = static_cast<DoorTransitionPhase>(transition_phase);
         message.players.push_back(player);
     }
     return r.finished();

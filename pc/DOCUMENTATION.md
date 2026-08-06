@@ -322,7 +322,7 @@ Online (`NETCODE_ENABLED`) presence comes from `acnet_client_status()`:
 
 |Status|details|state|
 |-|-|-|
-|CONNECTED|`Online in the town of X`|location, plus `with N others nearby`|
+|CONNECTED|`Online in the town of X`|location, plus `N of M in town` (or `alone in town`)|
 |CONNECTING / RECONNECTING|`Connecting to a town...`|—|
 |OFFLINE / REJECTED / FAILED|`In the town of X` (local save)|location|
 
@@ -331,11 +331,12 @@ available before the save finishes loading — and falls back to `mLd_GetLandNam
 online attempt deliberately reads as an ordinary offline session rather than surfacing an error
 on a public profile.
 
-"Nearby" is literal: `acnet_client_remote_players()` reports the interest set, not the town's
-population. A town-wide count would need the server to replicate one (see
-`docs/netcode/CURRENT_STATUS.md`). All netcode calls happen in `pc_discord_update()` on the game
-thread — the same thread as `acnet_client_poll`/`frame`; the worker thread must never touch the
-netcode API.
+The count comes from `acnet_client_town_population()`, which is town-wide (protocol v7: two u8s
+on the baseline, kept live between baselines by `ResourceKind::Town` deltas). It falls back to
+`acnet_client_remote_players()` — worded "nearby", because that is the interest set and not the
+town — when the server reports no population, which is what an older server or a pre-baseline
+moment looks like. All netcode calls happen in `pc_discord_update()` on the game thread — the
+same thread as `acnet_client_poll`/`frame`; the worker thread must never touch the netcode API.
 
 `--verbose` logs each composed presence line, which is how `scripts/smoke_online_windows.ps1`
 verifies the online wording without a Discord client in the loop.
@@ -423,6 +424,8 @@ only checked-in cross-platform Windows toolchain file.
 | `--town ID` | Select a nonzero town ID |
 | `--account ID` | Select the stable account identity |
 | `--invite-key KEY` | Authenticate to an invitation-only town |
+| `--quickstart NAME` | Skip the K.K./title flow and prefill Rover's online name prompt |
+| `--quickstart-gender G` | Select `male` or `female` for quickstart |
 | `--help` / `-h` | Show help |
 
 ## Platform Support

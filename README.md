@@ -140,6 +140,8 @@ SDL2 game controllers are supported with automatic hotplug detection. Button map
 | `--town ID` | Select the nonzero dedicated-town ID |
 | `--account ID` | Use a stable nonzero account ID |
 | `--invite-key KEY` | Authenticate to an invitation-only town |
+| `--quickstart NAME` | Skip the K.K./title flow and prefill Rover's name prompt online |
+| `--quickstart-gender G` | Set the quickstart default to `male` or `female` |
 
 ## Dedicated towns
 
@@ -147,6 +149,9 @@ The build also produces `AnimalCrossingServer`. The original game client owns
 movement and collision, while the server relays bounded transforms and remains
 authoritative for inventories, ground state, tools/catches, shops, trades, NPC
 leases, zones, housing, time/weather, mail, museum state, and persistence.
+Resident interiors share furniture layout/facing, furniture switches, lights,
+and music. House occupancy lights the exterior, and remote house transfers use
+the original door animation.
 The first online resident establishes the server's deterministic town; later
 players see it as an existing town. Online character creation keeps player
 name/gender, gives a randomized face/distinct starter shirt and assigned house, and skips
@@ -170,7 +175,7 @@ Graphics settings are stored in `settings.ini` (next to the executable) and can 
 
 Optional, Windows builds only for now. To show your current town and location (e.g. "In the town of Foo" / "Inside Nook's Cranny") on your Discord profile, create a free Application at the [Discord Developer Portal](https://discord.com/developers/applications) and paste its Client ID into `discord_client_id` in `settings.ini`. Leave it blank to disable (default).
 
-On a dedicated town it reads "Online in the town of Foo", plus how many other players are nearby. Nothing that identifies the server, your account, or an invitation key is ever sent to Discord.
+On a dedicated town it reads "Online in the town of Foo", plus how many players are in the town. Nothing that identifies the server, your account, or an invitation key is ever sent to Discord.
 
 ## Texture Packs
 

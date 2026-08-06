@@ -38,7 +38,40 @@ typedef struct AcNetRemotePlayer {
     uint8_t face;
     uint16_t clothing;
     uint16_t equipped_item;
+    uint8_t transition_phase;
+    uint32_t transition_door;
+    uint32_t transition_expires_tick;
 } AcNetRemotePlayer;
+
+typedef struct AcNetHouseState {
+    uint64_t house_id;
+    uint64_t owner_account_id;
+    uint32_t zone_id;
+    uint32_t revision;
+    uint8_t original_slot;
+    uint8_t upgrade_level;
+    uint8_t initialized;
+    uint8_t main_light_on;
+    uint8_t basement_light_on;
+    int16_t music_tracks[3];
+    uint64_t furniture_switches[12];
+} AcNetHouseState;
+
+typedef struct AcNetHouseFurniture {
+    uint8_t x;
+    uint8_t z;
+    uint8_t floor;
+    uint8_t layer;
+    uint16_t item;
+    uint8_t condition;
+} AcNetHouseFurniture;
+
+typedef struct AcNetHouseUpdateResult {
+    uint16_t result_code;
+    uint64_t house_id;
+    uint32_t house_revision;
+    uint8_t replayed;
+} AcNetHouseUpdateResult;
 
 typedef struct AcNetTileState {
     uint32_t zone_id;
@@ -165,6 +198,9 @@ size_t acnet_client_baseline_tiles(AcNetTileState* output, size_t capacity);
 int acnet_client_tile(uint32_t zone_id, int16_t x, int16_t z, AcNetTileState* output);
 uint32_t acnet_client_baseline_revision(void);
 uint32_t acnet_client_baseline_zone(void);
+uint8_t acnet_client_occupied_house_mask(void);
+int acnet_client_house(AcNetHouseState* output);
+size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);
 size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity);
 uint32_t acnet_client_inventory_revision(void);
 uint32_t acnet_client_bells(void);
@@ -178,6 +214,10 @@ uint16_t acnet_client_town_land_id(void);
 uint8_t acnet_client_resident_slot(void);
 int acnet_client_town_initialized(void);
 size_t acnet_client_town_name(uint8_t* output, size_t capacity);
+/* Town-wide occupancy, unlike acnet_client_remote_players() which is the
+ * viewer's interest set. Returns 0 when the server has reported no population
+ * yet, leaving the outputs untouched. */
+int acnet_client_town_population(uint8_t* population, uint8_t* capacity);
 int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                        uint16_t land_id,
                                        const AcNetPlayerAppearance* appearance,
@@ -254,6 +294,16 @@ int acnet_client_request_furniture_auto(uint8_t operation_type,
                                         uint8_t inventory_slot,
                                         uint16_t expected_item);
 int acnet_client_take_furniture_result(AcNetFurnitureResult* output);
+int acnet_client_submit_house_update(uint64_t house_id,
+                                     uint32_t expected_house_revision,
+                                     uint8_t upgrade_level,
+                                     uint8_t main_light_on,
+                                     uint8_t basement_light_on,
+                                     const int16_t music_tracks[3],
+                                     const uint64_t furniture_switches[12],
+                                     const AcNetHouseFurniture* furniture,
+                                     size_t furniture_count);
+int acnet_client_take_house_update_result(AcNetHouseUpdateResult* output);
 int acnet_client_request_zone_transfer(uint32_t door_id);
 int acnet_client_zone_ready(uint64_t token_high, uint64_t token_low);
 int acnet_client_take_transfer_offer(AcNetTransferOffer* output);

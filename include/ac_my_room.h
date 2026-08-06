@@ -313,6 +313,10 @@ extern Gfx* aMR_IconNo2Gfx2(int icon_no);
 extern int aMR_RadioBgmNow(void);
 extern void aMR_ThrowItem_FurnitureLock(void);
 extern void aMR_ThrowItem_FurnitureUnlock(void);
+extern void aMR_NetReloadFurniture(ACTOR* actor, GAME* game);
+extern void aMR_NetFlushSwitches(MY_ROOM_ACTOR* my_room);
+extern int aMR_NetCurrentMusic(const MY_ROOM_ACTOR* my_room);
+extern int aMR_NetSetMusic(MY_ROOM_ACTOR* my_room, int music_track);
 
 #ifdef __cplusplus
 }

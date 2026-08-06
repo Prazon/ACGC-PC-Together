@@ -276,6 +276,15 @@ void pc_discord_update(void) {
         }
         /* NULL/0 asks for the count without copying the snapshots. */
         in.nearby_players = (int)acnet_client_remote_players(NULL, 0);
+
+        {
+            uint8_t population = 0;
+            uint8_t capacity = 0;
+            if (acnet_client_town_population(&population, &capacity)) {
+                in.town_population = population;
+                in.town_capacity = capacity;
+            }
+        }
     }
 #endif
     if (in.town_name == NULL && pc_save_loaded) {

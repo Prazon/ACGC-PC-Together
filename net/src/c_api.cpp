@@ -156,6 +156,9 @@ extern "C" size_t acnet_client_remote_players(AcNetRemotePlayer* output, size_t 
                 output[i].face = remotes[i].appearance.face;
                 output[i].clothing = remotes[i].appearance.clothing;
                 output[i].equipped_item = remotes[i].appearance.equipped_item;
+                output[i].transition_phase = static_cast<std::uint8_t>(remotes[i].transition_phase);
+                output[i].transition_door = remotes[i].transition_door;
+                output[i].transition_expires_tick = remotes[i].transition_expires_tick;
             }
         }
         return output == nullptr ? remotes.size() : count;
@@ -206,6 +209,51 @@ extern "C" uint32_t acnet_client_baseline_revision(void) {
 
 extern "C" uint32_t acnet_client_baseline_zone(void) {
     return client && client->baseline() != nullptr ? client->baseline()->zone : 0;
+}
+
+extern "C" uint8_t acnet_client_occupied_house_mask(void) {
+    return client ? client->occupied_house_mask() : 0;
+}
+
+extern "C" int acnet_client_house(AcNetHouseState* output) {
+    try {
+        if (!client || client->baseline() == nullptr || !client->baseline()->has_house || output == nullptr) return 0;
+        const acnet::HouseState& house = client->baseline()->house;
+        output->house_id = house.house_id;
+        output->owner_account_id = house.owner;
+        output->zone_id = house.zone;
+        output->revision = house.revision;
+        output->original_slot = house.original_slot;
+        output->upgrade_level = house.upgrade_level;
+        output->initialized = house.initialized ? 1 : 0;
+        output->main_light_on = house.main_light_on ? 1 : 0;
+        output->basement_light_on = house.basement_light_on ? 1 : 0;
+        for (std::size_t i = 0; i < house.music_tracks.size(); ++i) output->music_tracks[i] = house.music_tracks[i];
+        for (std::size_t i = 0; i < house.furniture_switches.size(); ++i)
+            output->furniture_switches[i] = house.furniture_switches[i];
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity) {
+    try {
+        if (!client || client->baseline() == nullptr || !client->baseline()->has_house) return 0;
+        const auto& furniture = client->baseline()->house.furniture;
+        if (output == nullptr) return furniture.size();
+        std::vector<std::pair<acnet::FurnitureAddress, acnet::ItemSlot>> ordered(furniture.begin(), furniture.end());
+        std::sort(ordered.begin(), ordered.end(), [](const auto& left, const auto& right) {
+            if (left.first.floor != right.first.floor) return left.first.floor < right.first.floor;
+            if (left.first.layer != right.first.layer) return left.first.layer < right.first.layer;
+            if (left.first.z != right.first.z) return left.first.z < right.first.z;
+            return left.first.x < right.first.x;
+        });
+        const std::size_t count = std::min(capacity, ordered.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            output[i] = {ordered[i].first.x, ordered[i].first.z, ordered[i].first.floor,
+                         ordered[i].first.layer, ordered[i].second.item, ordered[i].second.condition};
+        }
+        return count;
+    } catch (...) { capture_exception(); return 0; }
 }
 
 extern "C" size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity) {
@@ -270,6 +318,15 @@ extern "C" size_t acnet_client_town_name(uint8_t* output, size_t capacity) {
     const std::size_t count = std::min<std::size_t>(capacity, name.size());
     if (output != nullptr) std::copy(name.begin(), name.begin() + static_cast<std::ptrdiff_t>(count), output);
     return output == nullptr ? name.size() : count;
+}
+
+extern "C" int acnet_client_town_population(uint8_t* population, uint8_t* capacity) {
+    if (!client) return 0;
+    const std::uint8_t current = client->town_population();
+    if (current == 0) return 0; /* not reported */
+    if (population != nullptr) *population = current;
+    if (capacity != nullptr) *capacity = client->town_capacity();
+    return 1;
 }
 
 extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
@@ -549,7 +606,7 @@ extern "C" int acnet_client_request_furniture_auto(uint8_t operation_type,
         request.type = static_cast<acnet::FurnitureOpType>(operation_type);
         request.idempotency = random_idempotency();
         request.house_id = house_id;
-        request.address = {x, z, layer};
+        request.address = {x, z, 0, layer};
         request.expected_house_revision = expected_house_revision;
         request.expected_inventory_revision = expected_inventory_revision;
         request.inventory_slot = inventory_slot;
@@ -566,6 +623,52 @@ extern "C" int acnet_client_take_furniture_result(AcNetFurnitureResult* output) 
         if (!value.has_value()) return 0;
         *output = {static_cast<std::uint16_t>(value->code), value->house_id, value->house_revision,
                    value->inventory_revision, value->inventory_slot, value->item,
+                   static_cast<std::uint8_t>(value->replayed)};
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_submit_house_update(uint64_t house_id,
+                                                  uint32_t expected_house_revision,
+                                                  uint8_t upgrade_level,
+                                                  uint8_t main_light_on,
+                                                  uint8_t basement_light_on,
+                                                  const int16_t music_tracks[3],
+                                                  const uint64_t furniture_switches[12],
+                                                  const AcNetHouseFurniture* furniture,
+                                                  size_t furniture_count) {
+    try {
+        if (!client || house_id == 0 || expected_house_revision == 0 ||
+            upgrade_level > acnet::kMaximumHouseUpgradeLevel ||
+            main_light_on > 1 || basement_light_on > 1 || music_tracks == nullptr || furniture_switches == nullptr ||
+            furniture_count > acnet::kMaximumHouseFurniture || (furniture_count != 0 && furniture == nullptr)) return 0;
+        acnet::HouseUpdate update;
+        update.idempotency = random_idempotency();
+        update.house_id = house_id;
+        update.expected_house_revision = expected_house_revision;
+        update.upgrade_level = upgrade_level;
+        update.main_light_on = main_light_on != 0;
+        update.basement_light_on = basement_light_on != 0;
+        std::copy_n(music_tracks, update.music_tracks.size(), update.music_tracks.begin());
+        std::copy_n(furniture_switches, update.furniture_switches.size(), update.furniture_switches.begin());
+        for (std::size_t i = 0; i < furniture_count; ++i) {
+            acnet::FurnitureAddress address{furniture[i].x, furniture[i].z, furniture[i].floor, furniture[i].layer};
+            acnet::ItemSlot item{furniture[i].item, furniture[i].condition};
+            if (address.x >= 16 || address.z >= 16 || address.floor >= acnet::kHouseFloorCount ||
+                address.layer >= acnet::kHouseLayerCount || item.item == 0 ||
+                !update.furniture.emplace(address, item).second) return 0;
+        }
+        return update.idempotency.valid() &&
+               client->request(std::move(update), acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_take_house_update_result(AcNetHouseUpdateResult* output) {
+    try {
+        if (!client || output == nullptr) return 0;
+        const auto value = client->take_house_update_result();
+        if (!value.has_value()) return 0;
+        *output = {static_cast<std::uint16_t>(value->code), value->house_id, value->house_revision,
                    static_cast<std::uint8_t>(value->replayed)};
         return 1;
     } catch (...) { capture_exception(); return 0; }

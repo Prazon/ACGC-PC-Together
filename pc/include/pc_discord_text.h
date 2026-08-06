@@ -30,6 +30,8 @@ typedef struct pc_discord_inputs_s {
     size_t town_name_len;
     int net_status;                 /* PC_DISCORD_NET_* */
     int nearby_players;             /* remote players in the interest set (not the town) */
+    int town_population;            /* town-wide, 0 when the server reports none */
+    int town_capacity;
 } pc_discord_inputs_t;
 
 /* Always writes NUL-terminated strings; state may come back empty, meaning

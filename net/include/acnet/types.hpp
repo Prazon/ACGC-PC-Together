@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 6;
+constexpr std::uint16_t kProtocolVersion = 7;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -61,6 +61,8 @@ enum class MessageType : std::uint16_t {
     TradeResult = 25,
     FurnitureRequest = 26,
     FurnitureResult = 27,
+    HouseUpdate = 28,
+    HouseUpdateResult = 29,
     ConversationRequest = 30,
     ConversationResult = 31,
     EncounterRequest = 32,
@@ -115,6 +117,12 @@ struct PlayerAppearance {
     std::uint16_t equipped_item = 0;
 };
 
+enum class DoorTransitionPhase : std::uint8_t {
+    None = 0,
+    Leaving = 1,
+    Arriving = 2,
+};
+
 struct PlayerSnapshot {
     EntityId entity = 0;
     AccountId account = 0;
@@ -122,6 +130,9 @@ struct PlayerSnapshot {
     std::uint32_t acknowledged_input = 0;
     Transform transform;
     PlayerAppearance appearance;
+    DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
+    std::uint32_t transition_door = 0;
+    Tick transition_expires_tick = 0;
 };
 
 struct PacketHeader {
@@ -184,6 +195,7 @@ struct InputCommand {
 struct TransformSnapshot {
     Tick server_tick = 0;
     Revision baseline_revision = 0;
+    std::uint8_t occupied_house_mask = 0;
     std::vector<PlayerSnapshot> players;
 };
 

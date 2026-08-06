@@ -4,6 +4,7 @@
 #include "acnet/protocol.hpp"
 
 #include <limits>
+#include <algorithm>
 
 namespace acnet {
 namespace {
@@ -328,8 +329,11 @@ bool encode(const FurnitureOperation& value, std::vector<std::uint8_t>& output) 
     ByteWriter writer;
     if (static_cast<std::uint8_t>(value.type) > static_cast<std::uint8_t>(FurnitureOpType::Remove) ||
         !writer.u8(static_cast<std::uint8_t>(value.type)) || !writer.u64(value.account) ||
+        value.address.x >= 16 || value.address.z >= 16 || value.address.floor >= kHouseFloorCount ||
+        value.address.layer >= kHouseLayerCount ||
         !idempotency(writer, value.idempotency) || !writer.u64(value.house_id) || !writer.u8(value.address.x) ||
-        !writer.u8(value.address.z) || !writer.u8(value.address.layer) || !writer.u32(value.expected_house_revision) ||
+        !writer.u8(value.address.z) || !writer.u8(value.address.floor) || !writer.u8(value.address.layer) ||
+        !writer.u32(value.expected_house_revision) ||
         !writer.u32(value.expected_inventory_revision) || !writer.u8(value.inventory_slot) ||
         !writer.u16(value.expected_item)) return false;
     output = writer.data();
@@ -341,7 +345,9 @@ bool decode(const std::vector<std::uint8_t>& input, FurnitureOperation& value) {
     std::uint8_t type;
     if (!reader.u8(type) || type > static_cast<std::uint8_t>(FurnitureOpType::Remove) ||
         !reader.u64(value.account) || !idempotency(reader, value.idempotency) || !reader.u64(value.house_id) ||
-        !reader.u8(value.address.x) || !reader.u8(value.address.z) || !reader.u8(value.address.layer) ||
+        !reader.u8(value.address.x) || !reader.u8(value.address.z) || !reader.u8(value.address.floor) ||
+        !reader.u8(value.address.layer) || value.address.x >= 16 || value.address.z >= 16 ||
+        value.address.floor >= kHouseFloorCount || value.address.layer >= kHouseLayerCount ||
         !reader.u32(value.expected_house_revision) || !reader.u32(value.expected_inventory_revision) ||
         !reader.u8(value.inventory_slot) || !reader.u16(value.expected_item) || !reader.finished()) return false;
     value.type = static_cast<FurnitureOpType>(type);
@@ -364,6 +370,89 @@ bool decode(const std::vector<std::uint8_t>& input, FurnitureResult& value) {
         !reader.u32(value.house_revision) || !reader.u32(value.inventory_revision) ||
         !reader.u8(value.inventory_slot) || !reader.u16(value.item) || !reader.u8(replayed) ||
         replayed > 1 || !reader.finished()) return false;
+    value.replayed = replayed != 0;
+    return true;
+}
+
+bool encode(const HouseUpdate& value, std::vector<std::uint8_t>& output) {
+    if (value.account == 0 || !value.idempotency.valid() || value.house_id == 0 ||
+        value.expected_house_revision == 0 || value.upgrade_level > kMaximumHouseUpgradeLevel ||
+        value.furniture.size() > kMaximumHouseFurniture) return false;
+    ByteWriter writer(kMaximumTransferBytes);
+    if (!writer.u64(value.account) || !idempotency(writer, value.idempotency) || !writer.u64(value.house_id) ||
+        !writer.u32(value.expected_house_revision) || !writer.u8(value.upgrade_level) ||
+        !writer.u8(value.main_light_on ? 1 : 0) || !writer.u8(value.basement_light_on ? 1 : 0)) return false;
+    for (std::int16_t music : value.music_tracks) {
+        if (!writer.i16(music)) return false;
+    }
+    for (std::uint64_t switches : value.furniture_switches) {
+        if (!writer.u64(switches)) return false;
+    }
+    std::vector<std::pair<FurnitureAddress, ItemSlot>> furniture(value.furniture.begin(), value.furniture.end());
+    std::sort(furniture.begin(), furniture.end(), [](const auto& left, const auto& right) {
+        if (left.first.floor != right.first.floor) return left.first.floor < right.first.floor;
+        if (left.first.layer != right.first.layer) return left.first.layer < right.first.layer;
+        if (left.first.z != right.first.z) return left.first.z < right.first.z;
+        return left.first.x < right.first.x;
+    });
+    if (!writer.u16(static_cast<std::uint16_t>(furniture.size()))) return false;
+    for (const auto& entry : furniture) {
+        if (entry.first.x >= 16 || entry.first.z >= 16 || entry.first.floor >= kHouseFloorCount ||
+            entry.first.layer >= kHouseLayerCount || entry.second.item == 0 ||
+            !writer.u8(entry.first.x) || !writer.u8(entry.first.z) || !writer.u8(entry.first.floor) ||
+            !writer.u8(entry.first.layer) || !writer.u16(entry.second.item) ||
+            !writer.u8(entry.second.condition)) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, HouseUpdate& value) {
+    if (input.size() > kMaximumTransferBytes) return false;
+    ByteReader reader(input);
+    std::uint8_t main_light;
+    std::uint8_t basement_light;
+    std::uint16_t count;
+    if (!reader.u64(value.account) || !idempotency(reader, value.idempotency) || !reader.u64(value.house_id) ||
+        !reader.u32(value.expected_house_revision) || !reader.u8(value.upgrade_level) ||
+        !reader.u8(main_light) || !reader.u8(basement_light) || main_light > 1 || basement_light > 1) return false;
+    for (std::int16_t& music : value.music_tracks) {
+        if (!reader.i16(music)) return false;
+    }
+    for (std::uint64_t& switches : value.furniture_switches) {
+        if (!reader.u64(switches)) return false;
+    }
+    if (!reader.u16(count) || count > kMaximumHouseFurniture || value.account == 0 ||
+        !value.idempotency.valid() || value.house_id == 0 || value.expected_house_revision == 0 ||
+        value.upgrade_level > kMaximumHouseUpgradeLevel) return false;
+    value.main_light_on = main_light != 0;
+    value.basement_light_on = basement_light != 0;
+    value.furniture.clear();
+    for (std::uint16_t i = 0; i < count; ++i) {
+        FurnitureAddress address;
+        ItemSlot item;
+        if (!reader.u8(address.x) || !reader.u8(address.z) || !reader.u8(address.floor) ||
+            !reader.u8(address.layer) || !reader.u16(item.item) || !reader.u8(item.condition) ||
+            address.x >= 16 || address.z >= 16 || address.floor >= kHouseFloorCount ||
+            address.layer >= kHouseLayerCount || item.item == 0 ||
+            !value.furniture.emplace(address, item).second) return false;
+    }
+    return reader.finished();
+}
+
+bool encode(const HouseUpdateResult& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!result(writer, value.code) || !idempotency(writer, value.idempotency) || !writer.u64(value.house_id) ||
+        !writer.u32(value.house_revision) || !writer.u8(value.replayed ? 1 : 0)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, HouseUpdateResult& value) {
+    ByteReader reader(input);
+    std::uint8_t replayed;
+    if (!result(reader, value.code) || !idempotency(reader, value.idempotency) || !reader.u64(value.house_id) ||
+        !reader.u32(value.house_revision) || !reader.u8(replayed) || replayed > 1 || !reader.finished()) return false;
     value.replayed = replayed != 0;
     return true;
 }
@@ -416,7 +505,7 @@ bool encode_deltas(const std::vector<ReplicationDelta>& value, std::vector<std::
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u16(static_cast<std::uint16_t>(value.size()))) return false;
     for (const ReplicationDelta& delta : value) {
-        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Event) ||
+        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Town) ||
             delta.payload.size() > 65535 || !writer.u32(delta.revision) ||
             !writer.u8(static_cast<std::uint8_t>(delta.kind)) || !writer.u32(delta.zone) ||
             !writer.u64(delta.target_account) || !writer.u64(delta.entity) ||
@@ -441,7 +530,7 @@ bool decode_deltas(const std::vector<std::uint8_t>& input, std::vector<Replicati
         std::uint8_t reliable;
         std::uint8_t has_position;
         std::uint16_t size;
-        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Event) ||
+        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Town) ||
             !reader.u32(delta.zone) || !reader.u64(delta.target_account) || !reader.u64(delta.entity) ||
             !reader.u8(reliable) || !reader.u8(has_position) || reliable > 1 || has_position > 1 ||
             !vec3(reader, delta.position) || !reader.u16(size) || size > reader.remaining()) return false;

@@ -15,6 +15,8 @@ void Net_OnActorCreated(ACTOR* actor);
 void Net_OnActorDestroyed(ACTOR* actor);
 void Net_OnSceneLoaded(GAME_PLAY* play);
 void Net_BeginSceneTransition(GAME_PLAY* play, int next_scene);
+int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play);
+int Net_HouseOccupied(int house_index);
 int Net_IsConnected(void);
 int Net_IsOnline(void);
 int Net_ConfigureQuickstart(const char* name, int gender);
@@ -40,6 +42,8 @@ int Net_RequestEncounter(int kind);
 #define Net_OnActorDestroyed(actor) ((void)0)
 #define Net_OnSceneLoaded(play) ((void)0)
 #define Net_BeginSceneTransition(play, next_scene) ((void)0)
+#define Net_ApplyHouseStateBeforeRoom(play) FALSE
+#define Net_HouseOccupied(house_index) FALSE
 #define Net_IsConnected() FALSE
 #define Net_IsOnline() FALSE
 #define Net_ConfigureQuickstart(name, gender) FALSE

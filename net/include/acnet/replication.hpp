@@ -1,6 +1,7 @@
 #pragma once
 
 #include "acnet/economy.hpp"
+#include "acnet/housing.hpp"
 #include "acnet/npc.hpp"
 #include "acnet/player_query.hpp"
 #include "acnet/types.hpp"
@@ -22,7 +23,20 @@ enum class ResourceKind : std::uint8_t {
     Shop,
     House,
     Event,
+    /* Town-wide occupancy. Appended, never inserted: the wire encodes this
+     * enum as a u8 and validates against the last value. */
+    Town,
 };
+
+/* Town-wide occupancy, replicated so the count stays live between baselines.
+ * Population 0 means "not reported"; capacity is never 0. */
+struct TownOccupancy {
+    std::uint8_t population = 0;
+    std::uint8_t capacity = 1;
+};
+
+bool encode_town_delta(const TownOccupancy& occupancy, std::vector<std::uint8_t>& output);
+bool decode_town_delta(const std::vector<std::uint8_t>& input, TownOccupancy& occupancy);
 
 struct ZoneBaseline {
     Tick server_tick = 0;
@@ -31,6 +45,14 @@ struct ZoneBaseline {
     std::int64_t town_unix_seconds = 0;
     std::uint8_t weather = 0;
     std::uint8_t weather_intensity = 0;
+    /* Town-wide, unlike players[] which is the viewer's interest set.
+     * A population of 0 means "not reported" and readers must not render it;
+     * capacity is always at least 1 so the pair is never nonsensical. */
+    std::uint8_t town_population = 0;
+    std::uint8_t town_capacity = 1;
+    std::uint8_t occupied_house_mask = 0;
+    bool has_house = false;
+    HouseState house;
     InventoryState inventory;
     AccountLedger ledger;
     ShopState shop;

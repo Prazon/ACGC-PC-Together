@@ -3,6 +3,7 @@
 #ifdef NETCODE_ENABLED
 
 #include "acnet/c_api.h"
+#include "ac_my_house.h"
 #include "c_keyframe.h"
 #include "m_malloc.h"
 #include "m_name_table.h"
@@ -144,6 +145,20 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
             const f32 blend = 1.0f - powf(0.60f, MAX(0.0f, dt));
             const s16 yaw_delta = (s16)(states[i].transform.yaw - actor->shape_info.rotation.y);
             s16 visual_yaw;
+            if (states[i].transition_phase != remote->transition_phase ||
+                states[i].transition_door != remote->transition_door) {
+                if (states[i].transition_phase != 0) {
+                    if (states[i].transition_door >= 100 && states[i].transition_door <= 103 &&
+                        states[i].transition_phase == 1)
+                        aMHS_NetDoorAnimation((int)(states[i].transition_door - 100), FALSE);
+                    else if (states[i].transition_door >= 200 && states[i].transition_door <= 203 &&
+                             states[i].transition_phase == 2)
+                        aMHS_NetDoorAnimation((int)(states[i].transition_door - 200), TRUE);
+                }
+                remote->transition_phase = states[i].transition_phase;
+                remote->transition_door = states[i].transition_door;
+                remote->transition_expires_tick = states[i].transition_expires_tick;
+            }
             xyz_t_move(&actor->last_world_position, &actor->world.position);
             /* The portable client already buffers six simulation ticks and
              * interpolates snapshot history. Its sample advances at snapshot

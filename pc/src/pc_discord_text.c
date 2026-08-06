@@ -90,18 +90,28 @@ static const char* pc_discord_location_for_scene(int scene_no) {
     }
 }
 
-/* "nearby" is deliberate: acnet_client_remote_players() reports the interest
- * set, so this counts players the client can see, not the town's population.
- * A town-wide count needs the server to send one. */
-static void pc_discord_append_nearby(char* state, size_t state_size, int nearby) {
+/* Prefers the server's town-wide count. Falls back to the interest set, where
+ * "nearby" is deliberate: acnet_client_remote_players() counts only players
+ * the client can see, which is not the town's population. */
+static void pc_discord_append_company(char* state, size_t state_size, const pc_discord_inputs_t* in) {
     size_t len = strlen(state);
     const char* separator = (len > 0) ? " - " : "";
 
-    if (nearby <= 0) return;
-    if (nearby == 1) {
+    if (in->town_population > 0 && in->town_capacity > 0) {
+        if (in->town_population == 1) {
+            snprintf(state + len, state_size - len, "%salone in town", separator);
+        } else {
+            snprintf(state + len, state_size - len, "%s%d of %d in town", separator,
+                     in->town_population, in->town_capacity);
+        }
+        return;
+    }
+
+    if (in->nearby_players <= 0) return;
+    if (in->nearby_players == 1) {
         snprintf(state + len, state_size - len, "%swith 1 other nearby", separator);
     } else {
-        snprintf(state + len, state_size - len, "%swith %d others nearby", separator, nearby);
+        snprintf(state + len, state_size - len, "%swith %d others nearby", separator, in->nearby_players);
     }
 }
 
@@ -151,6 +161,6 @@ void pc_discord_compose(const pc_discord_inputs_t* in,
         }
     }
     if (online) {
-        pc_discord_append_nearby(state, state_size, in->nearby_players);
+        pc_discord_append_company(state, state_size, in);
     }
 }

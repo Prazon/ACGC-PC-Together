@@ -135,6 +135,16 @@ private:
         std::unordered_map<std::uint16_t, RateBucket> rate_buckets;
     };
 
+    struct DoorTransition {
+        acnet::AccountId account = 0;
+        std::uint32_t door_id = 0;
+        acnet::ZoneId source_zone = 0;
+        acnet::ZoneId destination_zone = 0;
+        acnet::Transform source_transform;
+        acnet::Tick expires_tick = 0;
+        bool ready = false;
+    };
+
     bool receive_packets(std::uint64_t monotonic_ms, std::string& error);
     bool handle_datagram(const acnet::Datagram& datagram, std::uint64_t monotonic_ms, std::string& error);
     bool handle_hello(const acnet::Datagram& datagram,
@@ -150,6 +160,8 @@ private:
     bool send_ack(Connection& connection, acnet::Channel channel, std::string& error);
     bool send_snapshots(std::uint64_t monotonic_ms, std::string& error);
     bool send_baseline(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
+    void publish_population_change();
+    acnet::TownOccupancy current_occupancy() const;
     bool send_deltas(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool refresh_interest_chunk(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool dispatch(Connection& connection,
@@ -169,6 +181,7 @@ private:
     bool configure_zone_topology(std::string& error);
     bool allow_message(Connection& connection, acnet::MessageType type, std::uint64_t monotonic_ms);
     bool allow_hello(const std::string& endpoint, std::uint64_t monotonic_ms);
+    std::uint8_t occupied_house_mask() const;
     static std::string endpoint_key(const std::string& host, std::uint16_t port);
 
     TownRuntimeConfig config_;
@@ -189,6 +202,7 @@ private:
     PersistenceStore persistence_;
     DatabaseStore database_;
     std::unordered_map<acnet::SessionId, Connection> connections_;
+    std::unordered_map<acnet::AccountId, DoorTransition> door_transitions_;
     std::unordered_map<std::string, acnet::SessionId> endpoints_;
     std::unordered_map<acnet::AccountId, AccountState> accounts_;
     std::unordered_map<std::string, Connection::RateBucket> hello_rates_;
@@ -199,6 +213,8 @@ private:
     std::int64_t last_clock_minute_ = -1;
     Weather last_weather_ = Weather::Clear;
     std::uint8_t last_weather_intensity_ = 0;
+    std::uint8_t last_published_population_ = 0;
+    std::uint8_t last_published_capacity_ = 0;
     std::string background_error_;
     bool initialized_ = false;
 };

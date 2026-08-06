@@ -48,6 +48,9 @@ struct RemotePresentation {
     ZoneId zone = 0;
     Transform transform;
     PlayerAppearance appearance;
+    DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
+    std::uint32_t transition_door = 0;
+    Tick transition_expires_tick = 0;
 };
 
 class ClientRuntime {
@@ -84,6 +87,11 @@ public:
     std::uint8_t resident_slot() const { return resident_slot_; }
     bool town_initialized() const { return town_initialized_; }
     const std::array<std::uint8_t, 8>& town_name() const { return town_name_; }
+    std::uint8_t occupied_house_mask() const { return occupied_house_mask_; }
+    /* Town-wide, refreshed by baselines and by Town deltas between them.
+     * Population 0 means the server has not reported one. */
+    std::uint8_t town_population() const { return town_population_; }
+    std::uint8_t town_capacity() const { return town_capacity_; }
 
     bool submit_town_bootstrap(TownBootstrap bootstrap, std::uint64_t now_ms, std::string& error);
     bool request(WorldOperation operation, std::uint64_t now_ms, std::string& error);
@@ -93,6 +101,7 @@ public:
     bool request(ZoneTransferRequest request, std::uint64_t now_ms, std::string& error);
     bool ready(ZoneReadyRequest request, std::uint64_t now_ms, std::string& error);
     bool request(FurnitureOperation operation, std::uint64_t now_ms, std::string& error);
+    bool request(HouseUpdate update, std::uint64_t now_ms, std::string& error);
     bool request(EncounterRequest request, std::uint64_t now_ms, std::string& error);
 
     std::optional<WorldResult> take_world_result();
@@ -101,6 +110,7 @@ public:
     std::optional<ConversationResult> take_conversation_result();
     std::optional<TransferOffer> take_transfer_offer();
     std::optional<FurnitureResult> take_furniture_result();
+    std::optional<HouseUpdateResult> take_house_update_result();
     std::optional<EncounterResult> take_encounter_result();
     std::optional<TownBootstrapResult> take_town_bootstrap_result();
 
@@ -112,6 +122,9 @@ private:
         Tick last_tick = 0;
         TransformHistory history{32};
         PlayerAppearance appearance;
+        DoorTransitionPhase transition_phase = DoorTransitionPhase::None;
+        std::uint32_t transition_door = 0;
+        Tick transition_expires_tick = 0;
     };
 
     bool send_hello(std::uint64_t now_ms, std::string& error);
@@ -160,12 +173,16 @@ private:
     std::uint8_t resident_slot_ = 0xFF;
     bool town_initialized_ = false;
     std::array<std::uint8_t, 8> town_name_{};
+    std::uint8_t occupied_house_mask_ = 0;
+    std::uint8_t town_population_ = 0;
+    std::uint8_t town_capacity_ = 1;
     std::optional<WorldResult> world_result_;
     std::optional<EconomyResult> economy_result_;
     std::optional<TradeResult> trade_result_;
     std::optional<ConversationResult> conversation_result_;
     std::optional<TransferOffer> transfer_offer_;
     std::optional<FurnitureResult> furniture_result_;
+    std::optional<HouseUpdateResult> house_update_result_;
     std::optional<EncounterResult> encounter_result_;
     std::optional<TownBootstrapResult> town_bootstrap_result_;
     Transform authoritative_local_;

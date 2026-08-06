@@ -159,6 +159,26 @@ void transaction_messages_round_trip() {
     CHECK(decoded_economy.recipient == 99);
     CHECK(decoded_economy.amount == 500);
 
+    acnet::HouseUpdate house;
+    house.account = 46;
+    house.idempotency = {14, 15};
+    house.house_id = 10002;
+    house.expected_house_revision = 7;
+    house.upgrade_level = 3;
+    house.main_light_on = true;
+    house.music_tracks[0] = 91;
+    house.furniture_switches[1] = 0x1122334455667788ULL;
+    house.furniture[{4, 5, 2, 1}] = {0x3001, 2};
+    CHECK(acnet::encode(house, bytes));
+    acnet::HouseUpdate decoded_house;
+    CHECK(acnet::decode(bytes, decoded_house));
+    CHECK(decoded_house.house_id == house.house_id);
+    CHECK(decoded_house.upgrade_level == 3);
+    CHECK(decoded_house.main_light_on);
+    CHECK(decoded_house.music_tracks[0] == 91);
+    CHECK(decoded_house.furniture_switches[1] == 0x1122334455667788ULL);
+    CHECK(decoded_house.furniture.at({4, 5, 2, 1}).item == 0x3001);
+
     std::vector<acnet::ReplicationDelta> deltas(2);
     deltas[0].revision = 4;
     deltas[0].kind = acnet::ResourceKind::Tile;
@@ -585,6 +605,7 @@ void snapshot_round_trip() {
     acnet::TransformSnapshot original;
     original.server_tick = 500;
     original.baseline_revision = 17;
+    original.occupied_house_mask = 0x5;
     for (std::uint64_t i = 0; i < 8; ++i) {
         acnet::PlayerSnapshot player;
         player.entity = 0x100000001ULL + i;
@@ -594,6 +615,11 @@ void snapshot_round_trip() {
         player.transform.position = {static_cast<float>(i), 2.0F, static_cast<float>(i * 3)};
         player.transform.velocity = {0.1F, 0.0F, -0.2F};
         player.transform.yaw = static_cast<std::int16_t>(i * 100);
+        if (i == 7) {
+            player.transition_phase = acnet::DoorTransitionPhase::Arriving;
+            player.transition_door = 202;
+            player.transition_expires_tick = 590;
+        }
         original.players.push_back(player);
     }
     std::vector<std::uint8_t> bytes;
@@ -602,6 +628,9 @@ void snapshot_round_trip() {
     CHECK(acnet::decode(bytes, decoded));
     CHECK(decoded.players.size() == 8);
     CHECK(decoded.players[7].account == 107);
+    CHECK(decoded.occupied_house_mask == 0x5);
+    CHECK(decoded.players[7].transition_phase == acnet::DoorTransitionPhase::Arriving);
+    CHECK(decoded.players[7].transition_door == 202);
     CHECK(same_float(decoded.players[7].transform.position.z, 21.0F));
 }
 
@@ -1264,7 +1293,10 @@ void zone_handoffs_and_four_resident_housing_are_safe() {
     acnet::WorldAuthority world(&players);
     for (std::uint64_t account = 1; account <= 5; ++account) {
         acnet::InventoryState inventory;
-        if (account == 1) inventory.slots[0].item = 777;
+        if (account == 1) {
+            inventory.slots[0].item = 0x1100;
+            inventory.slots[1].item = 0x1200;
+        }
         CHECK(world.register_inventory(account, inventory));
     }
     acnet::HousingAuthority housing(&world);
@@ -1275,21 +1307,31 @@ void zone_handoffs_and_four_resident_housing_are_safe() {
     CHECK(!housing.register_resident(4, 5, 10004));
     CHECK(housing.resident_count() == acnet::kOriginalResidentSlots);
 
+    acnet::HouseUpdate initial_house;
+    initial_house.account = 1;
+    initial_house.idempotency = {50, 10};
+    initial_house.house_id = 10000;
+    initial_house.expected_house_revision = 1;
+    initial_house.upgrade_level = 2;
+    const auto initialized = housing.replace_contents(initial_house);
+    CHECK(initialized.code == acnet::ResultCode::Ok);
+
     acnet::FurnitureOperation place;
     place.type = acnet::FurnitureOpType::Place;
     place.account = 1;
     place.idempotency = {50, 1};
     place.house_id = 10000;
     place.address = {2, 3, 0};
-    place.expected_house_revision = 1;
+    place.expected_house_revision = initialized.house_revision;
     place.expected_inventory_revision = 1;
     place.inventory_slot = 0;
-    place.expected_item = 777;
+    place.expected_item = 0x1100;
     const auto placed = housing.apply(place);
     CHECK(placed.code == acnet::ResultCode::Ok);
-    CHECK(housing.house(10000)->furniture.at(place.address).item == 777);
+    CHECK(housing.house(10000)->furniture.at(place.address).item == 0x1100);
     CHECK(world.inventory(1)->slots[0].item == 0);
-    CHECK(world.total_item_units() + housing.total_furniture_units() == 1);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
     CHECK(housing.apply(place).replayed);
 
     acnet::FurnitureOperation remove = place;
@@ -1300,8 +1342,71 @@ void zone_handoffs_and_four_resident_housing_are_safe() {
     const auto removed = housing.apply(remove);
     CHECK(removed.code == acnet::ResultCode::Ok);
     CHECK(housing.house(10000)->furniture.empty());
-    CHECK(world.inventory(1)->slots[removed.inventory_slot].item == 777);
-    CHECK(world.total_item_units() + housing.total_furniture_units() == 1);
+    CHECK(world.inventory(1)->slots[removed.inventory_slot].item == 0x1100);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
+    acnet::HouseUpdate house_update;
+    house_update.account = 1;
+    house_update.idempotency = {50, 4};
+    house_update.house_id = 10000;
+    house_update.expected_house_revision = housing.house(10000)->revision;
+    house_update.upgrade_level = 2;
+    house_update.main_light_on = true;
+    house_update.music_tracks[0] = 87;
+    house_update.furniture_switches[0] = 3;
+    house_update.furniture[{7, 8, 1, 0}] = {0x1200, 2};
+    const auto updated = housing.replace_contents(house_update);
+    CHECK(updated.code == acnet::ResultCode::Ok);
+    CHECK(housing.house(10000)->initialized);
+    CHECK(housing.house(10000)->main_light_on);
+    CHECK(housing.house(10000)->music_tracks[0] == 87);
+    CHECK(housing.house(10000)->furniture_switches[0] == 3);
+    CHECK(housing.house(10000)->furniture.at({7, 8, 1, 0}).item == 0x1200);
+    CHECK(housing.replace_contents(house_update).replayed);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
+    acnet::HouseUpdate rearranged = house_update;
+    rearranged.idempotency = {50, 5};
+    rearranged.expected_house_revision = updated.house_revision;
+    rearranged.furniture.clear();
+    rearranged.furniture[{8, 7, 1, 0}] = {0x1200, 1};
+    const acnet::Revision inventory_before_rearrange = world.inventory(1)->revision;
+    const auto rearranged_result = housing.replace_contents(rearranged);
+    CHECK(rearranged_result.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->revision == inventory_before_rearrange);
+    CHECK(world.inventory(1)->slots[removed.inventory_slot].item == 0x1100);
+
+    acnet::HouseUpdate add_from_inventory = rearranged;
+    add_from_inventory.idempotency = {50, 6};
+    add_from_inventory.expected_house_revision = rearranged_result.house_revision;
+    add_from_inventory.furniture[{4, 5, 0, 0}] = {0x1100, 0};
+    const auto added = housing.replace_contents(add_from_inventory);
+    CHECK(added.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->slots[removed.inventory_slot].item == 0);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
+    acnet::HouseUpdate forged = add_from_inventory;
+    forged.idempotency = {50, 7};
+    forged.expected_house_revision = added.house_revision;
+    forged.furniture[{6, 6, 0, 0}] = {0x1300, 0};
+    CHECK(housing.replace_contents(forged).code == acnet::ResultCode::InvalidState);
+    CHECK(housing.house(10000)->revision == added.house_revision);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
+    acnet::HouseUpdate remove_to_inventory = add_from_inventory;
+    remove_to_inventory.idempotency = {50, 8};
+    remove_to_inventory.expected_house_revision = added.house_revision;
+    remove_to_inventory.furniture.erase({8, 7, 1, 0});
+    const auto returned = housing.replace_contents(remove_to_inventory);
+    CHECK(returned.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->slots[0].item == 0x1200);
+    CHECK(world.total_item_units() + housing.total_furniture_units() == 2);
+
+    acnet::HouseUpdate free_upgrade = remove_to_inventory;
+    free_upgrade.idempotency = {50, 9};
+    free_upgrade.expected_house_revision = returned.house_revision;
+    free_upgrade.upgrade_level = 3;
+    CHECK(housing.replace_contents(free_upgrade).code == acnet::ResultCode::InvalidState);
 
     acnet::FurnitureOperation visitor = place;
     visitor.account = 5;
@@ -1540,9 +1645,11 @@ void clock_jobs_and_replication_survive_empty_time() {
     npc.zone = 1;
     npc.transform.position = {100.0F, 0.0F, 100.0F};
     CHECK(npcs.add_npc(npc));
-    const auto baseline = acnet::build_baseline(
+    auto baseline = acnet::build_baseline(
         1, 600, 1, clock.state().town_unix_seconds, static_cast<std::uint8_t>(clock.state().weather),
         clock.state().weather_intensity, world, players, npcs);
+    baseline.town_population = 3;
+    baseline.town_capacity = 16;
     std::vector<std::uint8_t> baseline_bytes;
     CHECK(acnet::encode_baseline(baseline, baseline_bytes));
     acnet::ZoneBaseline decoded;
@@ -1552,8 +1659,61 @@ void clock_jobs_and_replication_survive_empty_time() {
     CHECK(decoded.tiles[0].second.item == 777);
     CHECK(decoded.players.size() == 1);
     CHECK(decoded.npcs.size() == 1);
+    /* Town-wide occupancy travels with the baseline and is independent of the
+     * interest set above (one visible player, three in town). */
+    CHECK(decoded.town_population == 3);
+    CHECK(decoded.town_capacity == 16);
     baseline_bytes.pop_back();
     CHECK(!acnet::decode_baseline(baseline_bytes, decoded));
+
+    /* A population that exceeds capacity, or a zero capacity, is nonsense the
+     * codec must refuse in both directions rather than replicate. */
+    acnet::ZoneBaseline invalid = baseline;
+    invalid.town_population = 17;
+    invalid.town_capacity = 16;
+    std::vector<std::uint8_t> invalid_bytes;
+    CHECK(!acnet::encode_baseline(invalid, invalid_bytes));
+    invalid.town_population = 0;
+    invalid.town_capacity = 0;
+    CHECK(!acnet::encode_baseline(invalid, invalid_bytes));
+
+    acnet::TownOccupancy occupancy;
+    occupancy.population = 4;
+    occupancy.capacity = 16;
+    std::vector<std::uint8_t> occupancy_bytes;
+    CHECK(acnet::encode_town_delta(occupancy, occupancy_bytes));
+    CHECK(occupancy_bytes.size() == 2);
+    acnet::TownOccupancy decoded_occupancy;
+    CHECK(acnet::decode_town_delta(occupancy_bytes, decoded_occupancy));
+    CHECK(decoded_occupancy.population == 4);
+    CHECK(decoded_occupancy.capacity == 16);
+    CHECK(!acnet::decode_town_delta({5, 4}, decoded_occupancy));  /* population > capacity */
+    CHECK(!acnet::decode_town_delta({1, 0}, decoded_occupancy));  /* zero capacity */
+    CHECK(!acnet::decode_town_delta({1}, decoded_occupancy));     /* truncated */
+
+    acnet::ReplicationDelta town_delta;
+    town_delta.kind = acnet::ResourceKind::Town;
+    town_delta.zone = 0;
+    town_delta.reliable = true;
+    CHECK(acnet::encode_town_delta(occupancy, town_delta.payload));
+    std::vector<acnet::ReplicationDelta> town_batch{town_delta};
+    std::vector<std::uint8_t> town_batch_bytes;
+    CHECK(acnet::encode_deltas(town_batch, town_batch_bytes));
+    std::vector<acnet::ReplicationDelta> town_batch_decoded;
+    CHECK(acnet::decode_deltas(town_batch_bytes, town_batch_decoded));
+    CHECK(town_batch_decoded.size() == 1);
+    CHECK(town_batch_decoded[0].kind == acnet::ResourceKind::Town);
+
+    /* Town occupancy is town-wide, so it must reach a viewer whose zone does
+     * not match the delta's - the check zone-scoped kinds fail. */
+    acnet::DeltaLog town_log(4);
+    town_log.append(town_delta);
+    acnet::InterestContext other_zone;
+    other_zone.account = 4242;
+    other_zone.zone = 9;
+    const auto town_visible = town_log.since(0, other_zone, 20);
+    CHECK(town_visible.deltas.size() == 1);
+    CHECK(town_visible.deltas[0].kind == acnet::ResourceKind::Town);
 
     acnet::DeltaLog deltas(4);
     acnet::ReplicationDelta clock_delta;
@@ -1893,14 +2053,48 @@ void production_clients_connect_move_and_render_each_other() {
         CHECK(second_offer->code == acnet::ResultCode::Ok);
         CHECK(first_offer->destination_zone == destination);
         CHECK(second_offer->destination_zone == destination);
+
+        bool saw_leaving = false;
+        for (std::uint64_t i = 0; i < 200 && !saw_leaving; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(++transaction_now, wall + 5, error));
+            CHECK(first.poll(transaction_now, error));
+            CHECK(second.poll(transaction_now, error));
+            const auto first_zone_remotes = first.remote_players();
+            const auto second_zone_remotes = second.remote_players();
+            saw_leaving = first_zone_remotes.size() == 1 && second_zone_remotes.size() == 1 &&
+                          first_zone_remotes[0].transition_phase == acnet::DoorTransitionPhase::Leaving &&
+                          second_zone_remotes[0].transition_phase == acnet::DoorTransitionPhase::Leaving &&
+                          first_zone_remotes[0].transition_door == door_id &&
+                          second_zone_remotes[0].transition_door == door_id;
+        }
+        CHECK(saw_leaving);
+
         acnet::ZoneReadyRequest ready;
         ready.token = first_offer->token;
         CHECK(first.ready(ready, ++transaction_now, error));
+
+        bool saw_source_ghost = false;
+        for (std::uint64_t i = 0; i < 300 && !saw_source_ghost; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(++transaction_now, wall + 5, error));
+            CHECK(first.poll(transaction_now, error));
+            CHECK(second.poll(transaction_now, error));
+            const auto source_remotes = second.remote_players();
+            saw_source_ghost = first.baseline() != nullptr && first.baseline()->zone == destination &&
+                               source_remotes.size() == 1 &&
+                               source_remotes[0].account == first_config.account &&
+                               source_remotes[0].transition_phase == acnet::DoorTransitionPhase::Leaving &&
+                               source_remotes[0].transition_door == door_id;
+        }
+        CHECK(saw_source_ghost);
+
         ready.token = second_offer->token;
         CHECK(second.ready(ready, ++transaction_now, error));
 
         bool shared_zone_visible = false;
-        for (std::uint64_t i = 0; i < 300; ++i) {
+        bool saw_arriving = false;
+        for (std::uint64_t i = 0; i < 300 && (!shared_zone_visible || !saw_arriving); ++i) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
             CHECK(server.step(++transaction_now, wall + 5, error));
             CHECK(first.poll(transaction_now, error));
@@ -1912,9 +2106,12 @@ void production_clients_connect_move_and_render_each_other() {
             shared_zone_visible = first_zone_remotes.size() == 1 && second_zone_remotes.size() == 1 &&
                                   first_zone_remotes[0].zone == destination &&
                                   second_zone_remotes[0].zone == destination;
-            if (shared_zone_visible) break;
+            saw_arriving = shared_zone_visible &&
+                           first_zone_remotes[0].transition_phase == acnet::DoorTransitionPhase::Arriving &&
+                           first_zone_remotes[0].transition_door == door_id;
         }
         CHECK(shared_zone_visible);
+        CHECK(saw_arriving);
         (void)first.take_transfer_offer();  // Successful ZoneReady acknowledgement.
         (void)second.take_transfer_offer();
     };
@@ -1924,11 +2121,57 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(first.state() == acnet::ClientConnectionState::Connected);
     CHECK(second.state() == acnet::ClientConnectionState::Connected);
     CHECK(first.estimated_town_time(transaction_now) >= before_house_time);
+    CHECK(first.occupied_house_mask() == 1);
+    CHECK(second.occupied_house_mask() == 1);
+    CHECK(first.baseline() != nullptr);
+    CHECK(second.baseline() != nullptr);
+    CHECK(first.baseline()->has_house);
+    CHECK(second.baseline()->has_house);
+    CHECK(first.baseline()->house.house_id == 10000);
+    CHECK(first.baseline()->house.owner == first_config.account);
+
+    acnet::HouseUpdate house_update;
+    house_update.idempotency = {704, 705};
+    house_update.house_id = first.baseline()->house.house_id;
+    house_update.expected_house_revision = first.baseline()->house.revision;
+    house_update.upgrade_level = 2;
+    house_update.main_light_on = true;
+    house_update.music_tracks[0] = 37;
+    house_update.furniture_switches[0] = 5;
+    house_update.furniture[{3, 4, 0, 0}] = {0x1100, 1};
+    CHECK(first.request(house_update, ++transaction_now, error));
+    std::optional<acnet::HouseUpdateResult> house_result;
+    bool house_converged = false;
+    for (std::uint64_t i = 0; i < 800 && !house_converged; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        CHECK(server.step(++transaction_now, wall + 5, error));
+        CHECK(first.poll(transaction_now, error));
+        CHECK(second.poll(transaction_now, error));
+        if (!house_result.has_value()) house_result = first.take_house_update_result();
+        house_converged = house_result.has_value() && first.baseline() != nullptr &&
+                          second.baseline() != nullptr && first.baseline()->has_house &&
+                          second.baseline()->has_house &&
+                          first.baseline()->house.revision == house_result->house_revision &&
+                          second.baseline()->house.revision == house_result->house_revision;
+    }
+    CHECK(house_result.has_value());
+    CHECK(house_result->code == acnet::ResultCode::Ok);
+    CHECK(house_converged);
+    CHECK(first.baseline()->house.initialized);
+    CHECK(second.baseline()->house.initialized);
+    CHECK(second.baseline()->house.main_light_on);
+    CHECK(second.baseline()->house.music_tracks[0] == 37);
+    CHECK(second.baseline()->house.furniture_switches[0] == 5);
+    CHECK(second.baseline()->house.furniture.at({3, 4, 0, 0}).item == 0x1100);
+    CHECK(second.baseline()->house.furniture.at({3, 4, 0, 0}).condition == 1);
+
     const std::int64_t before_exit_time = first.estimated_town_time(transaction_now);
     transfer_both(200, 1);
     CHECK(first.state() == acnet::ClientConnectionState::Connected);
     CHECK(second.state() == acnet::ClientConnectionState::Connected);
     CHECK(first.estimated_town_time(transaction_now) >= before_exit_time);
+    CHECK(first.occupied_house_mask() == 0);
+    CHECK(second.occupied_house_mask() == 0);
 
     const auto transaction_origin = server.player_transform(first_config.account);
     CHECK(transaction_origin.has_value());
@@ -2145,21 +2388,9 @@ void canonical_town_bootstrap_survives_clients_and_restart() {
         CHECK(first_server.step(++now, wall, error));
     CHECK(first_server.shutdown(error));
 
-    // Simulate an upgrade from the v2 state format, which had no explicit
-    // canonical-world flag.  A valid legacy checkpoint must remain initialized
-    // or the next resident could replace the existing town.
-    {
-        acserver::PersistenceStore legacy_store(server_config.data_directory);
-        CHECK(legacy_store.initialize(error));
-        auto checkpoint = legacy_store.load_latest_checkpoint(error);
-        CHECK(checkpoint.has_value());
-        CHECK(checkpoint->payload.size() >= 8);
-        checkpoint->payload[4] = 0;
-        checkpoint->payload[5] = 2;
-        checkpoint->payload[6] = 0;
-        checkpoint->payload[7] = 0;
-        CHECK(legacy_store.write_checkpoint(checkpoint->sequence, checkpoint->payload, error));
-    }
+    /* Restart from the current state format. Older v1-v3 checkpoints remain
+     * accepted by the decoder, but changing only a v4 header to claim v2 is
+     * not a valid legacy fixture because v4 adds bounded house-state fields. */
 
     acserver::TownRuntime restarted(server_config);
     CHECK(restarted.initialize(wall + 30, error));

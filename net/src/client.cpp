@@ -78,6 +78,9 @@ void ClientRuntime::stop(std::uint64_t now_ms) {
     }
     socket_.close();
     remotes_.clear();
+    occupied_house_mask_ = 0;
+    town_population_ = 0;
+    town_capacity_ = 1;
     session_ = 0;
     local_entity_ = 0;
     has_authoritative_local_ = false;
@@ -244,6 +247,7 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
     TransformSnapshot snapshot;
     if (!decode(packet.payload, snapshot)) return false;
     latest_server_tick_ = snapshot.server_tick;
+    occupied_house_mask_ = snapshot.occupied_house_mask;
     server_tick_received_ms_ = now_ms;
     for (const PlayerSnapshot& player : snapshot.players) {
         if (player.account == config_.account) {
@@ -262,11 +266,14 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
         if (remote.zone != 0 && remote.zone != player.zone) remote.history.clear();
         remote.zone = player.zone;
         remote.appearance = player.appearance;
+        remote.transition_phase = player.transition_phase;
+        remote.transition_door = player.transition_door;
+        remote.transition_expires_tick = player.transition_expires_tick;
         remote.last_tick = snapshot.server_tick;
         remote.history.push(snapshot.server_tick, player.transform);
     }
     for (auto it = remotes_.begin(); it != remotes_.end();) {
-        if (snapshot.server_tick - it->second.last_tick > config_.simulation_rate * 5U) {
+        if (snapshot.server_tick - it->second.last_tick > config_.simulation_rate / 2U) {
             it = remotes_.erase(it);
         } else {
             ++it;
@@ -300,6 +307,9 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                 return false;
             }
             baseline_revision_ = baseline_.revision;
+            occupied_house_mask_ = baseline_.occupied_house_mask;
+            town_population_ = baseline_.town_population;
+            town_capacity_ = baseline_.town_capacity;
             baseline_received_ms_ = now_ms;
             has_baseline_ = true;
             latest_server_tick_ = baseline_.server_tick;
@@ -329,6 +339,19 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         [&](const auto& entry) { return entry.first == tile.address; });
                     if (found != baseline_.tiles.end()) found->second = tile.state;
                     else if (tile.address.zone == baseline_.zone) baseline_.tiles.emplace_back(tile.address, tile.state);
+                }
+                if (delta.kind == ResourceKind::Town) {
+                    TownOccupancy occupancy;
+                    if (!decode_town_delta(delta.payload, occupancy)) {
+                        error = "malformed town occupancy delta";
+                        return false;
+                    }
+                    town_population_ = occupancy.population;
+                    town_capacity_ = occupancy.capacity;
+                    if (has_baseline_) {
+                        baseline_.town_population = occupancy.population;
+                        baseline_.town_capacity = occupancy.capacity;
+                    }
                 }
                 if (delta.revision > baseline_revision_) baseline_revision_ = delta.revision;
             }
@@ -382,6 +405,9 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     else slot.item = furniture_result_->item;
                 }
             }
+            break;
+        case MessageType::HouseUpdateResult:
+            if (!decode(packet.payload, house_update_result_.emplace())) return false;
             break;
         case MessageType::EncounterResult:
             if (!decode(packet.payload, encounter_result_.emplace())) return false;
@@ -600,6 +626,13 @@ bool ClientRuntime::request(FurnitureOperation value, std::uint64_t now_ms, std:
     return send_payload(MessageType::FurnitureRequest, Channel::Transactions, payload, now_ms, error);
 }
 
+bool ClientRuntime::request(HouseUpdate value, std::uint64_t now_ms, std::string& error) {
+    value.account = config_.account;
+    std::vector<std::uint8_t> payload;
+    if (!encode(value, payload)) { error = "failed to encode house update"; return false; }
+    return send_payload(MessageType::HouseUpdate, Channel::Bulk, payload, now_ms, error);
+}
+
 bool ClientRuntime::request(EncounterRequest value, std::uint64_t now_ms, std::string& error) {
     value.account = config_.account;
     std::vector<std::uint8_t> payload;
@@ -625,6 +658,9 @@ std::optional<TransferOffer> ClientRuntime::take_transfer_offer() {
 std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
     auto result = std::move(furniture_result_); furniture_result_.reset(); return result;
 }
+std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
+    auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
 std::optional<EncounterResult> ClientRuntime::take_encounter_result() {
     auto result = std::move(encounter_result_); encounter_result_.reset(); return result;
 }
@@ -637,7 +673,8 @@ std::vector<RemotePresentation> ClientRuntime::remote_players() const {
         const auto sampled = item.second.history.sample(render_tick, 2.0, 1.0 / config_.simulation_rate);
         if (!sampled.has_value()) continue;
         output.push_back({item.second.entity, item.second.account, item.second.zone, *sampled,
-                          item.second.appearance});
+                          item.second.appearance, item.second.transition_phase,
+                          item.second.transition_door, item.second.transition_expires_tick});
     }
     std::sort(output.begin(), output.end(), [](const RemotePresentation& a, const RemotePresentation& b) {
         return a.account < b.account;

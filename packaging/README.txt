@@ -25,4 +25,8 @@ The server stores its journal, SQLite database, checkpoints, and GCI under
 towns\default\. Back up that directory while the server is stopped, or use
 AnimalCrossingServer.exe --data towns\default --checkpoint-now first.
 
+Players in the same resident house share its furniture layout, switches,
+lights, and music. Occupied houses light up outside, and other players use the
+original house-door animation when arriving or leaving.
+
 Never publish the invitation key, town data, GCI files, or disc image.
