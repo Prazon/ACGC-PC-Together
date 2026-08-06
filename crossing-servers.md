@@ -1,8 +1,9 @@
 # Crossing Servers
 
-This fork includes an authoritative, persistent Animal Crossing town server.
-The server commits all persistent and contested state; clients send inputs and
-semantic requests, never results.
+This fork includes a persistent Animal Crossing town server. The original game
+client owns movement/collision and sends bounded transforms; the server commits
+all persistent and contested state, and clients send semantic requests rather
+than persistent outcomes.
 
 ## Start a Windows town
 
@@ -21,8 +22,8 @@ AnimalCrossing.exe
 
 Use a different stable nonzero account ID for every player. The first four
 resident accounts map to the original save slots; later accounts are visitors.
-The server owns movement, inventory/economy, foreground changes, tools/catches,
-NPC leases, zones/houses, clock/weather, and persistence.
+The server relays movement and owns inventory/economy, foreground changes,
+tools/catches, NPC leases, zones/houses, clock/weather, and persistence.
 
 ## Operate and verify
 

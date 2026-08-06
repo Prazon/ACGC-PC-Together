@@ -1322,12 +1322,12 @@ extern int mPlib_get_player_actor_request_main_index(GAME* game) {
 extern cKF_Skeleton_R_c cKF_bs_r_boy_1;
 extern cKF_Skeleton_R_c cKF_bs_r_grl_1;
 
+extern cKF_Skeleton_R_c* mPlib_get_player_mdl_for_gender(int gender) {
+    return gender == mPr_SEX_FEMALE ? &cKF_bs_r_grl_1 : &cKF_bs_r_boy_1;
+}
+
 extern cKF_Skeleton_R_c* mPlib_get_player_mdl_p(void) {
-    if (Now_Private->gender == mPr_SEX_MALE) {
-        return &cKF_bs_r_boy_1;
-    } else {
-        return &cKF_bs_r_grl_1;
-    }
+    return mPlib_get_player_mdl_for_gender(Now_Private->gender);
 }
 
 extern s16 mPlib_get_player_Object_Bank(void) {
@@ -1378,6 +1378,27 @@ extern void mPlib_Load_PlayerTexAndPallet(void* tex_p, void* pal_p, int idx) {
         DCStoreRangeNoSync(tex_p, mNW_DESIGN_TEX_SIZE);
         DCStoreRangeNoSync(pal_p, mNW_PALETTE_SIZE);
     }
+}
+
+extern int mPlib_Load_PlayerFaceTexAndPallet(void* tex_p, void* pal_p, int gender, int face) {
+    u32 face_rom_p;
+
+    if (tex_p == NULL || pal_p == NULL ||
+        (gender != mPr_SEX_MALE && gender != mPr_SEX_FEMALE) ||
+        face < 0 || face >= mPr_FACE_TYPE_NUM) return FALSE;
+
+    /* Remote residents use their normal, non-swollen face variant. Each face
+     * resource stores 0xE00 bytes of eye/mouth textures followed by its
+     * 16-entry palette. */
+    face_rom_p = mPlib_Get_UseFaceTexRom_p_common(gender, face, FALSE, FALSE);
+    _JW_GetResourceAram(face_rom_p, (u8*)tex_p, 0xE00);
+    _JW_GetResourceAram(face_rom_p + 0xE00, (u8*)pal_p, mNW_PALETTE_SIZE);
+#ifdef TARGET_PC
+    mPlib_ByteSwapPlayerPalette((u16*)pal_p);
+#endif
+    DCStoreRangeNoSync(tex_p, 0xE00);
+    DCStoreRangeNoSync(pal_p, mNW_PALETTE_SIZE);
+    return TRUE;
 }
 
 static mPlayer_change_data_from_submenu_c change_data_from_submenu;

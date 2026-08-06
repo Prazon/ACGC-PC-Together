@@ -18,6 +18,7 @@ typedef struct ac_net_remote_player_s {
     u8 face;
     u16 clothing;
     u16 equipped_item;
+    void* render_data;
 } AC_NET_REMOTE_PLAYER;
 
 extern ACTOR_PROFILE Net_Remote_Player_Profile;

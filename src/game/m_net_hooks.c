@@ -24,12 +24,22 @@ static u32 last_world_revision = 0;
 static u32 last_inventory_revision = 0;
 static u32 pending_destination_zone = 0;
 static int zone_transfer_phase = 0;
+static int zone_retry_frames = 0;
 static int gameplay_ready_frames = 0;
 static int gameplay_ready = FALSE;
 static int gameplay_ready_reported = FALSE;
 static int quickstart_enabled = FALSE;
 static int quickstart_gender = mPr_SEX_MALE;
 static u8 quickstart_name[PLAYER_NAME_LEN];
+
+static u32 Net_PlayerRoomZone(void) {
+    mActor_name_t field_id = mFI_GetFieldId();
+    mActor_name_t owner;
+    if (mFI_IS_PLAYER_ROOM(field_id)) return 100 + mFI_GET_PLAYER_ROOM_NO(field_id);
+    owner = Common_Get(house_owner_name);
+    if (owner < PLAYER_NUM) return 100 + owner;
+    return 100 + Common_Get(player_no);
+}
 
 static u32 Net_SceneZone(int scene) {
     if (scene == SCENE_FG) return 1;
@@ -39,7 +49,10 @@ static u32 Net_SceneZone(int scene) {
     if (mSc_IS_SCENE_MUSEUM_ROOM(scene)) return 4;
     if (scene == SCENE_NEEDLEWORK) return 5;
     if (scene == SCENE_POLICE_BOX) return 6;
-    if (mSc_IS_SCENE_PLAYER_ROOM(scene)) return 100 + Common_Get(player_no);
+    /* A room scene identifies its size, not its owner. The owner lives in the
+     * field id/house_owner_name. Using the local resident slot placed two
+     * visitors to the same physical house in different network zones. */
+    if (mSc_IS_SCENE_PLAYER_ROOM(scene)) return Net_PlayerRoomZone();
     return 0;
 }
 
@@ -89,19 +102,55 @@ static void Net_UpdateZoneTransfer(void) {
     if (zone_transfer_phase == 0) return;
     if (!acnet_client_take_transfer_offer(&offer)) return;
     if (offer.result_code != 0 || offer.destination_zone != pending_destination_zone) {
-        acnet_client_stop();
+        extern int g_pc_verbose;
+        if (g_pc_verbose) {
+            printf("[NET] zone transfer rejected result=%u source=%u destination=%u expected=%u; will retry\n",
+                   offer.result_code,
+                   offer.source_zone,
+                   offer.destination_zone,
+                   pending_destination_zone);
+            fflush(stdout);
+        }
         pending_destination_zone = 0;
         zone_transfer_phase = 0;
+        zone_retry_frames = 30;
         return;
     }
     if (zone_transfer_phase == 1) {
         if (!acnet_client_zone_ready(offer.token_high, offer.token_low)) {
-            acnet_client_stop();
             pending_destination_zone = 0;
             zone_transfer_phase = 0;
+            zone_retry_frames = 30;
         } else {
             zone_transfer_phase = 2;
         }
+    }
+}
+
+static void Net_EnsureSceneZone(GAME_PLAY* play) {
+    u32 source;
+    u32 destination;
+    u32 door;
+    if (zone_retry_frames > 0) {
+        zone_retry_frames--;
+        return;
+    }
+    if (play == NULL || !Net_IsConnected() || zone_transfer_phase != 0) return;
+    source = acnet_client_baseline_zone();
+    destination = Net_SceneZone(play->scene_id);
+    if (source == 0 || destination == 0 || source == destination) return;
+    door = Net_DoorForZones(source, destination);
+    if (door != 0 && acnet_client_request_zone_transfer(door)) {
+        extern int g_pc_verbose;
+        pending_destination_zone = destination;
+        zone_transfer_phase = 1;
+        if (g_pc_verbose) {
+            printf("[NET] reconciling scene zone source=%u destination=%u door=%u\n",
+                   source, destination, door);
+            fflush(stdout);
+        }
+    } else {
+        zone_retry_frames = 30;
     }
 }
 
@@ -172,11 +221,13 @@ void Net_RandomizeInitialAppearance(void) {
     seed = acnet_client_town_seed();
 
     /* A stable town/slot roll gives the four resident slots distinct starter
-     * faces while keeping a character unchanged across reconnects. */
+     * faces and outfits while keeping a character unchanged across reconnects.
+     * The 61-shirt stride is coprime with the 255 stock designs, so the four
+     * resident slots cannot collide within one town. */
     face_roll = (seed ^ (seed >> 8) ^ (seed >> 16)) + slot * 5U;
-    cloth_roll = ((seed >> 3) ^ (seed >> 13) ^ (seed >> 23)) + slot * 3U + face_roll;
+    cloth_roll = ((seed >> 3) ^ (seed >> 13) ^ (seed >> 23)) + slot * 61U;
     Now_Private->face = (s8)(face_roll & (mPr_FACE_TYPE_NUM - 1));
-    clothing = ITM_CLOTH000 + (Now_Private->gender == mPr_SEX_FEMALE ? 8 : 0) + (cloth_roll & 7U);
+    clothing = ITM_CLOTH000 + cloth_roll % CLOTH_NUM;
     mPlib_change_player_cloth_info_lv2(Now_Private, clothing);
 }
 
@@ -558,6 +609,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
     if (play == NULL) return;
     acnet_client_poll();
     Net_UpdateZoneTransfer();
+    Net_EnsureSceneZone(play);
     status = (int)acnet_client_status();
     if (status != last_status) {
         extern int g_pc_verbose;

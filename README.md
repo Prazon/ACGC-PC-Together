@@ -143,12 +143,13 @@ SDL2 game controllers are supported with automatic hotplug detection. Button map
 
 ## Dedicated towns
 
-The build also produces `AnimalCrossingServer`. The server is authoritative
-for movement, inventories, ground state, tools/catches, shops, trades, NPC
+The build also produces `AnimalCrossingServer`. The original game client owns
+movement and collision, while the server relays bounded transforms and remains
+authoritative for inventories, ground state, tools/catches, shops, trades, NPC
 leases, zones, housing, time/weather, mail, museum state, and persistence.
 The first online resident establishes the server's deterministic town; later
 players see it as an existing town. Online character creation keeps player
-name/gender, gives a stable randomized face/shirt and assigned house, and skips
+name/gender, gives a randomized face/distinct starter shirt and assigned house, and skips
 local town naming, clock correction, and Tom Nook's initial job sequence.
 
 Run `make check` for the automated host suite, or see

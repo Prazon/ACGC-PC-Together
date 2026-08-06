@@ -40,11 +40,13 @@ extern PLAYER_ACTOR* get_player_actor_withoutCheck(GAME_PLAY* play);
 extern int mPlib_get_player_actor_main_index(GAME* game);
 extern int mPlib_get_player_actor_request_main_index(GAME* game);
 extern cKF_Skeleton_R_c* mPlib_get_player_mdl_p(void);
+extern cKF_Skeleton_R_c* mPlib_get_player_mdl_for_gender(int gender);
 extern s16 mPlib_get_player_Object_Bank(void);
 extern void mPlib_DMA_player_Part_Table(s8* part_table_p, int idx);
 extern void mPlib_change_player_cloth_info(mPr_cloth_c* cloth_p, mActor_name_t item);
 extern void mPlib_change_player_cloth_info_lv2(Private_c* priv, mActor_name_t item);
 extern void mPlib_Load_PlayerTexAndPallet(void* tex_p, void* pal_p, int idx);
+extern int mPlib_Load_PlayerFaceTexAndPallet(void* tex_p, void* pal_p, int gender, int face);
 extern mPlayer_change_data_from_submenu_c* mPlib_Get_change_data_from_submenu_p(void);
 extern void mPlib_Clear_change_data_from_submenu(void);
 extern void mPlib_request_main_give_from_submenu(mActor_name_t item, int after_mode, int present_flag,

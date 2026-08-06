@@ -3,10 +3,17 @@
 #ifdef NETCODE_ENABLED
 
 #include "acnet/c_api.h"
+#include "c_keyframe.h"
+#include "m_malloc.h"
 #include "m_name_table.h"
+#include "m_needlework.h"
+#include "m_player.h"
+#include "m_player_lib.h"
+#include "m_private.h"
 #include "m_rcp.h"
 #include "sys_matrix.h"
 
+#include <math.h>
 #include <string.h>
 
 static void Net_Remote_Player_ct(ACTOR* actor, GAME* game);
@@ -14,58 +21,59 @@ static void Net_Remote_Player_dt(ACTOR* actor, GAME* game);
 static void Net_Remote_Player_move(ACTOR* actor, GAME* game);
 static void Net_Remote_Player_draw(ACTOR* actor, GAME* game);
 
-/* Presentation-only stand-in. It deliberately has no PLAYER_ACTOR state,
- * controller, camera, inventory, collision, save callback, or world mutation
- * path. The shape is temporary but makes network presence visible without
- * reusing the single-player profile. */
-static Vtx net_remote_vertices[] ATTRIBUTE_ALIGN(32) = {
-    {{ {-1200,    0, -800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1200,    0, -800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1200, 2700, -800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1200, 2700, -800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1200,    0,  800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1200,    0,  800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1200, 2700,  800}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1200, 2700,  800}, 0, {0, 0}, {255, 255, 255, 255} }},
+/* A remote resident is presentation-only: it has no controller, camera,
+ * inventory callbacks, collision, or save ownership. It does, however, use
+ * the original player skeleton and resident-specific face/clothing resources
+ * so another client appears as their real character instead of a proxy mesh. */
+typedef struct net_remote_render_data_s {
+    cKF_SkeletonInfo_R_c keyframe;
+    s_xyz joint_data[mPlayer_JOINT_NUM + 1];
+    s_xyz morph_data[mPlayer_JOINT_NUM + 1];
+    Mtx work_mtx[2][13] ATTRIBUTE_ALIGN(32);
+    u8 clothing_texture[mNW_DESIGN_TEX_SIZE] ATTRIBUTE_ALIGN(32);
+    u16 clothing_palette[mNW_PALETTE_SIZE / sizeof(u16)] ATTRIBUTE_ALIGN(32);
+    u8 face_texture[0xE00] ATTRIBUTE_ALIGN(32);
+    u16 face_palette[mNW_PALETTE_SIZE / sizeof(u16)] ATTRIBUTE_ALIGN(32);
+    u8 loaded_gender;
+    u8 loaded_face;
+    u16 loaded_clothing;
+    s8 animation_mode;
+    u8 initialized;
+} NET_REMOTE_RENDER_DATA;
+
+enum {
+    NET_REMOTE_ANIM_WAIT,
+    NET_REMOTE_ANIM_WALK
 };
 
-static Vtx net_remote_head_vertices[] ATTRIBUTE_ALIGN(32) = {
-    {{ {-1050, 2600, -900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1050, 2600, -900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1050, 4500, -900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1050, 4500, -900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1050, 2600,  900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1050, 2600,  900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ { 1050, 4500,  900}, 0, {0, 0}, {255, 255, 255, 255} }},
-    {{ {-1050, 4500,  900}, 0, {0, 0}, {255, 255, 255, 255} }},
-};
+static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote) {
+    NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
+    mPr_cloth_c cloth;
+    int gender;
+    int face;
 
-static Gfx net_remote_model[] ATTRIBUTE_ALIGN(32) = {
-    gsDPPipeSync(),
-    gsDPSetRenderMode(G_RM_FOG_SHADE_A, G_RM_AA_ZB_OPA_SURF2),
-    gsDPSetCombineMode(G_CC_PRIMITIVE, G_CC_PRIMITIVE),
-    gsSPClearGeometryMode(G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR),
-    gsSPVertex(net_remote_vertices, 8, 0),
-    gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
-    gsSP2Triangles(5, 4, 7, 0, 5, 7, 6, 0),
-    gsSP2Triangles(4, 0, 3, 0, 4, 3, 7, 0),
-    gsSP2Triangles(1, 5, 6, 0, 1, 6, 2, 0),
-    gsSP2Triangles(3, 2, 6, 0, 3, 6, 7, 0),
-    gsSP2Triangles(4, 5, 1, 0, 4, 1, 0, 0),
-    gsSPSetGeometryMode(G_LIGHTING),
-    gsSPEndDisplayList(),
-};
+    if (render == NULL) return FALSE;
+    gender = remote->gender == mPr_SEX_FEMALE ? mPr_SEX_FEMALE : mPr_SEX_MALE;
+    face = remote->face < mPr_FACE_TYPE_NUM ? remote->face : 0;
+    if (render->initialized && render->loaded_gender == gender &&
+        render->loaded_face == face && render->loaded_clothing == remote->clothing) return TRUE;
 
-static Gfx net_remote_head_model[] ATTRIBUTE_ALIGN(32) = {
-    gsSPVertex(net_remote_head_vertices, 8, 0),
-    gsSP2Triangles(0, 1, 2, 0, 0, 2, 3, 0),
-    gsSP2Triangles(5, 4, 7, 0, 5, 7, 6, 0),
-    gsSP2Triangles(4, 0, 3, 0, 4, 3, 7, 0),
-    gsSP2Triangles(1, 5, 6, 0, 1, 6, 2, 0),
-    gsSP2Triangles(3, 2, 6, 0, 3, 6, 7, 0),
-    gsSP2Triangles(4, 5, 1, 0, 4, 1, 0, 0),
-    gsSPEndDisplayList(),
-};
+    memset(&cloth, 0, sizeof(cloth));
+    mPlib_change_player_cloth_info(&cloth, remote->clothing);
+    mPlib_Load_PlayerTexAndPallet(render->clothing_texture, render->clothing_palette, cloth.idx);
+    if (!mPlib_Load_PlayerFaceTexAndPallet(render->face_texture, render->face_palette, gender, face)) return FALSE;
+
+    cKF_SkeletonInfo_R_dt(&render->keyframe);
+    cKF_SkeletonInfo_R_ct(&render->keyframe, mPlib_get_player_mdl_for_gender(gender), NULL,
+                          render->joint_data, render->morph_data);
+    cKF_SkeletonInfo_R_init_standard_repeat(&render->keyframe, mPlib_Get_Pointer_Animation(0), NULL);
+    render->loaded_gender = (u8)gender;
+    render->loaded_face = (u8)face;
+    render->loaded_clothing = remote->clothing;
+    render->animation_mode = NET_REMOTE_ANIM_WAIT;
+    render->initialized = TRUE;
+    return TRUE;
+}
 
 ACTOR_PROFILE Net_Remote_Player_Profile = {
     mAc_PROFILE_NET_REMOTE_PLAYER,
@@ -82,6 +90,8 @@ ACTOR_PROFILE Net_Remote_Player_Profile = {
 };
 
 static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
+    AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)actor;
+    NET_REMOTE_RENDER_DATA* render;
     (void)game;
     /* Server movement is intentionally horizontal-only. Project the remote
      * presentation actor onto this client's real foreground height instead
@@ -89,15 +99,31 @@ static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
     actor->world.position.y = mCoBG_GetBgY_OnlyCenter_FromWpos2(actor->world.position, 0.0f);
     actor->last_world_position.y = actor->world.position.y;
     actor->ground_y = actor->world.position.y;
+    actor->shape_info.ofs_y = 200.0f;
     actor->cull_width = 80.0f;
     actor->cull_height = 100.0f;
     actor->cull_distance = 1200.0f;
     actor->cull_radius = 80.0f;
+    render = (NET_REMOTE_RENDER_DATA*)zelda_malloc_align(sizeof(*render), 32);
+    if (render != NULL) {
+        memset(render, 0, sizeof(*render));
+        render->loaded_gender = 0xFF;
+        render->loaded_face = 0xFF;
+        render->loaded_clothing = 0xFFFF;
+        render->animation_mode = -1;
+    }
+    remote->render_data = render;
 }
 
 static void Net_Remote_Player_dt(ACTOR* actor, GAME* game) {
-    (void)actor;
+    AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)actor;
     (void)game;
+    if (remote->render_data != NULL) {
+        NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
+        if (render->initialized) cKF_SkeletonInfo_R_dt(&render->keyframe);
+        zelda_free(render);
+        remote->render_data = NULL;
+    }
 }
 
 static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
@@ -105,21 +131,43 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
     AcNetRemotePlayer states[16];
     size_t count;
     size_t i;
-    (void)game;
 
     count = acnet_client_remote_players(states, 16);
     for (i = 0; i < count; ++i) {
         if (states[i].account_id == remote->account_id && states[i].entity_id == remote->entity_id) {
+            const f32 target_x = states[i].transform.x;
+            const f32 target_z = states[i].transform.z;
+            const f32 delta_x = target_x - actor->world.position.x;
+            const f32 delta_z = target_z - actor->world.position.z;
+            const f32 distance_squared = delta_x * delta_x + delta_z * delta_z;
+            const f32 dt = game->graph != NULL ? (f32)game->graph->dt_num_60fps_frames : 1.0f;
+            const f32 blend = 1.0f - powf(0.60f, MAX(0.0f, dt));
+            const s16 yaw_delta = (s16)(states[i].transform.yaw - actor->shape_info.rotation.y);
+            s16 visual_yaw;
             xyz_t_move(&actor->last_world_position, &actor->world.position);
-            actor->world.position.x = states[i].transform.x;
-            actor->world.position.z = states[i].transform.z;
+            /* The portable client already buffers six simulation ticks and
+             * interpolates snapshot history. Its sample advances at snapshot
+             * cadence, though, so ease the presentation actor between those
+             * samples at the actual render rate. Large discontinuities are
+             * scene transitions/teleports and must not glide across a room. */
+            if (states[i].zone_id != remote->zone_id || distance_squared > 320.0f * 320.0f) {
+                actor->world.position.x = target_x;
+                actor->world.position.z = target_z;
+                visual_yaw = states[i].transform.yaw;
+            } else {
+                actor->world.position.x += delta_x * blend;
+                actor->world.position.z += delta_z * blend;
+                visual_yaw = ABS(yaw_delta) < 64
+                                 ? states[i].transform.yaw
+                                 : (s16)(actor->shape_info.rotation.y + (s16)(yaw_delta * blend));
+            }
             actor->world.position.y = mCoBG_GetBgY_OnlyCenter_FromWpos2(actor->world.position, 0.0f);
             actor->ground_y = actor->world.position.y;
             actor->position_speed.x = states[i].transform.velocity_x;
             actor->position_speed.y = 0.0f;
             actor->position_speed.z = states[i].transform.velocity_z;
-            actor->world.angle.y = states[i].transform.yaw;
-            actor->shape_info.rotation.y = states[i].transform.yaw;
+            actor->world.angle.y = visual_yaw;
+            actor->shape_info.rotation.y = visual_yaw;
             remote->zone_id = states[i].zone_id;
             memcpy(remote->name, states[i].name, sizeof(remote->name));
             remote->gender = states[i].gender;
@@ -127,6 +175,18 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
             remote->clothing = states[i].clothing;
             remote->equipped_item = states[i].equipped_item;
             remote->missing_frames = 0;
+            if (Net_Remote_Player_refresh_appearance(remote)) {
+                NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
+                const f32 speed_squared = actor->position_speed.x * actor->position_speed.x +
+                                          actor->position_speed.z * actor->position_speed.z;
+                const int animation = speed_squared > 1.0f ? NET_REMOTE_ANIM_WALK : NET_REMOTE_ANIM_WAIT;
+                if (render->animation_mode != animation) {
+                    cKF_SkeletonInfo_R_init_standard_repeat(
+                        &render->keyframe, mPlib_Get_Pointer_Animation(animation == NET_REMOTE_ANIM_WALK ? 1 : 0), NULL);
+                    render->animation_mode = (s8)animation;
+                }
+                cKF_SkeletonInfo_R_play(&render->keyframe);
+            }
             return;
         }
     }
@@ -135,29 +195,20 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
 
 static void Net_Remote_Player_draw(ACTOR* actor, GAME* game) {
     AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)actor;
+    NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
     GRAPH* graph = game->graph;
-    u32 hash = (u32)(remote->clothing != 0 ? remote->clothing :
-                     (remote->account_id ^ (remote->account_id >> 32)));
-    u8 red = (u8)(96 + (hash & 0x7F));
-    u8 green = (u8)(96 + ((hash >> 7) & 0x7F));
-    u8 blue = (u8)(96 + ((hash >> 14) & 0x7F));
 
-    Matrix_translate(actor->world.position.x, actor->world.position.y, actor->world.position.z, MTX_LOAD);
-    /* Vertices use the original model convention of hundredths of a world
-     * unit. Without this scale the stand-in is 100x larger than a player. */
-    Matrix_scale(0.01f, 0.01f, 0.01f, MTX_MULT);
-    Matrix_RotateY(actor->shape_info.rotation.y, MTX_MULT);
+    if (render == NULL || !render->initialized) return;
+    _texture_z_light_fog_prim(graph);
     OPEN_POLY_OPA_DISP(graph);
-    gDPPipeSync(POLY_OPA_DISP++);
-    gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, red, green, blue, 255);
-    gSPMatrix(POLY_OPA_DISP++, _Matrix_to_Mtx_new(graph), G_MTX_NOPUSH | G_MTX_LOAD | G_MTX_MODELVIEW);
-    gSPDisplayList(POLY_OPA_DISP++, net_remote_model);
-    gDPPipeSync(POLY_OPA_DISP++);
-    gDPSetPrimColor(POLY_OPA_DISP++, 0, 0,
-                    236 - remote->face * 3, 184 - remote->face * 2,
-                    142 - remote->face, 255);
-    gSPDisplayList(POLY_OPA_DISP++, net_remote_head_model);
+    gSPSegment(POLY_OPA_DISP++, ANIME_1_TXT_SEG, render->face_texture);
+    gSPSegment(POLY_OPA_DISP++, ANIME_2_TXT_SEG,
+               render->face_texture + mPlayer_EYE_TEX_NUM * 0x100);
+    gSPSegment(POLY_OPA_DISP++, ANIME_3_TXT_SEG, render->clothing_texture);
+    gSPSegment(POLY_OPA_DISP++, ANIME_4_TXT_SEG, render->clothing_palette);
+    gSPSegment(POLY_OPA_DISP++, ANIME_5_TXT_SEG, render->face_palette);
     CLOSE_POLY_OPA_DISP(graph);
+    cKF_Si3_draw_R_SV(game, &render->keyframe, render->work_mtx[game->frame_counter & 1], NULL, NULL, remote);
 }
 
 #endif

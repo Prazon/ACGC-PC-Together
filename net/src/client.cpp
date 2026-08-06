@@ -259,6 +259,7 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
             remote.account = player.account;
             remote.entity = player.entity;
         }
+        if (remote.zone != 0 && remote.zone != player.zone) remote.history.clear();
         remote.zone = player.zone;
         remote.appearance = player.appearance;
         remote.last_tick = snapshot.server_tick;

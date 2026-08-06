@@ -99,7 +99,6 @@ public:
 
 private:
     TransferToken random_token();
-    bool door_in_range(const PlayerView& player, const DoorDefinition& door) const;
 
     PlayerDirectory* players_;
     ZoneConfig config_;

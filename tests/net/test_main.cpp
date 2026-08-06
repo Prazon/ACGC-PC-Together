@@ -518,7 +518,10 @@ void packet_round_trip_and_corruption() {
     input.stick_y = 234;
     input.buttons = 7;
     input.action = 3;
-    input.diagnostic_position = {1.25F, -2.5F, 9.0F};
+    input.client_transform.position = {1.25F, -2.5F, 9.0F};
+    input.client_transform.velocity = {-4.0F, 0.5F, 8.0F};
+    input.client_transform.yaw = -1234;
+    input.client_transform.action = 9;
     std::vector<std::uint8_t> payload;
     CHECK(acnet::encode(input, payload));
 
@@ -541,7 +544,9 @@ void packet_round_trip_and_corruption() {
     CHECK(acnet::decode(decoded_packet.payload, decoded));
     CHECK(decoded.sequence == 99);
     CHECK(decoded.stick_x == -123);
-    CHECK(same_float(decoded.diagnostic_position.y, -2.5F));
+    CHECK(same_float(decoded.client_transform.position.y, -2.5F));
+    CHECK(same_float(decoded.client_transform.velocity.z, 8.0F));
+    CHECK(decoded.client_transform.yaw == -1234);
 
     packet[20] ^= 0x40;
     CHECK(!acnet::decode_packet(packet.data(), packet.size(), decoded_packet, error));
@@ -561,7 +566,7 @@ void protocol_rejects_truncated_and_nonfinite() {
     }
 
     acnet::InputCommand input;
-    input.diagnostic_position.x = std::numeric_limits<float>::infinity();
+    input.client_transform.position.x = std::numeric_limits<float>::infinity();
     CHECK(!acnet::encode(input, bytes));
 
     acnet::TransformSnapshot snapshot;
@@ -825,30 +830,37 @@ void multiplayer_player_queries_are_scoped() {
     CHECK(players.local() == nullptr);
 }
 
-void movement_is_authoritative_and_reconciles_under_latency() {
+void movement_is_client_authoritative_under_latency() {
     acnet::MovementConfig config;
     config.maximum_speed = 300.0F;
     config.acceleration = 1200.0F;
     config.friction = 1600.0F;
-    acnet::MovementSimulator server(config, [](acnet::ZoneId zone, const acnet::Vec3&, const acnet::Vec3& to) {
-        return zone == 1 && to.x < 5000.0F;
+    bool collision_validator_called = false;
+    acnet::MovementSimulator server(config, [&](acnet::ZoneId, const acnet::Vec3&, const acnet::Vec3&) {
+        collision_validator_called = true;
+        return false;
     });
     acnet::Transform initial;
     CHECK(server.add_player(1, 0x100000001ULL, 1, initial));
-    acnet::ClientPredictor client(config);
-    client.reset(initial);
 
     struct DelayedInput { int delivery_tick; acnet::InputCommand command; };
-    struct DelayedSnapshot { int delivery_tick; acnet::PlayerSnapshot snapshot; };
     std::deque<DelayedInput> outbound;
-    std::deque<DelayedSnapshot> inbound;
     constexpr int one_way_latency_ticks = 12; // 200 ms at 60 Hz
 
     for (int tick = 0; tick < 900; ++tick) {
         if (tick < 600) {
-            const std::int16_t stick = tick < 480 ? 26000 : 0;
-            acnet::InputCommand command = client.predict(stick, 0, 0, 1, server.current_tick());
-            command.diagnostic_position = {99999.0F, 99999.0F, 99999.0F};
+            acnet::InputCommand command;
+            command.sequence = static_cast<std::uint32_t>(tick + 1);
+            command.estimated_server_tick = server.current_tick();
+            command.stick_x = tick < 480 ? 26000 : 0;
+            command.client_transform.position = {
+                static_cast<float>(tick) * 1.5F,
+                37.0F,
+                -static_cast<float>(tick) * 0.75F,
+            };
+            command.client_transform.velocity = {90.0F, -3.0F, -45.0F};
+            command.client_transform.yaw = static_cast<std::int16_t>(-8192);
+            command.client_transform.action = 7;
             outbound.push_back({tick + one_way_latency_ticks, command});
         }
         while (!outbound.empty() && outbound.front().delivery_tick <= tick) {
@@ -856,22 +868,17 @@ void movement_is_authoritative_and_reconciles_under_latency() {
             outbound.pop_front();
         }
         server.tick();
-        if ((tick % 3) == 0) {
-            inbound.push_back({tick + one_way_latency_ticks, server.snapshot(1)});
-        }
-        while (!inbound.empty() && inbound.front().delivery_tick <= tick) {
-            CHECK(client.reconcile(inbound.front().snapshot.transform,
-                                   inbound.front().snapshot.acknowledged_input));
-            inbound.pop_front();
-        }
     }
     const acnet::MovementPlayer* authority = server.player(1);
     CHECK(authority != nullptr);
     CHECK(authority->last_processed_sequence == 600);
-    CHECK(authority->transform.position.x < 5000.0F);
-    CHECK(authority->transform.position.y == 0.0F); // submitted diagnostic coordinate was ignored
-    CHECK(std::fabs(client.transform().position.x - authority->transform.position.x) < 0.01F);
-    CHECK(client.pending_count() == 0);
+    CHECK(same_float(authority->transform.position.x, 599.0F * 1.5F));
+    CHECK(same_float(authority->transform.position.y, 37.0F));
+    CHECK(same_float(authority->transform.position.z, -599.0F * 0.75F));
+    CHECK(same_float(authority->transform.velocity.y, -3.0F));
+    CHECK(authority->transform.yaw == -8192);
+    CHECK(authority->transform.action == 7);
+    CHECK(!collision_validator_called);
 
     acnet::InputCommand duplicate;
     duplicate.sequence = 600;
@@ -1227,6 +1234,10 @@ void zone_handoffs_and_four_resident_housing_are_safe() {
     leave.destination_position = enter.source_position;
     CHECK(zones.add_door(leave));
 
+    /* Door animations and collision are owned by the original client. A
+     * stale/fallback server door coordinate must not disconnect a valid scene
+     * handoff from the correct source zone. */
+    players.by_account(1)->transform.position = {9000.0F, 0.0F, -9000.0F};
     const acnet::TransferOffer first_offer = zones.request_transfer(1, 1, 2);
     CHECK(first_offer.code == acnet::ResultCode::Ok);
     CHECK(first_offer.token.valid());
@@ -1662,7 +1673,9 @@ void real_runtime_serves_eight_moving_bots() {
         acnet::InputCommand input;
         input.sequence = 1;
         input.stick_x = 28000;
-        input.diagnostic_position = {99999.0F, 99999.0F, 99999.0F};
+        input.client_transform.position = {
+            100.0F + static_cast<float>(bot.account - 1000), 0.0F, 200.0F};
+        input.client_transform.velocity.x = 25.0F;
         std::vector<std::uint8_t> payload;
         CHECK(acnet::encode(input, payload));
         const acnet::PacketHeader header = bot.reliability.make_header(
@@ -1757,31 +1770,45 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(second.start(start, error));
 
     acnet::Transform first_local;
-    first_local.position = {20.0F, 37.0F, 20.0F};
+    first_local.position = {2200.0F, 37.0F, 1000.0F};
     first_local.velocity.y = -3.0F;
     acnet::Transform second_local = first_local;
+    second_local.position.x = 2240.0F;
     second_local.position.y = 53.0F;
     second_local.velocity.y = 4.0F;
     for (std::uint64_t frame = 0; frame < 240; ++frame) {
-        std::this_thread::yield();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         const std::uint64_t now = start + frame * 17;
         acnet::Transform corrected;
         bool has_correction = false;
+        first_local.position.x += 0.75F;
+        first_local.velocity.x = 45.0F;
+        first_local.yaw = 8192;
+        second_local.position.x -= 0.5F;
+        second_local.velocity.x = -30.0F;
+        second_local.yaw = -8192;
         CHECK(first.frame(now, 26000, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(!has_correction);
         if (has_correction) first_local = corrected;
         CHECK(second.frame(now, -26000, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
         CHECK(first.poll(now, error));
         CHECK(second.poll(now, error));
     }
     for (std::uint64_t frame = 240; frame < 300; ++frame) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         const std::uint64_t now = start + frame * 17;
         acnet::Transform corrected;
         bool has_correction = false;
+        first_local.velocity.x = 0.0F;
+        second_local.velocity.x = 0.0F;
         CHECK(first.frame(now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(!has_correction);
         if (has_correction) first_local = corrected;
         CHECK(second.frame(now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
         CHECK(first.poll(now, error));
@@ -1801,20 +1828,108 @@ void production_clients_connect_move_and_render_each_other() {
     }
     CHECK(first.local_entity() != 0);
     CHECK(second.local_entity() != 0);
-    const auto first_remotes = first.remote_players();
-    const auto second_remotes = second.remote_players();
+    std::vector<acnet::RemotePresentation> first_remotes;
+    std::vector<acnet::RemotePresentation> second_remotes;
+    std::uint64_t settle_now = start + 300 * 17;
+    bool movement_converged = false;
+    for (std::uint64_t i = 0; i < 200; ++i) {
+        first_remotes = first.remote_players();
+        second_remotes = second.remote_players();
+        movement_converged = first_remotes.size() == 1 && second_remotes.size() == 1 &&
+            std::fabs(first_remotes[0].transform.position.x - second_local.position.x) < 0.01F &&
+            std::fabs(second_remotes[0].transform.position.x - first_local.position.x) < 0.01F &&
+            first_remotes[0].transform.yaw == second_local.yaw &&
+            second_remotes[0].transform.yaw == first_local.yaw;
+        if (movement_converged) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        acnet::Transform corrected;
+        bool has_correction = false;
+        CHECK(first.frame(++settle_now, 0, 0, 0, 0, first_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, second_local, corrected, has_correction, error));
+        CHECK(!has_correction);
+        CHECK(server.step(settle_now, wall + 5, error));
+        CHECK(first.poll(settle_now, error));
+        CHECK(second.poll(settle_now, error));
+    }
+    CHECK(movement_converged);
     CHECK(first_remotes.size() == 1);
     CHECK(second_remotes.size() == 1);
     CHECK(first_remotes[0].account == second_config.account);
     CHECK(second_remotes[0].account == first_config.account);
+    CHECK(std::fabs(first_remotes[0].transform.position.x - second_local.position.x) < 0.01F);
+    CHECK(std::fabs(second_remotes[0].transform.position.x - first_local.position.x) < 0.01F);
+    CHECK(first_remotes[0].transform.yaw == second_local.yaw);
+    CHECK(second_remotes[0].transform.yaw == first_local.yaw);
     CHECK(first.packets_received() > 10);
     CHECK(second.packets_received() > 10);
     CHECK(first.baseline() != nullptr);
     CHECK(second.baseline() != nullptr);
-    const std::int64_t received_town_time = first.baseline()->town_unix_seconds;
-    CHECK(first.estimated_town_time(start + 7000) >= received_town_time + 2);
+    const std::int64_t estimated_town_time = first.estimated_town_time(start + 10000);
+    CHECK(estimated_town_time >= first.baseline()->town_unix_seconds);
+    CHECK(first.estimated_town_time(start + 12000) == estimated_town_time + 2);
     CHECK(first.baseline()->tiles.size() == 256);
     CHECK(first.baseline()->zone == 1);
+
+    std::uint64_t transaction_now = settle_now;
+    const auto transfer_both = [&](std::uint32_t door_id, acnet::ZoneId destination) {
+        acnet::ZoneTransferRequest request;
+        request.door_id = door_id;
+        CHECK(first.request(request, ++transaction_now, error));
+        CHECK(second.request(request, ++transaction_now, error));
+        std::optional<acnet::TransferOffer> first_offer;
+        std::optional<acnet::TransferOffer> second_offer;
+        for (std::uint64_t i = 0; i < 200 && (!first_offer.has_value() || !second_offer.has_value()); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(++transaction_now, wall + 5, error));
+            CHECK(first.poll(transaction_now, error));
+            CHECK(second.poll(transaction_now, error));
+            if (!first_offer.has_value()) first_offer = first.take_transfer_offer();
+            if (!second_offer.has_value()) second_offer = second.take_transfer_offer();
+        }
+        CHECK(first_offer.has_value());
+        CHECK(second_offer.has_value());
+        CHECK(first_offer->code == acnet::ResultCode::Ok);
+        CHECK(second_offer->code == acnet::ResultCode::Ok);
+        CHECK(first_offer->destination_zone == destination);
+        CHECK(second_offer->destination_zone == destination);
+        acnet::ZoneReadyRequest ready;
+        ready.token = first_offer->token;
+        CHECK(first.ready(ready, ++transaction_now, error));
+        ready.token = second_offer->token;
+        CHECK(second.ready(ready, ++transaction_now, error));
+
+        bool shared_zone_visible = false;
+        for (std::uint64_t i = 0; i < 300; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            CHECK(server.step(++transaction_now, wall + 5, error));
+            CHECK(first.poll(transaction_now, error));
+            CHECK(second.poll(transaction_now, error));
+            if (first.baseline() == nullptr || second.baseline() == nullptr ||
+                first.baseline()->zone != destination || second.baseline()->zone != destination) continue;
+            const auto first_zone_remotes = first.remote_players();
+            const auto second_zone_remotes = second.remote_players();
+            shared_zone_visible = first_zone_remotes.size() == 1 && second_zone_remotes.size() == 1 &&
+                                  first_zone_remotes[0].zone == destination &&
+                                  second_zone_remotes[0].zone == destination;
+            if (shared_zone_visible) break;
+        }
+        CHECK(shared_zone_visible);
+        (void)first.take_transfer_offer();  // Successful ZoneReady acknowledgement.
+        (void)second.take_transfer_offer();
+    };
+
+    const std::int64_t before_house_time = first.estimated_town_time(transaction_now);
+    transfer_both(100, 100);  // Both clients visit resident slot zero's house.
+    CHECK(first.state() == acnet::ClientConnectionState::Connected);
+    CHECK(second.state() == acnet::ClientConnectionState::Connected);
+    CHECK(first.estimated_town_time(transaction_now) >= before_house_time);
+    const std::int64_t before_exit_time = first.estimated_town_time(transaction_now);
+    transfer_both(200, 1);
+    CHECK(first.state() == acnet::ClientConnectionState::Connected);
+    CHECK(second.state() == acnet::ClientConnectionState::Connected);
+    CHECK(first.estimated_town_time(transaction_now) >= before_exit_time);
+
     const auto transaction_origin = server.player_transform(first_config.account);
     CHECK(transaction_origin.has_value());
     const std::int16_t transaction_x = static_cast<std::int16_t>(transaction_origin->position.x / 40.0F);
@@ -1825,7 +1940,6 @@ void production_clients_connect_move_and_render_each_other() {
     encounter.idempotency = {700, 701};
     encounter.expected_inventory_revision = 1;
     encounter.tool_slot = 0;
-    std::uint64_t transaction_now = start + 300 * 17;
     CHECK(first.request(encounter, transaction_now, error));
     std::optional<acnet::EncounterResult> encounter_result;
     for (std::uint64_t i = 0; i < 30 && !encounter_result.has_value(); ++i) {
@@ -2096,7 +2210,7 @@ int main() {
         {"selective reliability", selective_reliability_tracks_ack_windows},
         {"UDP eight-client handshake", udp_eight_client_handshake_smoke},
         {"multiplayer player queries", multiplayer_player_queries_are_scoped},
-        {"authoritative movement at 200ms", movement_is_authoritative_and_reconciles_under_latency},
+        {"client-authoritative movement at 200ms", movement_is_client_authoritative_under_latency},
         {"atomic world transactions", world_transactions_are_atomic_idempotent_and_conserved},
         {"economy and escrow trade", economy_and_trade_prevent_value_duplication},
         {"NPC conversation leases", npc_leases_scope_conversations_and_disconnects},

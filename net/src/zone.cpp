@@ -86,14 +86,6 @@ TransferToken ZoneCoordinator::random_token() {
     return token;
 }
 
-bool ZoneCoordinator::door_in_range(const PlayerView& player, const DoorDefinition& door) const {
-    if (player.zone != door.source_zone) return false;
-    const float dx = player.transform.position.x - door.source_position.x;
-    const float dy = player.transform.position.y - door.source_position.y;
-    const float dz = player.transform.position.z - door.source_position.z;
-    return dx * dx + dy * dy + dz * dz <= door.interaction_radius * door.interaction_radius;
-}
-
 TransferOffer ZoneCoordinator::request_transfer(AccountId account, std::uint32_t door_id, Tick tick) {
     TransferOffer result;
     result.account = account;
@@ -108,8 +100,13 @@ TransferOffer ZoneCoordinator::request_transfer(AccountId account, std::uint32_t
         return result;
     }
     const DoorDefinition& door = door_it->second;
-    if (!door_in_range(*player, door)) {
-        result.code = ResultCode::OutOfRange;
+    /* Scene transitions are client-authoritative, just like movement. The
+     * original game has already validated and begun the door animation when
+     * this request arrives. Generated building coordinates are not stable
+     * enough for a second server-side distance check; the source zone and
+     * registered door still constrain the handoff. */
+    if (player->zone != door.source_zone) {
+        result.code = ResultCode::InvalidState;
         return result;
     }
     ZoneState* destination = zone(door.destination_zone);
