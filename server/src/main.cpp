@@ -15,10 +15,14 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
 #else
 #include <unistd.h>
 #endif
@@ -100,6 +104,13 @@ std::string shorten(std::string value, std::size_t maximum) {
     return value;
 }
 
+/* The dashboard repaints four times a second, so its geometry has to be
+ * constant: a section that grows or shrinks by a row drags everything below it
+ * up and down between frames, which reads as flicker even when the repaint
+ * itself is atomic. Both variable-length sections are padded to these counts. */
+constexpr std::size_t kVisitorRows = 4;
+constexpr std::size_t kEventRows = 8;
+
 class OperatorConsole {
 public:
     OperatorConsole() : started_(std::chrono::steady_clock::now()) {
@@ -121,6 +132,22 @@ public:
         handle_ = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE,
                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
         available_ = handle_ != INVALID_HANDLE_VALUE;
+        /* Windows 10 1511 and every Windows Terminal understand the same escape
+         * sequences the POSIX path uses, and they repaint far more cleanly than
+         * the legacy console API. Fall back only when the mode cannot be set. */
+        if (available_) {
+            DWORD console_mode = 0;
+            if (GetConsoleMode(handle_, &console_mode) != FALSE)
+                vt_enabled_ =
+                    SetConsoleMode(handle_, console_mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING) != FALSE;
+            if (!vt_enabled_) {
+                CONSOLE_CURSOR_INFO cursor{};
+                if (GetConsoleCursorInfo(handle_, &cursor) != FALSE) {
+                    cursor.bVisible = FALSE;
+                    SetConsoleCursorInfo(handle_, &cursor);
+                }
+            }
+        }
 #else
         available_ = isatty(STDOUT_FILENO) != 0;
         separate_log_stream_ = !available_;
@@ -128,8 +155,21 @@ public:
     }
 
     ~OperatorConsole() {
+        /* Leave the cursor visible and below the last frame so a shell prompt
+         * does not land on top of the dashboard. */
 #ifdef _WIN32
+        if (available_ && !vt_enabled_) {
+            CONSOLE_CURSOR_INFO cursor{};
+            if (GetConsoleCursorInfo(handle_, &cursor) != FALSE) {
+                cursor.bVisible = TRUE;
+                SetConsoleCursorInfo(handle_, &cursor);
+            }
+        } else if (available_) {
+            write_console("\x1b[?25h\r\n");
+        }
         if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+#else
+        if (available_) write_console("\x1b[?25h\r\n");
 #endif
     }
 
@@ -175,15 +215,17 @@ public:
             }
         }
 
+        std::ostringstream visitors;
         std::size_t shown_visitors = 0;
         for (const auto& player : players) {
             if (player.resident || !player.connected) continue;
-            if (shown_visitors++ == 0) output << " CONNECTED VISITORS\n";
-            output << "      " << std::left << std::setw(20) << shorten(player.name, 20) << std::right
-                   << " account " << std::setw(8) << player.account << "  zone " << player.zone << "\n";
-            if (shown_visitors == 4) break;
+            visitors << "      " << std::left << std::setw(20) << shorten(player.name, 20) << std::right
+                     << " account " << std::setw(8) << player.account << "  zone " << player.zone << "\n";
+            if (++shown_visitors == kVisitorRows) break;
         }
-        if (shown_visitors == 0) output << " CONNECTED VISITORS  none\n";
+        output << (shown_visitors == 0 ? " CONNECTED VISITORS  none\n" : " CONNECTED VISITORS\n")
+               << visitors.str();
+        for (std::size_t i = shown_visitors; i < kVisitorRows; ++i) output << "\n";
 
         output << "--------------------------------------------------------------------------------\n"
                << " LIVE METRICS\n"
@@ -194,11 +236,16 @@ public:
                << "  | Hourly jobs " << metrics.hourly_jobs << "  | Daily jobs " << metrics.daily_jobs << "\n"
                << "--------------------------------------------------------------------------------\n"
                << " RECENT ACTIVITY (verbose log)\n";
-        const std::size_t begin = events.size() > 8 ? events.size() - 8 : 0;
+        const std::size_t begin = events.size() > kEventRows ? events.size() - kEventRows : 0;
         for (std::size_t i = begin; i < events.size(); ++i)
             output << "  [" << format_event_time(events[i].wall_unix_seconds) << "] "
                    << shorten(events[i].message, 66) << "\n";
-        if (events.empty()) output << "  No activity yet.\n";
+        std::size_t shown_events = events.size() - begin;
+        if (events.empty()) {
+            output << "  No activity yet.\n";
+            shown_events = 1;
+        }
+        for (std::size_t i = shown_events; i < kEventRows; ++i) output << "\n";
         output << "--------------------------------------------------------------------------------\n"
                << " Ctrl+C saves a checkpoint and shuts the town down safely.\n"
                << "================================================================================\n";
@@ -206,29 +253,104 @@ public:
     }
 
 private:
+    /* Repaint in place. Erasing first -- ED 2 on a terminal, FillConsoleOutput*
+     * on Windows -- lets the console present a blank screen before the new
+     * frame arrives, and at four refreshes a second that reads as flicker. Draw
+     * over the previous frame instead, erase only what it left behind, and emit
+     * the whole thing in one write so a half-drawn frame is never composited. */
     void write_screen(const std::string& contents) {
-#ifdef _WIN32
-        CONSOLE_SCREEN_BUFFER_INFO info{};
-        const COORD origin{0, 0};
-        if (GetConsoleScreenBufferInfo(handle_, &info)) {
-            const DWORD cells = static_cast<DWORD>(info.dwSize.X) * static_cast<DWORD>(info.dwSize.Y);
-            DWORD written = 0;
-            FillConsoleOutputCharacterA(handle_, ' ', cells, origin, &written);
-            FillConsoleOutputAttribute(handle_, info.wAttributes, cells, origin, &written);
-            SetConsoleCursorPosition(handle_, origin);
+        std::vector<std::string> lines;
+        for (std::size_t begin = 0; begin < contents.size();) {
+            const std::size_t end = contents.find('\n', begin);
+            if (end == std::string::npos) {
+                lines.push_back(contents.substr(begin));
+                break;
+            }
+            lines.push_back(contents.substr(begin, end - begin));
+            begin = end + 1;
         }
+#ifdef _WIN32
+        if (!vt_enabled_) {
+            write_screen_legacy(lines);
+            return;
+        }
+#endif
+        std::string frame;
+        frame.reserve(contents.size() + lines.size() * 5 + 32);
+        /* DECSET 2026 asks the terminal to buffer the repaint and present it as
+         * one update; terminals without it ignore the pair harmlessly. */
+        frame += "\x1b[?2026h\x1b[?25l";
+        if (first_frame_) frame += "\x1b[2J";
+        frame += "\x1b[H";
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            /* The separator precedes the row so the frame never ends on a
+             * newline -- a trailing one would scroll a full-height window. */
+            if (i != 0) frame += "\r\n";
+            frame += lines[i];
+            frame += "\x1b[K";
+        }
+        frame += "\x1b[J\x1b[?2026l";
+        write_console(frame);
+        first_frame_ = false;
+    }
+
+#ifdef _WIN32
+    /* Pre-VT conhost has no erase-to-end-of-line, so every row is padded to the
+     * window instead. Padding through the final column would wrap the cursor
+     * onto an extra row, so that column is only covered by the one-time wipe. */
+    void write_screen_legacy(const std::vector<std::string>& lines) {
+        CONSOLE_SCREEN_BUFFER_INFO info{};
+        if (GetConsoleScreenBufferInfo(handle_, &info) == FALSE) return;
+        const int columns = info.srWindow.Right - info.srWindow.Left + 1;
+        const std::size_t width = columns > 1 ? static_cast<std::size_t>(columns) - 1 : 1;
+        const COORD origin{0, 0};
+        if (first_frame_) {
+            const DWORD cells = static_cast<DWORD>(info.dwSize.X) * static_cast<DWORD>(info.dwSize.Y);
+            DWORD cleared = 0;
+            FillConsoleOutputCharacterA(handle_, ' ', cells, origin, &cleared);
+            FillConsoleOutputAttribute(handle_, info.wAttributes, cells, origin, &cleared);
+        }
+        std::string frame;
+        frame.reserve((width + 2) * (lines.size() + 1));
+        for (std::size_t i = 0; i < lines.size(); ++i) {
+            if (i != 0) frame += "\r\n";
+            std::string row = lines[i];
+            if (row.size() > width) row.resize(width);
+            row.append(width - row.size(), ' ');
+            frame += row;
+        }
+        /* Cover any rows a taller previous frame occupied. */
+        for (std::size_t i = lines.size(); i < previous_lines_; ++i) {
+            frame += "\r\n";
+            frame.append(width, ' ');
+        }
+        previous_lines_ = lines.size();
+        SetConsoleCursorPosition(handle_, origin);
+        write_console(frame);
+        first_frame_ = false;
+    }
+#endif
+
+    void write_console(const std::string& text) {
+#ifdef _WIN32
         DWORD written = 0;
-        WriteConsoleA(handle_, contents.data(), static_cast<DWORD>(contents.size()), &written, nullptr);
+        WriteConsoleA(handle_, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
 #else
-        std::cout << "\x1b[2J\x1b[H" << contents << std::flush;
+        /* One unformatted insertion, so the std::unitbuf set in main() flushes
+         * exactly once. Streaming the frame in pieces would hand the terminal
+         * the erase and the content as separate writes. */
+        std::cout.write(text.data(), static_cast<std::streamsize>(text.size()));
 #endif
     }
 
     bool available_ = false;
     bool separate_log_stream_ = false;
+    bool first_frame_ = true;
     std::chrono::steady_clock::time_point started_;
 #ifdef _WIN32
     HANDLE handle_ = INVALID_HANDLE_VALUE;
+    bool vt_enabled_ = false;
+    std::size_t previous_lines_ = 0;
 #endif
 };
 
