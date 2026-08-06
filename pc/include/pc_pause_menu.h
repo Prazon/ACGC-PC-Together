@@ -1,4 +1,5 @@
-/* In-game system menu. It pauses offline play; connected towns stay live. */
+/* In-game system menu. It never stops the simulation - the world keeps
+ * moving and rendering behind it - it only suppresses controller input. */
 #ifndef PC_PAUSE_MENU_H
 #define PC_PAUSE_MENU_H
 

@@ -558,14 +558,10 @@ static void Game_play_move(GAME* game) {
     GAME_PLAY* play = (GAME_PLAY*)game;
     int pause;
 
-#ifdef TARGET_PC
-    {
-        extern int g_pc_paused;
-        /* The PC overlay remains interactive online, but only offline play
-         * actually stops. Input is still suppressed by padmgr while open. */
-        if (g_pc_paused && !Net_IsConnected()) return;
-    }
-#endif
+    /* The PC overlay (pc_pause_menu) never stops the simulation, online or
+     * offline: the world keeps moving and rendering behind it. Input is
+     * suppressed by padmgr while the overlay is open, so the local player
+     * idles instead of acting on menu presses. */
 
     Net_PreSimulation(play);
 
