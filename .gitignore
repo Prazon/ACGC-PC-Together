@@ -57,3 +57,5 @@ temp/
 include/PR/
 include/gcc/
 include/compiler/gcc/stdlib.h
+bash.exe.stackdump
+*.iso
