@@ -75,6 +75,9 @@ typedef struct net_remote_render_data_s {
     u8 loaded_looping;
     u8 loaded_reversed;
     u8 animation_loaded;
+    /* Last main index reported by the --verbose animation trace, so it prints
+     * once per state change rather than once per frame. */
+    u16 logged_action;
     /* Which tool is built into item_keyframe, so a repeat of the same state
      * does not rebuild it every frame either. */
     s16 loaded_item_shape;
@@ -261,6 +264,22 @@ static void Net_Remote_Player_update_animation_speed(AC_NET_REMOTE_PLAYER* remot
 
     render->keyframe0.frame_control.speed = sp;
     render->keyframe1.frame_control.speed = sp;
+
+    /* --verbose prints one line per state change, which is what to compare
+     * against the local player: a full-stick walk should report speed 4.875 and
+     * anim 0.484, a full-stick dash 7.5 and 0.600. A remote reporting anim 1.000
+     * while walking means the action never arrived and the switch fell through
+     * to its default. */
+    {
+        extern int g_pc_verbose;
+        if (g_pc_verbose && render->logged_action != remote->action) {
+            render->logged_action = remote->action;
+            printf("[NET] remote anim account=%llu action=%u speed=%.3f anim=%.3f body=%u\n",
+                   (unsigned long long)remote->account_id, (unsigned)remote->action,
+                   (double)((ACTOR*)remote)->speed, (double)sp, (unsigned)render->loaded_body);
+            fflush(stdout);
+        }
+    }
 }
 
 /* Which item animation belongs to a replicated mPlayer_ITEM_MAIN_* state.
@@ -466,8 +485,12 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
     was_balloon = render->item_skeleton_loaded && mPlayer_ITEM_IS_BALLOON(render->loaded_item_kind);
     cKF_SkeletonInfo_R_ct(&render->item_keyframe, (cKF_Skeleton_R_c*)mPlib_Get_Item_DataPointer(shape), NULL,
                           render->item_joint_data, render->item_morph_data);
+    /* 0.5 is the item animation speed every Player_actor_LoadOrDestruct_Item
+     * call site passes -- take-out, put-in, and all thirteen SetupItem_Base2
+     * swaps. This used to be 1.0, which ran every remote tool animation at
+     * exactly double rate. */
     cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
-        &render->item_keyframe, (cKF_Animation_R_c*)mPlib_Get_Item_DataPointer(anim), NULL, 1.0f, 1.0f, 0.0f, mode);
+        &render->item_keyframe, (cKF_Animation_R_c*)mPlib_Get_Item_DataPointer(anim), NULL, 1.0f, 0.5f, 0.0f, mode);
     render->loaded_item_shape = (s16)shape;
     render->loaded_item_anim = (s16)anim;
     render->loaded_item_kind = (s8)kind;
