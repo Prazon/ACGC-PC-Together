@@ -38,6 +38,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: msys2/setup-msys2@v2
+        id: msys2
         with:
           msystem: MINGW64
           update: true
@@ -47,9 +48,15 @@ jobs:
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-SDL2
             mingw-w64-x86_64-sqlite3
+            file
+      # build_pc.bat defaults MINGW64 to C:\msys64\mingw64, which is where a
+      # developer's own MSYS2 lives but not where setup-msys2 puts it on a
+      # runner. Both of the batch file's optional arguments are passed so the
+      # runner uses the toolchain that was just installed; without the second
+      # one the script cannot find cmake.exe and exits before configuring.
       - name: Build 64-bit game with native CMake and Ninja
         shell: cmd
-        run: build_pc.bat
+        run: build_pc.bat "%CD%\pc\build64" "${{ steps.msys2.outputs.msys2-location }}\mingw64"
       - name: Verify PE32+ output
         shell: msys2 {0}
         run: |
