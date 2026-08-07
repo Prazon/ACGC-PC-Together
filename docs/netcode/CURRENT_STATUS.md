@@ -757,15 +757,16 @@ Verification:
 - With the fix reverted the new test fails with exactly the reported symptom
   (`gender=0 face=0 clothing_index=0`). With the fix, 40/40.
 
-Known issue, pre-existing and unrelated: `production client loopback` is flaky
-at `CHECK(actions_converged)` (`test_main.cpp:3048`). Measured on pristine
-pre-change netcode it fails roughly 1 run in 5, and with these changes applied
-2 in 5 — the same rate within the noise of that sample size. It is not caused or
-cured by anything here. Unlike the loops around it, that convergence loop has no
-`sleep_for` and gives real UDP loopback only 120 iterations of 1 ms to settle, so
-it is sensitive to machine load; `make check` runs it under heavier load than a
-bare `make test`. It needs a proper budget or a virtual clock, and until then a
-red `make check` should be re-run before it is believed.
+Also fixed here, pre-existing and unrelated to the bug above: `production client
+loopback` was flaky at `CHECK(actions_converged)`. Measured on pristine
+pre-change netcode it failed roughly 1 run in 5 standalone, and both `make check`
+runs attempted before the fix — `make check` loads the machine harder than a bare
+`make test`. Alone among the convergence loops in that test it never yielded,
+giving real UDP loopback 120 iterations of simulated time but almost no wall time
+to deliver in. It now sleeps a millisecond per iteration and gets the same budget
+as its neighbours: 8 standalone runs and `make check` all clean. This was a
+defective test rather than a defect in the code under test, but a gate that goes
+red at random is a gate nobody trusts.
 
 ## Hosting a town without an invitation key (2026-08-06)
 

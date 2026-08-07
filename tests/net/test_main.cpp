@@ -3172,8 +3172,16 @@ void production_clients_connect_move_and_render_each_other() {
     }
     CHECK(residents_converged);
 
+    /* Unlike every other convergence loop in this test this one used to spin
+     * without yielding, giving real UDP loopback 120 iterations of simulated
+     * time but almost no wall time to deliver in. It failed roughly one run in
+     * five standalone and near enough every run under `make check`, where the
+     * machine is busier -- a flake that made the release gate untrustworthy
+     * rather than a defect in the code under test. Matched to its neighbours:
+     * yield each iteration, and allow the same budget they do. */
     bool actions_converged = false;
-    for (std::uint64_t i = 0; i < 120 && !actions_converged; ++i) {
+    for (std::uint64_t i = 0; i < 300 && !actions_converged; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
         ++settle_now;
         acnet::Transform corrected;
         bool has_correction = false;
