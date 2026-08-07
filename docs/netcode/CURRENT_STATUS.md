@@ -518,6 +518,124 @@ Known limitations:
 - Not verified with a legitimate disc: the client has been built and linked but
   the new animations and held-item rendering have never been drawn on screen.
 
+*Superseded by "Remote faces, tools and locomotion speed" below: the last three
+bullets are now addressed.*
+
+## Remote faces, tools and locomotion speed (2026-08-06)
+
+Entirely client-side. No wire format change, no server change, no protocol
+version bump — the three values this needed were already replicated and simply
+unread by `ac_net_remote_player.c`:
+
+| Value | Already arrived via |
+|-|-|
+| `now_main_index` | `Net_CapturePlayerTransform` writes it to `transform.action`; carried by the 15 Hz snapshot and the baseline, preserved through `blend()`, exposed as `states[i].transform.action` |
+| `now_item_main_index` | the reliable `Player` delta, as `animation_item_state` |
+| movement velocity | the snapshot transform, in the game's own units |
+
+- **Faces animate.** `mPlib_Face_Reset`/`mPlib_Face_Step` in `m_player_lib.c`
+  reproduce the original's three drivers as a pure stepper over per-remote
+  state: the random blink, the per-animation eye/mouth texture tracks
+  (`mPlib_Get_Player{Eye,Mouth}TexAnimation_p`, 33 and 35 of 157 animations),
+  and the per-state constants. The draw offsets the two face segments by the
+  resolved tile instead of pinning both to tile 0, which is why remote players
+  previously never blinked or emoted. The 0xE00 face resource already holds all
+  8 eye and 6 mouth tiles, so nothing extra is loaded.
+  `Player_actor_set_eye_pattern_Talk`/`_Shock` turn out to dispatch on the
+  animation, not the state, so they collapse into one animation-keyed case and
+  the state table is six entries.
+- **Tools render properly.** The held item is drawn under the hand joint's full
+  matrix (`Matrix_get(&render->right_hand_mtx)`) at `item_scale`, dispatching on
+  whether the item shape is a bare display list or its own skeleton — the same
+  split `Player_actor_Item_draw` uses. It replaces a world/shop pickup model
+  drawn at a bare position with no orientation. Item models, skeletons and
+  animations come from `mPlib_Get_Item_DataPointer`, a table of global symbols,
+  so a viewer needs no per-actor DMA.
+- **Tools hide when stowed.** Visibility is gated on
+  `animation_item_state != mPlayer_ITEM_MAIN_NONE` instead of "the inventory
+  hand is non-empty", so a tool no longer renders through menus, interiors that
+  forbid tools, or pickup animations.
+- **Item animation.** The 13 `Player_actor_SetupItem_Base2` sites pass
+  `mPlayer_ANIM_*`/`mPlayer_INDEX_*` constants where `mPlayer_ITEM_DATA_*`/
+  `mPlayer_ITEM_MAIN_*` are meant — flagged by the decomp itself at
+  `m_player_common.c_inc:3977`. The ordinals were resolved numerically and all
+  13 land on the semantically matching pair (swing_net → `ITEM_MAIN_NET_SWING`/
+  `ITEM_DATA_NET_SWING`, and so on), which is what confirms the reading. The
+  resolved table is in a comment beside `Net_Remote_Player_item_anim`.
+  `item_state` and `equipped_item` come from different authorities and can
+  disagree, so the pairing is re-validated against the item kind before it can
+  reach a skeleton.
+- **Umbrella and balloon.** An umbrella is a real `TOOLS_ACTOR` child, given the
+  pole matrix exactly as `Player_actor_Item_draw_umbrella` does, and destructed
+  when the tool changes or the remote dies. The held balloon turned out **not**
+  to be a sub-actor at all — `Player_actor_Item_draw_balloon` draws it from
+  `item_keyframe` under its own matrix, and `PLAYER_ACTOR::balloon_actor` is
+  only for a *released* balloon — so its movement, sway and lean are transcribed
+  against per-remote state and its own hand-position delta.
+- **Legs no longer sprint.** `Net_Remote_Player_apply_animation` hardcoded
+  `frame_speed` 1.0 while `Player_actor_CulcAnimation_Walk` assigns
+  `0.6 * sqrt(actor->speed / 7.5)` (min 0.22) every frame, so every remote walk
+  cycle ran between 1.7x and 4.5x too fast. The speed is now derived from the
+  replicated velocity: `Actor_position_speed_set` makes `|velocity_xz|` exactly
+  `actor->speed`, and `MovementSimulator::tick` stores the client transform
+  verbatim, so the replicated velocity is already in the game's units.
+  `mPlayer_INDEX_READY_WALK_NET` has its own constants; everything else stays at
+  1.0. Replicating the value instead was rejected: it changes every frame while
+  walking and so cannot ride the change-triggered reliable delta.
+
+Verification:
+
+- `make test`: 39/39. The commit touches no portable core file, and that is what
+  this proves.
+- Both changed decompiled translation units and `m_player.c` compile clean under
+  `-Wall -Wextra` with the PC build's defines.
+- **Not drawn on screen.** No disc is available in the environment this was
+  written in, so none of it has been visually verified. That is the real gate.
+
+Known limitations:
+
+- No fishing float or line for a remote. `Player_actor_SetActorUki` claims the
+  float with `Actor_info_name_search(&play->actor_info, mAc_PROFILE_UKI,
+  ACTOR_PART_BG)` — it is a **scene singleton** placed by the scene spawn
+  tables, and the local player writes hand positions straight into it. Two
+  players fishing would fight over one actor. Per-player float ownership is a
+  gameplay-actor change, deliberately not bundled here.
+- No net catch label: what a remote caught is a server-owned encounter outcome,
+  not presentation.
+- The net bag does not lean. `Player_actor_Item_draw_net_After_dummy_net`
+  computes `net_angle` from local collision and keyframe speed; the bag sits at
+  its rest angle.
+- A remote balloon's lean target is flat: the lean chases
+  `-shape_info.rotation.x`, which is terrain pitch, and only yaw is replicated.
+- The original's per-tool collision captures (`axe_pos`, `net_pos`, the net
+  collision points, the rod tip) are deliberately not reproduced — they feed
+  collision and the fishing state machine, and a presentation actor has neither.
+
+## Open bug: appearance changes across an interior transition
+
+Reported from two-client testing, diagnosed by reading, **not yet fixed**.
+
+`Object_Exchange_keep_new_Player` (`m_scene.c:28`) runs on every scene load and
+sets up the player model bank, both clothing texture/palette bank slots, and the
+face texture/palette banks. All of it is keyed on the **local** player:
+`mPlib_Object_Exchange_keep_new_PlayerMdl` assigns the player profile's
+`obj_bank_id` from `mPlib_get_player_Object_Bank()`, which returns
+`ACTOR_OBJ_BANK_8` for a male local player and `ACTOR_OBJ_BANK_51` for a female
+one. Only one gender's player bank is resident per scene.
+
+`Net_Remote_Player_Profile` declares `ACTOR_OBJ_BANK_KEEP` and has no bank of
+its own. A remote's face and clothing are safe — it loads those into its own
+buffers and binds them with `gSPSegment` — but its *body* is `cKF_bs_r_boy_1` /
+`cKF_bs_r_grl_1`, whose display lists resolve through the resident player bank.
+A remote of the opposite gender to the local player therefore draws against the
+wrong bank, and the binding is re-established at every scene load, which is why
+it changes when crossing a door.
+
+Fixing it means making a second player bank resident whenever a remote of the
+other gender is present, rather than anything in the presentation actor. That
+is a change to scene resource loading with a real memory cost, it needs a disc
+to verify, and it should not be bundled with presentation work.
+
 ## Hosting a town without an invitation key (2026-08-06)
 
 The server used to refuse to start when `invite_key` was blank, which is what a

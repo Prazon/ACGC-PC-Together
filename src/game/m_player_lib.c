@@ -2167,6 +2167,147 @@ extern u8* mPlib_Get_mouth_tex_p(int idx) {
     return NULL;
 }
 
+/* Face texture selection for viewers that are not the local PLAYER_ACTOR.
+ *
+ * The original picks eye_tex_idx/mouth_tex_idx from three places, all of them
+ * static inside the player state machine: a random blink
+ * (Player_actor_set_eye_pattern_normal), per-animation texture tracks
+ * (Player_actor_set_tex_anime_pattern), and a handful of per-state constants.
+ * A remote presentation actor has no PLAYER_ACTOR to run that machine on, but
+ * every input it needs is either replicated (the animation index and the main
+ * index) or purely cosmetic (the blink phase), so the selection is reproduced
+ * here as a pure stepper over its own small state.
+ *
+ * Player_actor_SetupTextureAnimation's reset-to-zero on state entry is
+ * deliberately not reproduced: this recomputes from scratch every frame, so
+ * there is no stale index for it to clear.
+ *
+ * The blink table below is a copy of the one in
+ * Player_actor_set_eye_pattern_normal rather than a shared symbol. Sixteen
+ * bytes of duplication is cheaper than reaching into a .c_inc that upstream
+ * ac-decomp may move, and it keeps the local player's face on exactly the code
+ * path it has always been on. */
+static u8 mPlib_Face_StepBlink(mPlib_face_state_c* face, f32 dt_frames) {
+    static const s8 pattern_table[] = { 0, 0, 0, 0, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 0, 0 };
+    int idx;
+
+    idx = (int)face->blink_timer;
+    if (idx != 0) {
+        face->blink_timer -= dt_frames;
+        if (face->blink_timer < 0.0f) {
+            face->blink_timer = 0.0f;
+        }
+        idx = (int)face->blink_timer;
+    }
+
+    if (idx == 0) {
+        if (face->blink_count <= 0) {
+            face->blink_count = get_random_timer(0, 3);
+            face->blink_timer = get_random_timer(60, 120);
+        } else {
+            face->blink_timer = 16.0f;
+            face->blink_count--;
+        }
+    }
+
+    face->blink_pattern = (s16)face->blink_timer;
+    if (face->blink_pattern >= 16) {
+        face->blink_pattern = 0;
+    }
+
+    return (u8)pattern_table[face->blink_pattern];
+}
+
+/* Returns TRUE and writes *out when the animation drives this texture itself.
+ * The frame gate is the original's: tracks are authored 1-based and are as long
+ * as the animation, so max_frames bounds both. The value check additionally
+ * refuses a track entry that would not be a legal tile, which the original can
+ * assume and a viewer driving its own keyframe should not. */
+static int mPlib_Face_TrackIndex(const u8* track, f32 current_frame, f32 max_frames, u8* out, u8 limit) {
+    int index;
+
+    if (track == NULL || current_frame < 1.0f || current_frame > max_frames) {
+        return FALSE;
+    }
+
+    index = (int)(current_frame - 1.0f);
+    if (index < 0) {
+        return FALSE;
+    }
+
+    if (track[index] >= limit) {
+        return FALSE;
+    }
+
+    *out = track[index];
+    return TRUE;
+}
+
+extern void mPlib_Face_Reset(mPlib_face_state_c* face) {
+    if (face == NULL) {
+        return;
+    }
+
+    face->blink_pattern = 0;
+    face->blink_timer = 0.0f;
+    face->blink_count = 0;
+    face->eye_tex_idx = mPlayer_EYE_TEX0;
+    face->mouth_tex_idx = mPlayer_MOUTH_TEX0;
+}
+
+extern void mPlib_Face_Step(mPlib_face_state_c* face, int main_index, int anim_idx, f32 current_frame, f32 max_frames,
+                            f32 dt_frames) {
+    u8 eye;
+    u8 mouth;
+
+    if (face == NULL) {
+        return;
+    }
+
+    /* The blink phase advances every frame regardless of whether the eyes are
+     * currently showing it, so a texture-animated stretch does not resume
+     * mid-blink when it ends. */
+    eye = mPlib_Face_StepBlink(face, dt_frames);
+    (void)mPlib_Face_TrackIndex(mPlib_Get_PlayerEyeTexAnimation_p(anim_idx), current_frame, max_frames, &eye,
+                                mPlayer_EYE_TEX_NUM);
+
+    mouth = mPlayer_MOUTH_TEX0;
+    (void)mPlib_Face_TrackIndex(mPlib_Get_PlayerMouthTexAnimation_p(anim_idx), current_frame, max_frames, &mouth,
+                                mPlayer_MOUTH_TEX_NUM);
+
+    /* Player_actor_set_eye_pattern_Talk and _Shock both dispatch on the
+     * animation rather than the state: GAAAN1/BIKU1 take the texture tracks
+     * (handled above -- both have them), GAAAN2 takes this constant, and
+     * anything else is the idle blink (handled above). So the two states
+     * collapse into one animation-keyed case and leave the state switch. */
+    if (anim_idx == mPlayer_ANIM_GAAAN2) {
+        eye = 6;
+        mouth = 5;
+    }
+
+    switch (main_index) {
+        case mPlayer_INDEX_TIRED:
+        case mPlayer_INDEX_NOTICE_MOSQUITO:
+            eye = 4;
+            mouth = 4;
+            break;
+        case mPlayer_INDEX_WAIT_BED:
+            eye = 2;
+            break;
+        case mPlayer_INDEX_SWING_FAN:
+            eye = 5;
+            break;
+        case mPlayer_INDEX_STRUGGLE_PITFALL:
+            eye = 6;
+            break;
+        default:
+            break;
+    }
+
+    face->eye_tex_idx = eye < mPlayer_EYE_TEX_NUM ? eye : mPlayer_EYE_TEX0;
+    face->mouth_tex_idx = mouth < mPlayer_MOUTH_TEX_NUM ? mouth : mPlayer_MOUTH_TEX0;
+}
+
 extern int mPlib_request_main_invade_type1(GAME* game) {
     return GET_PLAYER_ACTOR_GAME(game)->request_main_invade_all_proc(game, mPlayer_REQUEST_PRIORITY_2);
 }

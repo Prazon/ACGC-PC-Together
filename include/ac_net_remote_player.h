@@ -25,6 +25,15 @@ typedef struct ac_net_remote_player_s {
     u8 transition_phase;
     u32 transition_door;
     u32 transition_expires_tick;
+    /* mPlayer_INDEX_*, replicated in the transform as `action`. The face and
+     * the tool take-out/put-away scale both key off it. */
+    u16 action;
+    /* mPlayer_ITEM_MAIN_*: which tool state the owning client is in, and
+     * therefore whether the tool is in the hand at all. */
+    u8 item_state;
+    /* An umbrella is a real TOOLS_ACTOR child, exactly as it is for the local
+     * player; every other tool is drawn straight from the item skeleton. */
+    ACTOR* umbrella_actor;
     void* render_data;
 } AC_NET_REMOTE_PLAYER;
 

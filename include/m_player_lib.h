@@ -70,6 +70,21 @@ extern u8* mPlib_Get_PlayerEyeTexAnimation_p(int anim_idx);
 extern u8* mPlib_Get_PlayerMouthTexAnimation_p(int anim_idx);
 extern u8* mPlib_Get_eye_tex_p(int idx);
 extern u8* mPlib_Get_mouth_tex_p(int idx);
+
+/* Blink phase plus the resolved eye/mouth tile for one face. The local player
+ * keeps the equivalent spread across PLAYER_ACTOR; a remote presentation actor
+ * owns one of these instead. See mPlib_Face_Step in m_player_lib.c. */
+typedef struct player_face_state_s {
+    s16 blink_pattern;
+    f32 blink_timer;
+    int blink_count;
+    u8 eye_tex_idx;   /* mPlayer_EYE_TEX_* */
+    u8 mouth_tex_idx; /* mPlayer_MOUTH_TEX_* */
+} mPlib_face_state_c;
+
+extern void mPlib_Face_Reset(mPlib_face_state_c* face);
+extern void mPlib_Face_Step(mPlib_face_state_c* face, int main_index, int anim_idx, f32 current_frame, f32 max_frames,
+                            f32 dt_frames);
 extern int mPlib_request_main_invade_type1(GAME* game);
 extern int mPlib_request_main_refuse_type1(GAME* game);
 extern int mPlib_request_main_wait_type3(GAME* game);
