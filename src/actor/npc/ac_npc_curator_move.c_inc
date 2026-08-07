@@ -862,7 +862,14 @@ static void aCR_return_demo_end_wait_init(NPC_CURATOR_ACTOR* curator, GAME_PLAY*
 static void aCR_putaway_demo_end_wait_init(NPC_CURATOR_ACTOR* curator, GAME_PLAY* play) {
     Submenu_Item_c* sm_item_p = play->submenu.item_p;
 
-    if (mMmd_RequestMuseumDisplay(sm_item_p->item) == TRUE) {
+    /* One town, one collection. Online the server decides whether the species
+     * is already displayed and clears the pocket, so the local display request
+     * and pocket clear would both be undone by the next projection. The museum
+     * exhibit itself still updates locally -- it is presentation built from the
+     * replicated collection. */
+    if (Net_EconomyAuthoritative()) {
+        Net_RequestDonate(sm_item_p->slot_no, sm_item_p->item);
+    } else if (mMmd_RequestMuseumDisplay(sm_item_p->item) == TRUE) {
         mPr_SetPossessionItem(Common_Get(now_private), sm_item_p->slot_no, EMPTY_NO, mPr_ITEM_COND_NORMAL);
     }
 

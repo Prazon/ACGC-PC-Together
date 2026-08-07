@@ -139,6 +139,14 @@ typedef struct AcNetItemSlot {
     uint8_t condition;
 } AcNetItemSlot;
 
+/* One row of Nook's shelf. `quantity` 0 means the row is sold out for today;
+ * the row keeps its index so a purchase still names the same thing. */
+typedef struct AcNetShopEntry {
+    uint16_t item;
+    uint32_t price;
+    uint16_t quantity;
+} AcNetShopEntry;
+
 typedef struct AcNetTownBootstrapTile {
     uint16_t item;
     uint8_t buried;
@@ -343,8 +351,12 @@ size_t acnet_client_residents(AcNetResident* output, size_t capacity);
  * client could not read the field's acre layout yet -- the server then leaves
  * the island uninitialized and adopts it from a later login. `island_block_x0`
  * and `island_block_x1` are the acre columns those two blocks occupy. */
+/* `native_fruit` is Save_Get(fruit), the fruit this town grows; the server
+ * prices it at a quarter of what a foreign fruit fetches. Pass 0 when it is
+ * not known yet and the server keeps whatever it already has. */
 int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                        uint16_t land_id,
+                                       uint16_t native_fruit,
                                        const AcNetPlayerAppearance* appearance,
                                        const AcNetTownBootstrapTile* tiles,
                                        size_t tile_count,
@@ -377,6 +389,40 @@ int acnet_client_request_world_auto(uint8_t operation_type,
                                     uint8_t inventory_slot,
                                     uint16_t expected_item);
 int acnet_client_take_world_result(AcNetWorldResult* output);
+/* Nook's shelf as the server rolled it, in the order a Buy request indexes.
+ * Pass NULL to learn how many rows there are. Zero rows means the client has no
+ * baseline yet, not an empty shop. */
+size_t acnet_client_shop_stock(AcNetShopEntry* output, size_t capacity);
+/* The revision a Buy must quote. Zero before the first baseline. */
+uint32_t acnet_client_shop_revision(void);
+/* The spotlight rare furniture, which also appears in the stock list. Zero at
+ * the tiers that stock no rare item. */
+uint16_t acnet_client_shop_rare_item(void);
+/* An NPC the server owns, in the zone being viewed. Distinct from a remote
+ * player: villagers are still simulated client-side and do not appear here. */
+typedef struct AcNetNpcState {
+    uint64_t entity;
+    uint32_t zone;
+    uint32_t revision;
+    float x, y, z;
+    int16_t yaw;
+    uint16_t schedule_state;
+    uint16_t animation;
+    uint16_t emotion;
+} AcNetNpcState;
+
+/* Server-owned NPCs in the viewed zone. Pass NULL to learn how many. */
+size_t acnet_client_npcs(AcNetNpcState* output, size_t capacity);
+
+/* The revision a Donate must quote, and whether the museum already displays an
+ * item. Zero / false before the first baseline. */
+uint32_t acnet_client_museum_revision(void);
+int acnet_client_museum_has(uint16_t item);
+/* Sell every pocket whose bit is set, as one transaction quoting the current
+ * inventory revision. The counter sells a whole selection and quotes one total,
+ * which per-slot requests cannot express: they would each have to quote the
+ * revision the previous one produced. */
+int acnet_client_request_sell(uint16_t slot_mask);
 int acnet_client_request_economy_auto(uint8_t operation_type,
                                       uint32_t expected_inventory_revision,
                                       uint32_t expected_aux_revision,

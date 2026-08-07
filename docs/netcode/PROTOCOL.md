@@ -1,4 +1,4 @@
-# Dedicated town protocol v15
+# Dedicated town protocol v16
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -270,6 +270,14 @@ the local save, so every first resident generates the same layout and skips
 local town naming. The first resident then sends `TownBootstrap`: identity,
 appearance, and exactly 7,680 explicit `{item, buried}` foreground tiles. The
 message is bounded and fragmented; no native save structs are transmitted.
+
+Identity carries the town's `native_fruit` (`Save_Get(fruit)`), added in v16.
+Fruit is the one item whose price depends on where it grew -- a quarter at home
+of what it fetches abroad -- so the server cannot price a sale without it. It is
+decided during town generation, which is why it travels with the bootstrap
+rather than being derived server-side. A client that does not know it yet sends
+zero and the server keeps whatever it already recorded; a server that has never
+been told prices every fruit as foreign.
 
 The server validates resident ownership and identity, accepts the first valid
 foreground as canonical, persists it before returning success, and publishes

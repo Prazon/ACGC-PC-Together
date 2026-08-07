@@ -3,13 +3,14 @@
 #include "acnet/protocol.hpp"
 
 #include <algorithm>
+#include <ctime>
 #include <limits>
 
 namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 8;
+constexpr std::uint16_t kTownStateVersion = 9;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -90,6 +91,18 @@ std::vector<typename Map::key_type> sorted_keys(const Map& values) {
 
 } // namespace
 
+std::uint16_t TownRuntime::town_year() const {
+    const std::time_t town_time = static_cast<std::time_t>(clock_.state().town_unix_seconds);
+    std::tm utc{};
+#ifdef _WIN32
+    if (gmtime_s(&utc, &town_time) != 0) return 0;
+#else
+    if (gmtime_r(&town_time, &utc) == nullptr) return 0;
+#endif
+    const int year = utc.tm_year + 1900;
+    return year < 0 || year > 65535 ? 0 : static_cast<std::uint16_t>(year);
+}
+
 std::vector<std::uint8_t> TownRuntime::encode_state() const {
     acnet::ByteWriter writer(kMaximumStateBytes);
     const std::vector<std::uint8_t> clock = clock_.encode_state();
@@ -141,8 +154,22 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
             !writer.u8(item.second.buried ? 1 : 0) || !writer.u8(item.second.placed_furniture ? 1 : 0)) return {};
     }
 
+    /* Version 9. The town's own fruit, which the bootstrapping client reports
+     * once and pricing needs on every sale thereafter, and the shelf state the
+     * daily roll consumes. The rarity permutation was previously re-derived
+     * from the town seed on every start, which worked only because nothing
+     * mutated it; lifetime sales and the paint rotation both accumulate, so the
+     * whole of ShopStockState is now written. */
+    if (!writer.u16(native_fruit_) || !writer.u8(static_cast<std::uint8_t>(shop_stock_.tier)) ||
+        !writer.i16(shop_stock_.goods_power) || !writer.u16(shop_stock_.rare_item) ||
+        !writer.u32(shop_stock_.sales_sum) || !writer.u16(shop_stock_.paint_color)) return {};
+    for (const acnet::ShopCategoryPriority& priority : shop_stock_.priorities) {
+        if (!writer.u8(priority.a) || !writer.u8(priority.b) || !writer.u8(priority.c)) return {};
+    }
+
     const acnet::ShopState& shop = economy_.shop();
     if (shop.stock.size() > std::numeric_limits<std::uint32_t>::max() || !writer.u32(shop.revision) ||
+        !writer.u16(shop.rare_item) ||
         !writer.u32(static_cast<std::uint32_t>(shop.stock.size()))) return {};
     for (const acnet::ShopEntry& entry : shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return {};
@@ -302,9 +329,34 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         if (!world_.set_tile(address, tile)) { error = "failed to restore tile"; return false; }
     }
 
+    /* Towns written before version 9 recorded neither the fruit nor the shelf
+     * state. Zero fruit prices everything as foreign until the next bootstrap
+     * reports one, and the shelf keeps the seed-derived permutation
+     * initialize() already installed -- both being the state a brand-new town
+     * starts in. */
+    native_fruit_ = 0;
+    if (version >= 9) {
+        std::uint8_t tier;
+        if (!reader.u16(native_fruit_) || !reader.u8(tier) || tier > 3 ||
+            !reader.i16(shop_stock_.goods_power) || !reader.u16(shop_stock_.rare_item) ||
+            !reader.u32(shop_stock_.sales_sum) || !reader.u16(shop_stock_.paint_color)) {
+            error = "invalid shop stock state";
+            return false;
+        }
+        shop_stock_.tier = static_cast<acnet::ShopTier>(tier);
+        for (acnet::ShopCategoryPriority& priority : shop_stock_.priorities) {
+            if (!reader.u8(priority.a) || !reader.u8(priority.b) || !reader.u8(priority.c) ||
+                priority.a > 2 || priority.b > 2 || priority.c > 2) {
+                error = "invalid shop rarity permutation";
+                return false;
+            }
+        }
+    }
+
     acnet::ShopState shop;
     std::uint32_t shop_count;
-    if (!reader.u32(shop.revision) || !reader.u32(shop_count) || shop.revision == 0 || shop_count > 65535) {
+    if (!reader.u32(shop.revision) || (version >= 9 && !reader.u16(shop.rare_item)) || !reader.u32(shop_count) ||
+        shop.revision == 0 || shop_count > 65535) {
         error = "invalid shop state"; return false;
     }
     shop.stock.resize(shop_count);

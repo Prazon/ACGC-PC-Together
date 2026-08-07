@@ -214,6 +214,10 @@ private:
     bool publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error);
     void publish_presentation(const acnet::PlayerView& player);
     void refresh_equipped_item(acnet::AccountId account);
+    /* Publish an NPC's new state to the zone it stands in. Silently drops an
+     * unencodable NPC rather than failing the tick: presentation state is not
+     * worth stopping a town over, and the next baseline carries it anyway. */
+    void publish_npc_change(const acnet::NpcState& npc);
     acnet::TownOccupancy current_occupancy() const;
     acnet::ResidentRoster current_roster() const;
     bool send_deltas(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
@@ -225,6 +229,9 @@ private:
     void disconnect_timed_out(std::uint64_t monotonic_ms);
     void deactivate_player(acnet::AccountId account, acnet::Tick tick);
     void record_event(std::string message);
+    /* Calendar year of the town clock, which is what the new year's grab bag
+     * costs. */
+    std::uint16_t town_year() const;
     std::vector<std::uint8_t> encode_state() const;
     bool decode_state(const std::vector<std::uint8_t>& payload, std::string& error);
     bool commit_state(std::uint16_t record_type, std::string& error);
@@ -253,6 +260,9 @@ private:
      * shelf itself lives in EconomyAuthority's ShopState; this is the state the
      * daily roll needs to reproduce it. */
     acnet::ShopStockState shop_stock_;
+    /* The fruit this town grows, reported once by the bootstrapping client.
+     * Zero until then, which prices every fruit as foreign. */
+    std::uint16_t native_fruit_ = 0;
     acnet::EncounterAuthority encounters_;
     acnet::NpcAuthority npcs_;
     acnet::ZoneCoordinator zones_;

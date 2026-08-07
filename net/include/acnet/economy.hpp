@@ -72,6 +72,11 @@ struct ShopEntry {
 struct ShopState {
     Revision revision = 1;
     std::vector<ShopEntry> stock;
+    /* The spotlight rare furniture, which the game keeps in its own Shop_c
+     * field as well as on the shelf. It cannot be recovered from `stock`
+     * alone -- nothing there marks which row was the rare draw -- so it is
+     * replicated beside it. Zero at the tiers that stock no rare item. */
+    std::uint16_t rare_item = 0;
 };
 
 struct AccountLedger {
@@ -124,6 +129,13 @@ struct EconomyRequest {
     Revision expected_aux_revision = 0;
     std::uint32_t shop_index = 0;
     std::uint8_t inventory_slot = 0;
+    /* Sell only: sell every pocket whose bit is set, as one transaction. The
+     * shop counter sells a whole selection at once and quotes a single total,
+     * and a per-slot request cannot express that -- each would have to quote
+     * the revision the previous one produced, so a client issuing them together
+     * would have all but the first rejected as stale. Zero means "just
+     * inventory_slot"; bit i is pocket i, so kInventorySlots fits exactly. */
+    std::uint16_t slot_mask = 0;
     std::uint16_t expected_item = 0;
     std::uint64_t amount = 0;
     AccountId recipient = 0;
@@ -178,6 +190,9 @@ using EconomyCommitHook = std::function<bool(const EconomyRequest&,
                                              const EconomyResult&,
                                              const InventoryState&)>;
 
+/* What Nook pays for one item. Returning 0 means the item is not sellable. */
+using SellPriceResolver = std::function<std::uint32_t(std::uint16_t item)>;
+
 struct EconomyConfig {
     ZoneId shop_zone = 0;
     Vec3 shop_position{};
@@ -190,6 +205,14 @@ struct EconomyConfig {
      * claim safe; the zone is only a fidelity rule. */
     ZoneId mailbox_zone = 0;
     float maximum_trade_distance = 120.0F;
+    /* The wallet cap, and what happens above it: the original peels `chunk`
+     * bells at a time into a `bag_item` in the pockets, which is why a big sale
+     * hands back a money bag. Zero disables the rule, which is the default so
+     * the authority carries no game constants of its own -- the town runtime
+     * configures it from the generated tables. */
+    std::uint32_t wallet_maximum = 0;
+    std::uint32_t wallet_overflow_chunk = 0;
+    std::uint16_t wallet_overflow_item = 0;
 };
 
 class EconomyAuthority {
@@ -203,6 +226,12 @@ public:
     void set_shop(const ShopState& shop) { shop_ = shop; }
     void set_museum(const MuseumState& museum) { museum_ = museum; }
     void set_sell_price(std::uint16_t item, std::uint32_t price);
+    /* Fallback for items with no explicit override, consulted on every sale.
+     * The authority stays free of the game's price tables this way: the town
+     * runtime installs a resolver over the generated ones, and a test can
+     * price a handful of items by hand instead. An item no resolver prices
+     * cannot be sold. */
+    void set_sell_price_resolver(SellPriceResolver resolver) { sell_price_resolver_ = std::move(resolver); }
     void set_commit_hook(EconomyCommitHook hook) { commit_hook_ = std::move(hook); }
 
     const ShopState& shop() const { return shop_; }
@@ -279,6 +308,7 @@ private:
     EconomyCommitHook commit_hook_;
     std::unordered_map<AccountId, AccountLedger> ledgers_;
     std::unordered_map<std::uint16_t, std::uint32_t> sell_prices_;
+    SellPriceResolver sell_price_resolver_;
     std::unordered_map<std::uint64_t, MailRecord> mail_;
     std::unordered_map<AccountId, MailboxState> mailboxes_;
     std::unordered_map<OperationKey, EconomyResult, OperationKeyHash> idempotency_;

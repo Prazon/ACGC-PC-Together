@@ -1,3 +1,7 @@
+/* This file is textually included into each shopkeeper's parent translation
+ * unit rather than compiled on its own, so it pulls in what it needs itself. */
+#include "m_net_hooks.h"
+
 enum aNSC_action {
     aNSC_ACTION_EMPTY,
     aNSC_ACTION_SAY_HELLO_APPROACH,
@@ -2218,7 +2222,19 @@ static void aNSC_buy_check(NPC_SHOP_COMMON_ACTOR* shop_common, GAME_PLAY* play) 
                     } else {
                         mActor_name_t item = Now_Private->inventory.pockets[submenu_item->slot_no];
                         mSP_PlusSales(shop_common->money / 2);
-                        if (counter == 1) {
+                        /* Online the sale is a server transaction per slot, and
+                         * the authoritative projection brings back the wallet,
+                         * the emptied pockets, and any money bags the overflow
+                         * produced. Mutating locally as well would be undone by
+                         * that projection a frame later, so the whole
+                         * bag-breaking dance below is skipped rather than
+                         * duplicated. The dialogue still quotes shop_common->money,
+                         * which is the same price the server pays because both
+                         * come from mSP_ItemNo2ItemPrice. */
+                        if (Net_EconomyAuthoritative()) {
+                            next = Net_RequestSellItems(play, counter) ? aNSC_BUY_OUTCOME_NORMAL
+                                                                       : aNSC_BUY_OUTCOME_CANCEL;
+                        } else if (counter == 1) {
                             next = aNSC_buy_item_only_one(&bells, item, (u8*)submenu_item, shop_common->money);
                         } else if (play->submenu.selected_item_num > 1) {
                             int change;
@@ -2244,7 +2260,9 @@ static void aNSC_buy_check(NPC_SHOP_COMMON_ACTOR* shop_common, GAME_PLAY* play) 
                         } else {
                             next = aNSC_buy_item_single(&bells, item, counter);
                         }
-                        Now_Private->inventory.wallet = bells;
+                        if (!Net_EconomyAuthoritative()) {
+                            Now_Private->inventory.wallet = bells;
+                        }
                     }
                 } break;
                 case mChoice_CHOICE1:
@@ -3058,7 +3076,15 @@ static void aNSC_sell_answer1_init(NPC_SHOP_COMMON_ACTOR* shop_common, GAME_PLAY
 }
 
 static void aNSC_sell_item_init(NPC_SHOP_COMMON_ACTOR* shop_common, GAME_PLAY* play) {
-    aNSC_get_sell_price(shop_common->value);
+    /* Online the shelf and the wallet are both the server's, so the purchase is
+     * a transaction against the shelf row rather than a local deduction; a
+     * refusal (someone else took the last one) leaves the money alone and the
+     * projection puts the pockets back. */
+    if (Net_EconomyAuthoritative()) {
+        Net_RequestBuyItem(shop_common->sell_item);
+    } else {
+        aNSC_get_sell_price(shop_common->value);
+    }
     if (CLIP(shop_design_clip) != NULL) {
         CLIP(shop_design_clip)->reportGoodsSale_proc(shop_common->ut_x, shop_common->ut_z);
     }

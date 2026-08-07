@@ -11,6 +11,7 @@
 #include "m_name_table.h"
 #include "m_room_type.h"
 #include "m_fg_type.h"
+#include "m_net_hooks.h"
 
 #ifdef TARGET_PC
 #include "pc_settings.h"
@@ -1022,6 +1023,14 @@ static void mSP_MakeGoodsList(GAME* game) {
     u8 tool_count = goods_count[mSP_GOODS_TYPE_TOOL];
     u8 flower_count = goods_count[mSP_GOODS_TYPE_PLANT];
     u8 sapling_count = goods_count[mSP_GOODS_TYPE_SAPLING];
+
+    /* One town, one shelf. Online the server has already rolled it and every
+     * client is shown the same rows, so rolling here would both diverge the
+     * clients and misalign the row index a purchase quotes. */
+    if (Net_ShopStockAuthoritative()) {
+        Net_ApplyAuthoritativeShopStock();
+        return;
+    }
 
     if (mSP_CheckFukubikiDay() == FALSE) {
         if (mSP_Chk_HukubukuroSail() != FALSE) {

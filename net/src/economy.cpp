@@ -256,17 +256,56 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
                 result.code = ResultCode::Malformed;
                 break;
             }
-            ItemSlot& slot = inventory.slots[request.inventory_slot];
-            const auto price = sell_prices_.find(slot.item);
-            if (slot.item == 0 || price == sell_prices_.end() ||
-                (request.expected_item != 0 && slot.item != request.expected_item) ||
-                price->second > std::numeric_limits<std::uint32_t>::max() - inventory.bells) {
-                result.code = ResultCode::InvalidState;
+            /* A mask sells the whole selection at once; without one this is the
+             * single slot named directly. Either way the sale is atomic: if any
+             * chosen pocket is empty or unsellable, nothing moves. */
+            std::uint16_t mask = request.slot_mask;
+            if (mask == 0) mask = static_cast<std::uint16_t>(1U << request.inventory_slot);
+            if ((mask >> inventory.slots.size()) != 0) {
+                result.code = ResultCode::Malformed;
                 break;
             }
-            result.item = slot.item;
-            inventory.bells += price->second;
-            slot = {};
+            const auto price_of = [this](std::uint16_t item) -> std::uint32_t {
+                const auto override_price = sell_prices_.find(item);
+                if (override_price != sell_prices_.end()) return override_price->second;
+                return sell_price_resolver_ ? sell_price_resolver_(item) : 0;
+            };
+            std::uint32_t total = 0;
+            bool sellable = true;
+            for (std::size_t i = 0; i < inventory.slots.size() && sellable; ++i) {
+                if ((mask & (1U << i)) == 0) continue;
+                const std::uint16_t item = inventory.slots[i].item;
+                const std::uint32_t price = price_of(item);
+                sellable = item != 0 && price != 0 &&
+                           (request.expected_item == 0 || item == request.expected_item) &&
+                           price <= std::numeric_limits<std::uint32_t>::max() - inventory.bells - total;
+                total += price;
+                /* The last item cleared is what the result reports, matching the
+                 * single-slot case where there is only one. */
+                if (sellable) result.item = item;
+            }
+            if (!sellable) {
+                result.code = ResultCode::InvalidState;
+                result.item = 0;
+                break;
+            }
+            for (std::size_t i = 0; i < inventory.slots.size(); ++i) {
+                if ((mask & (1U << i)) != 0) inventory.slots[i] = {};
+            }
+            inventory.bells += total;
+            /* The wallet cannot hold the whole sale, so the overflow comes back
+             * as money bags -- starting in the slot the sold item just vacated,
+             * which is what guarantees there is somewhere to put the first one.
+             * Bells that will not fit in any pocket stay in the wallet above the
+             * cap rather than being destroyed. */
+            if (config_.wallet_maximum != 0 && config_.wallet_overflow_chunk != 0) {
+                while (inventory.bells >= config_.wallet_maximum) {
+                    const auto bag = empty_slot(inventory);
+                    if (!bag.has_value()) break;
+                    inventory.bells -= config_.wallet_overflow_chunk;
+                    inventory.slots[*bag].item = config_.wallet_overflow_item;
+                }
+            }
             inventory_changed = true;
             break;
         }

@@ -45,14 +45,46 @@ struct ShopStockState {
     std::array<ShopCategoryPriority, kShopCategories> priorities{};
     /* The single rare furniture slot the upper tiers roll separately. */
     std::uint16_t rare_item = 0;
+    /* Lifetime sales. Nook's Cranny, and only Nook's Cranny, unlocks the net,
+     * rod, and axe as this passes mSP_{NET,ROD,AXE}_SALES_SUM. */
+    std::uint32_t sales_sum = 0;
+    /* Which paint colour is next on the shelf; rotates once per roll at
+     * Nookway and above. Persisted, like the original's Shop_c field. */
+    std::uint16_t paint_color = 0;
 };
 
-/* Buy price for an item, from the original per-category price tables
- * (mSP_ItemNo2ItemPrice). Returns 0 for anything the shop does not price.
- * Selling yields price / kShopSellBuyRatio. */
-std::uint32_t shop_item_price(std::uint16_t item);
-
 constexpr std::uint32_t kShopSellBuyRatio = 4; // SELL_BUY_RATIO
+
+/* Buy price for an item, generated from the original mSP_ItemNo2ItemPrice.
+ * Returns 0 for anything the game does not price.
+ *
+ * Two prices depend on the town rather than the tables, so the caller supplies
+ * them: `native_fruit` is the fruit the town grows (Save_Get(fruit)), which
+ * costs mSP_FOREIGN_FRUIT_PRICE anywhere else, and `year` is what the new
+ * year's grab bag costs. Both default to "unknown", which prices fruit as
+ * foreign and the bag at nothing -- correct for shop stock, which contains
+ * neither. */
+std::uint32_t shop_item_price(std::uint16_t item,
+                              std::uint16_t native_fruit = 0,
+                              std::uint16_t year = 0);
+
+/* What Nook pays for an item, price / kShopSellBuyRatio, matching the
+ * mSP_ItemNo2ItemPrice(item) / SELL_BUY_RATIO the shop dialogue quotes. */
+std::uint32_t shop_sell_price(std::uint16_t item,
+                              std::uint16_t native_fruit = 0,
+                              std::uint16_t year = 0);
+
+/* The wallet cannot hold more than mPr_WALLET_MAX bells. Above it the original
+ * peels off 30,000 at a time into a money bag item in the pockets, which is why
+ * selling something valuable hands back a bag. Reported here so the town
+ * runtime can configure EconomyAuthority with the game's own numbers rather
+ * than the authority hardcoding them. */
+struct WalletOverflowRule {
+    std::uint32_t maximum;    // mPr_WALLET_MAX
+    std::uint32_t chunk;      // bells moved into one bag
+    std::uint16_t bag_item;   // ITM_MONEY_30000
+};
+WalletOverflowRule shop_wallet_overflow_rule();
 
 /* Randomise the per-category A/B/C rarity permutation for a new town. */
 void shop_randomise_priorities(ShopStockState& state, const std::function<std::uint64_t()>& random);

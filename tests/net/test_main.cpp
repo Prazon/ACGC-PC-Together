@@ -14,6 +14,7 @@
 #include "acnet/reliability.hpp"
 #include "acnet/replication.hpp"
 #include "acnet/session.hpp"
+#include "acnet/shop.hpp"
 #include "acnet/transport.hpp"
 #include "acnet/world.hpp"
 #include "acnet/zone.hpp"
@@ -786,6 +787,7 @@ void town_bootstrap_messages_are_bounded_and_round_trip() {
     acnet::TownBootstrap original;
     original.town_seed = 42;
     original.land_id = 0x302A;
+    original.native_fruit = 10243; // ITM_FOOD_PEACH
     original.town_name = {{'W', 'i', 'n', 'n', 'i', 'p', 'e', 'g'}};
     original.appearance.name = {{'R', 'e', 's', 'i', 'd', 'e', 'n', 't'}};
     original.appearance.gender = 1;
@@ -808,6 +810,7 @@ void town_bootstrap_messages_are_bounded_and_round_trip() {
     CHECK(acnet::decode(payload, decoded));
     CHECK(decoded.town_seed == original.town_seed);
     CHECK(decoded.land_id == original.land_id);
+    CHECK(decoded.native_fruit == original.native_fruit);
     CHECK(decoded.town_name == original.town_name);
     CHECK(decoded.appearance.name == original.appearance.name);
     CHECK(decoded.appearance.clothing == original.appearance.clothing);
@@ -1390,6 +1393,532 @@ void world_transactions_are_atomic_idempotent_and_conserved() {
     CHECK(world.apply(plant).code == acnet::ResultCode::Ok);
     CHECK(world.tile(unrelated)->terrain == acnet::TerrainState::Planted);
     CHECK(world.tile(unrelated)->item == 0x0800);
+}
+
+/* The generated price table is swept out of the game's own
+ * mSP_ItemNo2ItemPrice, so these pins are the values the shop dialogue quotes.
+ * They cover each shape the original prices differently: the flat per-category
+ * tables, the shellfish table, the signboard constant, and the two entries
+ * that depend on town state rather than a table. */
+void shop_prices_match_the_original_tables() {
+    constexpr std::uint16_t kNet = 8704;
+    constexpr std::uint16_t kAxe = 8705;
+    constexpr std::uint16_t kShovel = 8706;
+    constexpr std::uint16_t kRod = 8707;
+    constexpr std::uint16_t kShell = 9492;
+    constexpr std::uint16_t kSignboard = 9502;
+    constexpr std::uint16_t kApple = 10240;
+    constexpr std::uint16_t kCherry = 10241;
+    constexpr std::uint16_t kGrabBag = 11776;
+
+    CHECK(acnet::shop_item_price(kNet) == 500);
+    CHECK(acnet::shop_item_price(kAxe) == 400);
+    CHECK(acnet::shop_item_price(kShovel) == 500);
+    CHECK(acnet::shop_item_price(kRod) == 500);
+    CHECK(acnet::shop_item_price(kShell) == 160);
+    CHECK(acnet::shop_item_price(kSignboard) == 500);
+
+    /* Nook pays a quarter of the shelf price. */
+    CHECK(acnet::shop_sell_price(kRod) == 125);
+    CHECK(acnet::shop_sell_price(kShell) == 40);
+
+    /* Fruit is cheap only at home. */
+    CHECK(acnet::shop_item_price(kApple, kApple) == 400);
+    CHECK(acnet::shop_item_price(kApple, kCherry) == 2000);
+    CHECK(acnet::shop_item_price(kApple) == 2000);
+    CHECK(acnet::shop_item_price(kCherry, kCherry) == 400);
+
+    /* The grab bag costs the year, and is worth nothing without one. */
+    CHECK(acnet::shop_item_price(kGrabBag, 0, 2001) == 2001);
+    CHECK(acnet::shop_item_price(kGrabBag) == 0);
+
+    /* Nothing, and an id the game does not price, are both free. */
+    CHECK(acnet::shop_item_price(0) == 0);
+    CHECK(acnet::shop_item_price(1) == 0);
+    CHECK(acnet::shop_sell_price(0) == 0);
+
+    /* Every item the shop can actually stock has to have a price, or the
+     * shelf would show something that cannot be bought. */
+    acnet::ShopStockState state;
+    state.tier = acnet::ShopTier::DepartmentStore;
+    std::uint64_t counter = 0;
+    const auto sequence = [&counter]() { return counter++ * 2654435761U + 12345U; };
+    acnet::shop_randomise_priorities(state, sequence);
+    const std::vector<acnet::ShopEntry> stock = acnet::roll_shop_stock(state, sequence);
+    CHECK(!stock.empty());
+    for (const acnet::ShopEntry& entry : stock) {
+        CHECK(entry.item != 0);
+        CHECK(entry.price != 0);
+        CHECK(entry.price == acnet::shop_item_price(entry.item));
+    }
+}
+
+/* The shelf has to be the *whole* shelf. A Buy names a row by index, so if the
+ * server rolled only the rarity-list draws and the game appended tools and
+ * plants locally, the two would disagree about what index 12 is. */
+void shop_shelf_is_the_whole_shelf() {
+    constexpr std::uint16_t kShovel = 8706;
+    constexpr std::uint16_t kSignboard = 9502;
+    constexpr std::uint16_t kUmbrellaFirst = 8708;
+    constexpr std::uint16_t kSapling = 10496;
+    constexpr std::uint16_t kCedarSapling = 10497;
+    constexpr std::uint16_t kPansyBag = 10498;
+    constexpr std::uint16_t kRedPaint = 8749;
+
+    std::uint64_t counter = 0;
+    const auto sequence = [&counter]() { return counter++ * 6364136223846793005ULL + 1442695040888963407ULL; };
+    const auto has = [](const std::vector<acnet::ShopEntry>& stock, std::uint16_t item) {
+        return std::any_of(stock.begin(), stock.end(),
+                           [item](const acnet::ShopEntry& e) { return e.item == item; });
+    };
+    const auto count_in_range = [](const std::vector<acnet::ShopEntry>& stock, std::uint16_t low,
+                                   std::uint16_t high) {
+        return std::count_if(stock.begin(), stock.end(), [low, high](const acnet::ShopEntry& e) {
+            return e.item >= low && e.item <= high;
+        });
+    };
+
+    /* Nookington's stocks every tool, a paint, a signboard, an umbrella, a
+     * cedar sapling with plain ones behind it, and five distinct flower bags. */
+    acnet::ShopStockState top;
+    top.tier = acnet::ShopTier::DepartmentStore;
+    acnet::shop_randomise_priorities(top, sequence);
+    const std::vector<acnet::ShopEntry> shelf = acnet::roll_shop_stock(top, sequence);
+    CHECK(has(shelf, kShovel));
+    CHECK(has(shelf, kSignboard));
+    CHECK(has(shelf, kCedarSapling));
+    CHECK(has(shelf, kSapling));
+    CHECK(count_in_range(shelf, kRedPaint, kRedPaint + 11) == 1);
+    CHECK(count_in_range(shelf, kUmbrellaFirst, kUmbrellaFirst + 31) == 1);
+    /* Five plants, all different -- the original never repeats a flower. */
+    CHECK(count_in_range(shelf, kPansyBag, kPansyBag + 8) == 5);
+    CHECK(shelf.size() <= acnet::kShopMaximumGoods);
+
+    /* The paint colour advances one step per roll and wraps after twelve. */
+    acnet::ShopStockState rotating;
+    rotating.tier = acnet::ShopTier::DepartmentStore;
+    acnet::shop_randomise_priorities(rotating, sequence);
+    std::vector<std::uint16_t> seen;
+    for (int day = 0; day < 13; ++day) {
+        const std::vector<acnet::ShopEntry> today = acnet::roll_shop_stock(rotating, sequence);
+        for (const acnet::ShopEntry& entry : today) {
+            if (entry.item >= kRedPaint && entry.item <= kRedPaint + 11) seen.push_back(entry.item);
+        }
+    }
+    CHECK(seen.size() == 13);
+    for (std::size_t i = 0; i < 12; ++i) CHECK(seen[i] == kRedPaint + i);
+    CHECK(seen[12] == kRedPaint); // wrapped
+
+    /* Nook's Cranny gates tools on lifetime sales, and no paint or signboard. */
+    acnet::ShopStockState cranny;
+    cranny.tier = acnet::ShopTier::Zakka;
+    acnet::shop_randomise_priorities(cranny, sequence);
+    const std::vector<acnet::ShopEntry> new_shop = acnet::roll_shop_stock(cranny, sequence);
+    CHECK(has(new_shop, kShovel));            // the only tool a new store sells
+    CHECK(count_in_range(new_shop, 8704, 8707) == 1);
+    CHECK(!has(new_shop, kSignboard));
+    CHECK(!has(new_shop, kCedarSapling));     // Nookway and above only
+
+    cranny.sales_sum = 12000; // past the axe threshold
+    const std::vector<acnet::ShopEntry> earned = acnet::roll_shop_stock(cranny, sequence);
+    CHECK(count_in_range(earned, 8704, 8707) == 2); // l_zakka_goods stocks two
+}
+
+/* A sale pays what the shop dialogue quotes. Without a resolver installed the
+ * authority has no price table of its own, so nothing is sellable -- which is
+ * what the server did before the resolver existed. */
+void selling_pays_the_generated_price() {
+    constexpr std::uint16_t kRod = 8707;    // 500 new, so 125 secondhand
+    constexpr std::uint16_t kApple = 10240;
+    constexpr std::uint16_t kCherry = 10241;
+    constexpr std::uint16_t kUnpriced = 1;
+
+    acnet::PlayerDirectory players;
+    acnet::WorldAuthority world(&players);
+    acnet::InventoryState inventory;
+    inventory.slots[0].item = kRod;
+    inventory.slots[1].item = kApple;
+    inventory.slots[2].item = kCherry;
+    inventory.slots[3].item = kUnpriced;
+    CHECK(world.register_inventory(1, inventory));
+    acnet::EconomyAuthority economy(&world);
+    CHECK(economy.register_account(1));
+
+    acnet::EconomyRequest sell;
+    sell.type = acnet::EconomyOpType::Sell;
+    sell.account = 1;
+
+    /* No resolver yet: an item with a real price still cannot be sold. */
+    sell.idempotency = {1, 1};
+    sell.inventory_slot = 0;
+    sell.expected_inventory_revision = 1;
+    CHECK(economy.apply(sell).code == acnet::ResultCode::InvalidState);
+
+    /* A town that grows cherries pays a premium for the apple. */
+    economy.set_sell_price_resolver(
+        [](std::uint16_t item) { return acnet::shop_sell_price(item, kCherry); });
+
+    sell.idempotency = {1, 2};
+    sell.inventory_slot = 0;
+    CHECK(economy.apply(sell).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->bells == 125);
+
+    sell.idempotency = {1, 3};
+    sell.inventory_slot = 1; // foreign apple, 2000 / 4
+    sell.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(economy.apply(sell).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->bells == 125 + 500);
+
+    sell.idempotency = {1, 4};
+    sell.inventory_slot = 2; // the town's own cherry, 400 / 4
+    sell.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(economy.apply(sell).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->bells == 125 + 500 + 100);
+
+    /* Something the game does not price is refused rather than given away. */
+    sell.idempotency = {1, 5};
+    sell.inventory_slot = 3;
+    sell.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(economy.apply(sell).code == acnet::ResultCode::InvalidState);
+    CHECK(world.inventory(1)->slots[3].item == kUnpriced);
+
+    /* An explicit override still wins, which is how a test prices by hand. */
+    economy.set_sell_price(kUnpriced, 7);
+    sell.idempotency = {1, 6};
+    CHECK(economy.apply(sell).code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->bells == 125 + 500 + 100 + 7);
+}
+
+/* The shelf is town-wide state: a purchase has to reach everyone, and the index
+ * a Buy names has to mean the same row on both sides. */
+void shop_shelf_replicates_town_wide() {
+    acnet::ShopState shop;
+    shop.revision = 9;
+    shop.stock = {{4104, 1200, 1}, {8707, 500, 2}, {10240, 400, 0}};
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_shop_delta(shop, payload));
+    acnet::ShopState decoded;
+    CHECK(acnet::decode_shop_delta(payload, decoded));
+    CHECK(decoded.revision == shop.revision);
+    CHECK(decoded.stock.size() == shop.stock.size());
+    for (std::size_t i = 0; i < shop.stock.size(); ++i) {
+        CHECK(decoded.stock[i].item == shop.stock[i].item);
+        CHECK(decoded.stock[i].price == shop.stock[i].price);
+        CHECK(decoded.stock[i].quantity == shop.stock[i].quantity);
+    }
+
+    /* A sold-out row keeps its slot so later indices do not shift. */
+    CHECK(decoded.stock[2].quantity == 0);
+
+    /* Revision zero is not a shelf, and trailing bytes are a malformed one. */
+    acnet::ShopState empty_revision;
+    empty_revision.revision = 0;
+    std::vector<std::uint8_t> rejected;
+    CHECK(!acnet::encode_shop_delta(empty_revision, rejected));
+    payload.push_back(0);
+    CHECK(!acnet::decode_shop_delta(payload, decoded));
+    payload.pop_back();
+    payload.pop_back();
+    CHECK(!acnet::decode_shop_delta(payload, decoded));
+
+    /* An oversized shelf is refused rather than truncated. */
+    acnet::ShopState oversized;
+    oversized.revision = 1;
+    oversized.stock.resize(4096);
+    CHECK(!acnet::encode_shop_delta(oversized, rejected));
+
+    /* Town-wide means it reaches a viewer standing anywhere, unlike a tile. */
+    acnet::DeltaLog log;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Shop;
+    delta.zone = 0;
+    delta.target_account = 0;
+    CHECK(acnet::encode_shop_delta(shop, delta.payload));
+    log.append(delta);
+    acnet::InterestContext elsewhere;
+    elsewhere.account = 77;
+    elsewhere.zone = 104; // inside someone's house, nowhere near the shop
+    const acnet::DeltaQueryResult visible = log.since(0, elsewhere, 16);
+    CHECK(visible.deltas.size() == 1);
+    CHECK(visible.deltas[0].kind == acnet::ResourceKind::Shop);
+    acnet::ShopState received;
+    CHECK(acnet::decode_shop_delta(visible.deltas[0].payload, received));
+    CHECK(received.stock.size() == shop.stock.size());
+}
+
+/* The counter sells a whole selection for one quoted total, so the transaction
+ * has to be one atomic request -- and the wallet cannot hold more than the cap,
+ * with the excess coming back as money bags. */
+void selling_a_selection_is_atomic_and_caps_the_wallet() {
+    constexpr std::uint16_t kRod = 8707;      // sells for 125
+    constexpr std::uint16_t kUnpriced = 1;
+    const acnet::WalletOverflowRule rule = acnet::shop_wallet_overflow_rule();
+    CHECK(rule.maximum == 99999);
+    CHECK(rule.chunk == 30000);
+
+    acnet::PlayerDirectory players;
+    acnet::WorldAuthority world(&players);
+    acnet::InventoryState inventory;
+    inventory.slots[0].item = kRod;
+    inventory.slots[1].item = kRod;
+    inventory.slots[2].item = kRod;
+    CHECK(world.register_inventory(1, inventory));
+
+    acnet::EconomyConfig config;
+    config.wallet_maximum = rule.maximum;
+    config.wallet_overflow_chunk = rule.chunk;
+    config.wallet_overflow_item = rule.bag_item;
+    /* No player directory: standing in the shop is validated elsewhere, and
+     * this case is about what the sale does to the pockets and the wallet. */
+    acnet::EconomyAuthority economy(&world, nullptr, config);
+    CHECK(economy.register_account(1));
+    economy.set_sell_price_resolver([](std::uint16_t item) { return acnet::shop_sell_price(item); });
+
+    /* Three rods in one request: one transaction, one total. */
+    acnet::EconomyRequest sell;
+    sell.type = acnet::EconomyOpType::Sell;
+    sell.account = 1;
+    sell.idempotency = {2, 1};
+    sell.slot_mask = 0b111;
+    sell.expected_inventory_revision = 1;
+    const acnet::EconomyResult sold = economy.apply(sell);
+    CHECK(sold.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->bells == 375);
+    for (std::size_t i = 0; i < 3; ++i) CHECK(world.inventory(1)->slots[i].item == 0);
+
+    /* Replaying the same key must not pay twice. */
+    const acnet::EconomyResult replay = economy.apply(sell);
+    CHECK(replay.replayed);
+    CHECK(world.inventory(1)->bells == 375);
+
+    /* One unsellable pocket in the selection voids the whole sale. */
+    acnet::InventoryState mixed;
+    mixed.slots[0].item = kRod;
+    mixed.slots[1].item = kUnpriced;
+    CHECK(world.register_inventory(2, mixed));
+    CHECK(economy.register_account(2));
+    acnet::EconomyRequest partial;
+    partial.type = acnet::EconomyOpType::Sell;
+    partial.account = 2;
+    partial.idempotency = {2, 2};
+    partial.slot_mask = 0b11;
+    partial.expected_inventory_revision = 1;
+    CHECK(economy.apply(partial).code == acnet::ResultCode::InvalidState);
+    CHECK(world.inventory(2)->slots[0].item == kRod);   // nothing moved
+    CHECK(world.inventory(2)->slots[1].item == kUnpriced);
+    CHECK(world.inventory(2)->bells == 0);
+
+    /* A mask naming a pocket that does not exist is malformed, not ignored. */
+    partial.idempotency = {2, 3};
+    partial.slot_mask = 1U << 15;
+    CHECK(economy.apply(partial).code == acnet::ResultCode::Malformed);
+
+    /* Above the cap the overflow comes back as bags, starting in the slot the
+     * sold item vacated. */
+    acnet::InventoryState rich;
+    rich.bells = 99900;
+    rich.slots[0].item = kRod;
+    CHECK(world.register_inventory(3, rich));
+    CHECK(economy.register_account(3));
+    acnet::EconomyRequest big;
+    big.type = acnet::EconomyOpType::Sell;
+    big.account = 3;
+    big.idempotency = {2, 4};
+    big.inventory_slot = 0;
+    big.expected_inventory_revision = 1;
+    CHECK(economy.apply(big).code == acnet::ResultCode::Ok);
+    /* 99900 + 125 is over the cap, so 30000 peels off into a bag. */
+    CHECK(world.inventory(3)->bells == 70025);
+    CHECK(world.inventory(3)->slots[0].item == rule.bag_item);
+
+    /* With the rule unconfigured the authority keeps no game constants of its
+     * own and the wallet simply grows -- the default for a bare test. */
+    acnet::InventoryState uncapped;
+    uncapped.bells = 99900;
+    uncapped.slots[0].item = kRod;
+    acnet::WorldAuthority plain_world(&players);
+    CHECK(plain_world.register_inventory(4, uncapped));
+    acnet::EconomyAuthority plain(&plain_world);
+    CHECK(plain.register_account(4));
+    plain.set_sell_price_resolver([](std::uint16_t item) { return acnet::shop_sell_price(item); });
+    acnet::EconomyRequest plain_sell;
+    plain_sell.type = acnet::EconomyOpType::Sell;
+    plain_sell.account = 4;
+    plain_sell.idempotency = {2, 5};
+    plain_sell.inventory_slot = 0;
+    plain_sell.expected_inventory_revision = 1;
+    CHECK(plain.apply(plain_sell).code == acnet::ResultCode::Ok);
+    CHECK(plain_world.inventory(4)->bells == 100025); // past the cap, no bag
+    CHECK(plain_world.inventory(4)->slots[0].item == 0);
+}
+
+/* One town, one collection: a donation has to reach everyone, and a second
+ * player must not be able to donate a species already on display. */
+void museum_collection_replicates_and_refuses_duplicates() {
+    constexpr std::uint16_t kFish = 6000;
+    constexpr std::uint16_t kBug = 6001;
+
+    acnet::MuseumState museum;
+    museum.revision = 4;
+    museum.donated_items = {kFish, kBug};
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_museum_delta(museum, payload));
+    acnet::MuseumState decoded;
+    CHECK(acnet::decode_museum_delta(payload, decoded));
+    CHECK(decoded.revision == 4);
+    CHECK(decoded.donated_items.size() == 2);
+    CHECK(decoded.donated_items.count(kFish) == 1);
+    CHECK(decoded.donated_items.count(kBug) == 1);
+
+    /* An empty museum is a real state, not a malformed one. */
+    acnet::MuseumState empty;
+    empty.revision = 1;
+    std::vector<std::uint8_t> empty_payload;
+    CHECK(acnet::encode_museum_delta(empty, empty_payload));
+    CHECK(acnet::decode_museum_delta(empty_payload, decoded));
+    CHECK(decoded.donated_items.empty());
+
+    /* Revision zero, trailing bytes, and truncation are all refused. */
+    acnet::MuseumState bad;
+    bad.revision = 0;
+    std::vector<std::uint8_t> rejected;
+    CHECK(!acnet::encode_museum_delta(bad, rejected));
+    payload.push_back(0);
+    CHECK(!acnet::decode_museum_delta(payload, decoded));
+    payload.pop_back();
+    payload.pop_back();
+    CHECK(!acnet::decode_museum_delta(payload, decoded));
+
+    /* Town-wide: it reaches a player who is not in the museum. */
+    acnet::DeltaLog log;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Museum;
+    delta.zone = 0;
+    delta.target_account = 0;
+    CHECK(acnet::encode_museum_delta(museum, delta.payload));
+    log.append(delta);
+    acnet::InterestContext outside;
+    outside.account = 12;
+    outside.zone = 1;
+    const acnet::DeltaQueryResult visible = log.since(0, outside, 8);
+    CHECK(visible.deltas.size() == 1);
+    CHECK(visible.deltas[0].kind == acnet::ResourceKind::Museum);
+
+    /* Two players, one species. The second donation is refused and the item
+     * stays in the donor's pocket. */
+    acnet::PlayerDirectory players;
+    acnet::WorldAuthority world(&players);
+    acnet::InventoryState first;
+    first.slots[0].item = kFish;
+    acnet::InventoryState second;
+    second.slots[0].item = kFish;
+    CHECK(world.register_inventory(1, first));
+    CHECK(world.register_inventory(2, second));
+    acnet::EconomyAuthority economy(&world);
+    CHECK(economy.register_account(1));
+    CHECK(economy.register_account(2));
+
+    acnet::EconomyRequest donate;
+    donate.type = acnet::EconomyOpType::Donate;
+    donate.account = 1;
+    donate.idempotency = {3, 1};
+    donate.inventory_slot = 0;
+    donate.expected_inventory_revision = 1;
+    donate.expected_aux_revision = economy.museum().revision;
+    const acnet::EconomyResult accepted = economy.apply(donate);
+    CHECK(accepted.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->slots[0].item == 0);
+    CHECK(economy.museum().donated_items.count(kFish) == 1);
+
+    acnet::EconomyRequest duplicate;
+    duplicate.type = acnet::EconomyOpType::Donate;
+    duplicate.account = 2;
+    duplicate.idempotency = {3, 2};
+    duplicate.inventory_slot = 0;
+    duplicate.expected_inventory_revision = 1;
+    duplicate.expected_aux_revision = economy.museum().revision;
+    CHECK(economy.apply(duplicate).code == acnet::ResultCode::InvalidState);
+    CHECK(world.inventory(2)->slots[0].item == kFish);
+
+    /* A donor quoting the collection as it was before the first donation is
+     * told to refresh rather than silently overwriting it. */
+    acnet::EconomyRequest stale;
+    stale.type = acnet::EconomyOpType::Donate;
+    stale.account = 2;
+    stale.idempotency = {3, 3};
+    stale.inventory_slot = 0;
+    stale.expected_inventory_revision = 1;
+    stale.expected_aux_revision = accepted.auxiliary_revision - 1;
+    CHECK(economy.apply(stale).code == acnet::ResultCode::StaleRevision);
+}
+
+/* ResourceKind::Npc was declared long before anything produced one, so an NPC
+ * only ever moved on a fresh baseline. */
+void npc_state_replicates_between_baselines() {
+    acnet::NpcState npc;
+    npc.entity = 1000;
+    npc.zone = 2;
+    npc.revision = 5;
+    npc.schedule_state = 3;
+    npc.animation = 1;
+    npc.emotion = 2;
+    npc.destination = 77;
+    npc.transform.position = {30.0F, 0.0F, 45.0F};
+    npc.transform.yaw = 4096;
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_npc_delta(npc, payload));
+    acnet::NpcState decoded;
+    CHECK(acnet::decode_npc_delta(payload, decoded));
+    CHECK(decoded.entity == npc.entity);
+    CHECK(decoded.zone == npc.zone);
+    CHECK(decoded.revision == npc.revision);
+    CHECK(decoded.schedule_state == npc.schedule_state);
+    CHECK(decoded.animation == npc.animation);
+    CHECK(decoded.emotion == npc.emotion);
+    CHECK(decoded.destination == npc.destination);
+    CHECK(decoded.transform.position.z == npc.transform.position.z);
+    CHECK(decoded.transform.yaw == npc.transform.yaw);
+
+    /* Entity zero, zone zero, revision zero, and a non-finite position are all
+     * refused, as is a trailing byte. */
+    acnet::NpcState bad = npc;
+    std::vector<std::uint8_t> rejected;
+    bad.entity = 0;
+    CHECK(!acnet::encode_npc_delta(bad, rejected));
+    bad = npc;
+    bad.zone = 0;
+    CHECK(!acnet::encode_npc_delta(bad, rejected));
+    bad = npc;
+    bad.revision = 0;
+    CHECK(!acnet::encode_npc_delta(bad, rejected));
+    bad = npc;
+    bad.transform.position.x = std::numeric_limits<float>::quiet_NaN();
+    CHECK(!acnet::encode_npc_delta(bad, rejected));
+    payload.push_back(0);
+    CHECK(!acnet::decode_npc_delta(payload, decoded));
+
+    /* Zone-scoped, unlike the shelf: a viewer in another zone is not told. */
+    acnet::DeltaLog log;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Npc;
+    delta.zone = npc.zone;
+    delta.has_position = true;
+    delta.position = npc.transform.position;
+    CHECK(acnet::encode_npc_delta(npc, delta.payload));
+    log.append(delta);
+
+    acnet::InterestContext in_shop;
+    in_shop.account = 5;
+    in_shop.zone = 2;
+    CHECK(log.since(0, in_shop, 8).deltas.size() == 1);
+
+    acnet::InterestContext outdoors;
+    outdoors.account = 6;
+    outdoors.zone = 1;
+    CHECK(log.since(0, outdoors, 8).deltas.empty());
 }
 
 void economy_and_trade_prevent_value_duplication() {
@@ -4154,6 +4683,13 @@ int main() {
         {"multiplayer player queries", multiplayer_player_queries_are_scoped},
         {"client-authoritative movement at 200ms", movement_is_client_authoritative_under_latency},
         {"atomic world transactions", world_transactions_are_atomic_idempotent_and_conserved},
+        {"shop prices match the original", shop_prices_match_the_original_tables},
+        {"selling pays the generated price", selling_pays_the_generated_price},
+        {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
+        {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
+        {"shop shelf replicates town-wide", shop_shelf_replicates_town_wide},
+        {"museum collection replicates", museum_collection_replicates_and_refuses_duplicates},
+        {"NPC state replicates", npc_state_replicates_between_baselines},
         {"economy and escrow trade", economy_and_trade_prevent_value_duplication},
         {"server-authoritative mail and banking", mail_and_banking_are_server_authoritative},
         {"operator gifts survive a restart", operator_gifts_survive_a_restart},

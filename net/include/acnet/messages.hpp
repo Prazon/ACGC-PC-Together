@@ -29,6 +29,11 @@ struct TownBootstrapTile {
 struct TownBootstrap {
     std::uint32_t town_seed = 0;
     std::uint16_t land_id = 0;
+    /* The fruit this town grows (Save_Get(fruit)), decided during town
+     * generation. The server needs it to price fruit, which is worth a
+     * quarter at home of what it fetches anywhere else. Zero means the client
+     * could not report one, and every fruit then prices as foreign. */
+    std::uint16_t native_fruit = 0;
     std::array<std::uint8_t, 8> town_name{};
     PlayerAppearance appearance;
     CustomPattern pattern;

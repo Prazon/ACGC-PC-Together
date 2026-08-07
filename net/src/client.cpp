@@ -477,6 +477,48 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         baseline_.town_capacity = occupancy.capacity;
                     }
                 }
+                if (delta.kind == ResourceKind::Shop && has_baseline_) {
+                    ShopState shop;
+                    if (!decode_shop_delta(delta.payload, shop)) {
+                        error = "malformed shop delta";
+                        return false;
+                    }
+                    /* Replace wholesale. The stock index is what a purchase
+                     * names, so a shelf merged from pieces would eventually buy
+                     * the wrong row. */
+                    baseline_.shop = shop;
+                }
+                if (delta.kind == ResourceKind::Npc && has_baseline_) {
+                    NpcState npc;
+                    if (!decode_npc_delta(delta.payload, npc)) {
+                        error = "malformed NPC delta";
+                        return false;
+                    }
+                    /* Only NPCs in the zone being viewed belong in the list; one
+                     * that walked out of it is dropped rather than left behind
+                     * at its last position. */
+                    const auto existing = std::find_if(baseline_.npcs.begin(), baseline_.npcs.end(),
+                                                       [&npc](const NpcState& held) {
+                                                           return held.entity == npc.entity;
+                                                       });
+                    if (npc.zone != baseline_.zone) {
+                        if (existing != baseline_.npcs.end()) baseline_.npcs.erase(existing);
+                    } else if (existing != baseline_.npcs.end()) {
+                        /* An older delta can arrive after a newer one; the
+                         * revision decides, not arrival order. */
+                        if (npc.revision >= existing->revision) *existing = npc;
+                    } else {
+                        baseline_.npcs.push_back(npc);
+                    }
+                }
+                if (delta.kind == ResourceKind::Museum && has_baseline_) {
+                    MuseumState museum;
+                    if (!decode_museum_delta(delta.payload, museum)) {
+                        error = "malformed museum delta";
+                        return false;
+                    }
+                    baseline_.museum = museum;
+                }
                 if (delta.kind == ResourceKind::Resident) {
                     ResidentRoster roster;
                     if (!decode_resident_delta(delta.payload, roster)) {

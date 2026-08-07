@@ -1,6 +1,6 @@
 # Dedicated Town Netcode Status
 
-Last updated: 2026-08-06
+Last updated: 2026-08-07
 
 ## Overall
 
@@ -16,7 +16,7 @@ and the C headers reject a non-64-bit build.
 
 ## Delivered systems
 
-- Explicit protocol v15 codecs, selective reliability, sequencing,
+- Explicit protocol v16 codecs, selective reliability, sequencing,
   fragmentation, authenticated encryption, invitation proofs, rate limits,
   reconnect credentials, bounded parsing, and stable generated entity IDs.
 - Client-authoritative original movement/collision with finite bounded transform
@@ -832,14 +832,289 @@ Verified: Windows build (966 targets, client and dedicated server link),
 two-client staging under `pc/build64/manual-two-client-test/` has been restaged
 with these binaries for that.
 
+## Server-side item pricing and sales (2026-08-06)
+
+An audit of NPC and villager networking found that the NPC-mediated half of the
+economy was *implemented on the server and unreachable from the client*.
+`m_net_hooks.c` defines `NET_ECONOMY_BUY`, `SELL`, `DONATE`, and `ATTACH_MAIL`;
+`net/src/economy.cpp` implements all four against real shop and museum state;
+no call site in `src/` issues any of them. Only deposit, withdrawal, debt
+payment, and hold-item are actually wired.
+
+That is worse than an absent feature. The wallet is authoritative —
+`Net_ApplyAuthoritativeInventory` overwrites the wallet and the pockets from the
+server whenever the inventory revision moves — so a purchase that only mutates
+locally is *undone* a moment later: the bells return and the item does not.
+Selling, donating, and every NPC that hands over an item behave the same way.
+
+Worse still, the server could not have committed a sale even if asked.
+`EconomyAuthority::Sell` priced items from a `sell_prices_` map that only the
+test suite ever populated, so every sale would have been refused with
+`InvalidState`.
+
+This change fixes the server half completely and leaves the client call sites
+for the follow-up work listed below.
+
+**Prices now come from the game's own function.** `tools/gen_shop_tables.py`
+grew a second dumper that links the real `mSP_ItemNo2ItemPrice` and calls it
+once per 16-bit item id, emitting the 5,807 priced items as a sorted sparse
+table. The previous generator emitted only the six shop-category price tables
+and `shop_item_price()` re-implemented the indexing by hand, which covered
+furniture, stationery, clothes, carpet, wallpaper, and diaries and nothing else
+— no fish, insects, tools, fossils, shells, or plants, which is most of what a
+player actually sells.
+
+Calling the real function rather than porting it matters because pricing runs
+every item through `mRmTp_FtrItemNo2Item1ItemNo`, which remaps the furniture
+forms of clothes, fish, insects, umbrellas, balloons, diaries, fans, pinwheels,
+and tools back to the item they are priced as, using several index tables and
+`mNT_FishIdx2FishItemNo`. Hand-porting that would have been a large, silently
+driftable body of code. The dumper links the real thing and ignores unresolved
+symbols: the pricing call path reaches only the price tables, the fish index
+helper, and `common_data`, and never enters the rest of the game.
+
+Two prices are town state rather than table data and are handled explicitly:
+the new year's grab bag costs the current year, and fruit costs
+`mSP_FOREIGN_FRUIT_PRICE` (2000) everywhere except the town that grows it, where
+it costs 400. The sweep runs with no native fruit set, so the table holds the
+foreign price and the five native prices are dumped alongside it.
+
+- The generated item pool and list spans are **byte-identical** to before, so
+  daily stock rolling is unaffected; only the price representation changed.
+- `python3 tools/gen_shop_tables.py --check` still enforces freshness. It is not
+  yet wired into `make check` or CI — worth doing.
+
+**The town's fruit reaches the server.** `TownBootstrap` carries a
+`native_fruit` field (protocol v16 after the merge below), captured from `Save_Get(fruit)` in
+`Net_SubmitInitialTown` and persisted in town state v9. A client that cannot
+report one sends zero and the server keeps what it has; a server never told
+prices all fruit as foreign, which is the same state a new town starts in.
+
+**Selling is committable.** `EconomyAuthority` gained
+`set_sell_price_resolver()`, consulted whenever an item has no explicit
+override. `TownRuntime` installs a resolver over `shop_sell_price(item,
+native_fruit_, town_year())`. The authority itself stays free of the game's
+tables, so a test can still price a handful of items by hand. An item nothing
+prices is now refused rather than sold for nothing, matching the original's
+`mSP_ItemNo2ItemPrice(item) / SELL_BUY_RATIO == 0` refusal.
+
+Verified with `make check` (41/41, exit 0 — chaos and the accelerated 31-day
+soak with 5 restarts and torn-write recovery both pass) and `make sanitize`. New
+coverage:
+
+- `shop prices match the original` pins the net, axe, shovel, rod, a shellfish
+  (the separate 8-entry table), the signboard constant, native and foreign
+  fruit, the year-priced grab bag, and unpriced ids; then rolls a full
+  Nookington's shelf and asserts every item on it has a price.
+- `selling pays the generated price` walks a sale with no resolver installed
+  (refused, the old behaviour), then with one: a rod at 125, a foreign apple at
+  500, the town's own cherry at 100, an unpriced item refused rather than given
+  away, and an explicit override still winning.
+- `native_fruit` added to the bootstrap codec round trip.
+
+Not done, and the reason each is not a one-line follow-up:
+
+1. **Selling from the shop UI.** `ac_npc_shop_common.c:2247` is the commit
+   point, but the flow sells several items at once, handles paper stacks
+   separately, and breaks the wallet into 30,000-bell bags at
+   `mPr_WALLET_MAX`. The server transaction is one slot at a time, so the call
+   site needs to issue one request per slot and let the projection produce the
+   final wallet — and the bag-breaking has to move server-side or be derived
+   from the projected wallet. Getting this half-right is worse than leaving it.
+2. **Buying.** Needs the client's shelf to *be* the server's shelf: `Buy` names
+   a `shop_index` into `ShopState::stock`, while the game rolls its own list
+   into `Save_Get(shop).items`. `ShopState` already rides the zone baseline and
+   `net/src/shop.cpp` already reproduces `mSP_MakeRandomGoodsList`, so what is
+   missing is an `acnet_client_shop_*` accessor and a projection into
+   `Save_Get(shop).items`, the way the inventory is already projected.
+3. **Donating.** `aCR_putaway_demo_end_wait_init` in
+   `ac_npc_curator_move.c_inc` is a clean single-item commit point, but `Donate`
+   quotes the museum revision and the museum is not replicated at all — no
+   baseline field, no `ResourceKind::Museum`, no client accessor. Passing zero
+   to skip the revision check would defeat the point of the check.
+
+## The shop shelf is replicated, and stopped leaking (2026-08-07)
+
+Continuation of the pricing work above, taking the next step in its own
+dependency order: before a purchase can name a row of Nook's shelf, both sides
+have to agree on what the shelf is.
+
+**A privacy bug went out with the old delta.** Every accepted economy operation
+appended a `ResourceKind::Shop` delta whose payload was the encoded
+`EconomyResult` — and for `Buy` and `Sell` it was sent with `target_account = 0`
+and `zone = 0`, which `DeltaLog::relevant` treats as *everybody*. That result
+carries the acting player's wallet, bank balance, debt, and inventory revision.
+No client read it and neither `Buy` nor `Sell` was reachable, so nothing ever
+leaked in practice — but wiring the purchase would have made it live. The
+account-targeted echoes for the other operations were redundant too: the
+requester already receives the same payload directly as a reliable
+`InventoryResult`.
+
+That delta is gone. `ResourceKind::Shop` now means the shelf and nothing else.
+
+- `encode_shop_delta` / `decode_shop_delta` carry the whole `ShopState`
+  (revision plus up to `kMaximumShopEntries` rows). The list is republished
+  whole rather than per-row: it is small, and a shelf assembled from partial
+  updates could disagree with the server about which index holds what, which is
+  exactly what a purchase names.
+- The server publishes it town-wide on a purchase and on the daily roll, so a
+  sold-out row and a fresh morning shelf both reach players who are nowhere
+  near the shop.
+- `Client` replaces `baseline_.shop` wholesale on receipt;
+  `acnet_client_shop_stock()` and `acnet_client_shop_revision()` expose it.
+
+**The server's shelf is now the whole shelf.** `roll_shop_stock` previously
+reproduced only `mSP_MakeRandomGoodsList` — the rarity-list draws — while the
+game appends tools, paint, a signboard, an umbrella, saplings, and flower bags
+in `mSP_MakeGoodsList` afterwards. Leaving those out would have made the
+server's index disagree with the shelf a player is looking at the moment they
+tried to buy a shovel. `mSP_SelectTool` and `mSP_SelectPlant` are now ported,
+including Nook's Cranny gating the net, rod, and axe behind
+`mSP_{NET,ROD,AXE}_SALES_SUM`, the paint colour rotating one step per roll and
+wrapping after twelve, and the cedar sapling appearing only at Nookway and
+above.
+
+Two deliberate departures from the original, both commented at the port:
+
+- The original's tool and flower loops retry on a duplicate with no bound. That
+  is fine on a console and unacceptable in a server tick, so both are capped;
+  the cap only fires on a pathologically unlucky draw and costs the shelf one
+  item for the day rather than hanging.
+- The Halloween and grab-bag-sale shelf variations are not modelled. The server
+  rolls the ordinary shelf on those days. This is a behaviour gap, not a desync,
+  because the client is told the shelf rather than rolling its own.
+
+`ShopStockState` gained `sales_sum` and `paint_color`, and the **whole**
+structure is now persisted. It never was before: the rarity permutation was
+re-derived from the town seed at every start, which happened to work only
+because nothing mutated it. Lifetime sales and the paint rotation both
+accumulate, so a restart would have reset the tool unlocks and put the paint
+back to red. Folded into the same state v9 as the native fruit, which has not
+shipped.
+
+Per-tier goods counts are now generated from `l_goods_count_table` rather than
+hand-copied into `shop.cpp`, along with the item ids and thresholds the two new
+ports need.
+
+Verified with `make check` and `make sanitize` (43/43). New coverage:
+
+- `shop shelf is the whole shelf` asserts Nookington's stocks every tool, a
+  paint, a signboard, exactly one umbrella, a cedar sapling with plain ones
+  behind it, and five *distinct* flower bags; walks thirteen consecutive rolls
+  to see the paint advance and wrap; and checks a new Nook's Cranny sells only
+  a shovel until `sales_sum` passes the thresholds.
+- `shop shelf replicates town-wide` covers the codec round trip, a sold-out row
+  keeping its index, refusal of revision zero, truncation, trailing bytes, an
+  oversized shelf, and delivery to a viewer standing in a house on the far side
+  of town.
+
+Still not done, and why the chain stops here: projecting the shelf into
+`Save_Get(shop).items` needs the spotlight `rare_item` on the client, which
+means adding it to `ShopState` and to the baseline, delta, and checkpoint
+encodings. That is the next unit of work, followed by the `Buy` call site.
+Stopping at a complete, tested layer rather than starting a partial one.
+
+## Nook's counter, the museum, and NPC deltas are reachable (2026-08-07)
+
+The last layer of the NPC-economy chain. Buying, selling, and donating now go
+through the server from the actual game UI, and the two replication gaps that
+blocked them are closed.
+
+**The shelf is projected into the game.** `ShopState` gained `rare_item` -- the
+game keeps the spotlight furniture in its own `Shop_c` field and it cannot be
+recovered from the stock list, since nothing there marks which row was the rare
+draw. With that on the wire, `Net_ApplyAuthoritativeShopStock` copies the
+server's shelf into `Save_Get(shop).items`, driven off a `last_shop_revision`
+watermark like the inventory projection, and `mSP_MakeGoodsList` returns early
+instead of rolling locally. Rows past the server's count are cleared, so a
+shrinking shelf cannot leave yesterday's item buyable off the end. The local
+roll stays as the offline path.
+
+**Selling is one atomic transaction.** The first attempt at this was wrong and
+worth recording: the counter can sell several items at once, so the obvious
+wiring is a request per pocket -- but each would quote the same inventory
+revision, and every one after the first would come back `StaleRevision`.
+`EconomyRequest` therefore gained a `slot_mask`, one bit per pocket, and the
+authority sells the whole selection or none of it. The dialogue's quoted total
+matches because both sides price through `mSP_ItemNo2ItemPrice`.
+
+**The wallet cap moved server-side.** The original refuses to let the wallet
+exceed `mPr_WALLET_MAX` and peels 30,000 at a time into money bag items in the
+pockets, which is most of what the three sale paths in
+`ac_npc_shop_common.c` are doing. With the pockets authoritative, that had to be
+the server's rule or the bags would vanish on the next projection.
+`EconomyConfig` carries the cap, the chunk, and the bag item; the town runtime
+fills them from the generated constants, so the authority still hardcodes
+nothing. Overflow starts in the slot the sold item vacated, which is what
+guarantees somewhere to put the first bag.
+
+**Buying names a row.** `Net_RequestBuyItem` finds the item's index in the
+projected shelf -- the server's own list, so the lookup cannot drift -- and
+quotes the shop revision. Only the payment is redirected; the item still arrives
+through the usual hand-over actor optimistically, the same pattern
+`Net_RequestPickup` already uses, with the projection reconciling.
+
+**The museum is replicated.** New `ResourceKind::Museum`, a whole-collection
+delta, a baseline field, and `acnet_client_museum_revision()` /
+`acnet_client_museum_has()`. `aCR_putaway_demo_end_wait_init` now donates
+through the server, which is what makes one town have one collection: a second
+player offering a species already on display is refused rather than both
+succeeding locally.
+
+**NPC deltas exist at last.** `ResourceKind::Npc` was declared but never
+produced, so NPC state only ever moved on a fresh baseline. `encode_npc_delta`
+is now published zone-scoped on the hourly schedule job and on conversation
+state changes, the client merges by revision rather than arrival order, drops an
+NPC that left the viewed zone, and `acnet_client_npcs()` exposes the list.
+
+Verified with `make check` (46/46, fuzz, load, chaos, 31-day soak with 5
+restarts and torn-write recovery), `make sanitize`, and the Windows build. New
+coverage:
+
+- `selling a selection is atomic` -- three items in one request for one total,
+  replay not paying twice, one unsellable pocket voiding the whole sale, a mask
+  naming a pocket that does not exist refused as malformed, the wallet cap
+  peeling a bag into the vacated slot, and the rule staying inert when
+  unconfigured.
+- `museum collection replicates` -- codec round trip, an empty collection as a
+  valid state, revision zero and truncation refused, town-wide delivery, a
+  duplicate species refused with the item left in the donor's pocket, and a
+  stale collection revision told to refresh.
+- `NPC state replicates` -- round trip, refusal of entity/zone/revision zero and
+  a non-finite position, and zone scoping (a viewer outdoors is not told about
+  an NPC in the shop).
+
+Two mistakes caught by the tests rather than by review, recorded because both
+were plausible: a first draft of the sale test registered no `PlayerView` and
+tripped the shop-proximity check, and the wallet-cap case used 99,000 + 125,
+which is under the 99,999 cap, so the rule correctly did nothing.
+
+Still not reachable: **conversation leases**. `NpcAuthority` and the C shim are
+complete, but a lease names a server entity and the game's NPC actors have no
+mapping to the two entities the server owns (shopkeeper 1000, islander 1001).
+NPC replication was the prerequisite and is now done; the mapping and the call
+site are not.
+
 ## Compatibility note for the protocol version
 
-Protocol v15 (the item-drop presentation work above) is not backwards compatible
-with an older client: negotiation is strict, so client and server must be
-updated together. Town state is unchanged at v8 — `TileState` on disk did not
-change, only the wire delta grew, so a v8 town directory needs no migration for
-it. The invitation-key and dragged-furniture changes above carry no wire or
-state version of their own.
+**Protocol v16, town state v9.** Two independent lines of work both landed as
+"v15" before they met: the item-drop presentation change grew the `Tile` delta
+with an acting account and a `TileChangeCause`, and the shop work added
+`native_fruit` to `TownBootstrap`, `rare_item` to `ShopState`, and a `slot_mask`
+to `EconomyRequest`. Each was v15 on its own branch, and the merged wire format
+is neither of them, so it is v16 rather than a third meaning for the same
+number. Negotiation is strict: client and server must be updated together.
+
+The town directory is forward compatible — v4 through v8 state files still load,
+with older records receiving migration defaults, a v7 held item migrated out of
+the appearance into the inventory, and a pre-v9 town starting with no recorded
+native fruit, no spotlight rare item, and the seed-derived shelf state until its
+next bootstrap and daily roll supply them. `TileState` on disk did not change;
+only its wire delta grew. Once a v9 checkpoint is written an older server can no
+longer read the directory, so back up the town folder before upgrading.
+
+The invitation-key and dragged-furniture changes above carry no wire or state
+version of their own.
 
 The preceding v14 work also moved town state to v8. The town directory is
 forward compatible — v4 through v7 state files still load, with older records
@@ -895,20 +1170,79 @@ The earlier 2026-08-06 release gate completed successfully:
 
 ## Next recommended task
 
-Finish the mail UI surface, then post letters player to player.
+Nook's counter, the museum, and the shelf are wired end to end. What is left is
+proving it on screen, and the one transaction still out of reach:
 
-1. **Carried-letter handling.** Rearranging letters and storing them on a card
-   still go through the generic drag hand, which is refused online. That needs
-   either a server-side letter reorder operation or a rule that the carried
-   order is presentation-only.
-2. **Posting a letter.** The post office addresses a recipient by name and the
-   server by account, so a name-to-account lookup has to be exposed before
-   `AttachMail` can be reached from the counter. The letter-writing UI then
-   fills the content fields that already exist on the wire.
-3. **Verify against a real client.** None of the mail or banking UI work has
-   been run in the graphical client -- this machine has no SDL2. The ABD, the
-   loan counter, the mailbox flag, reading a letter, and taking a present out
-   all need a pass with `scripts/smoke_online_windows.ps1` and a disc.
+1. **Verify against a real client.** This is now the blocking item, not a
+   footnote. Buying, selling, donating, and the projected shelf have been built
+   and unit-tested but never drawn on screen -- this machine has no SDL2. Nook's
+   counter (single and multi-item sales, a sale that breaks the wallet cap into
+   bags, a purchase someone else just took), the museum, the ABD, the loan
+   counter, and the mailbox all need `scripts/smoke_online_windows.ps1` and a
+   disc. Expect the *dialogue* to be where problems surface: the message flow
+   assumes the local mutation already happened, and it now happens a few frames
+   later when the result lands.
+2. **Conversation leases.** The one built-but-unreachable transaction left. It
+   needs a mapping from the game's NPC actors to server entities: either the
+   server naming its NPCs in a way the client can match, or the client matching
+   `acnet_client_npcs()` by zone and position. Then `Net_RequestConversation` at
+   the talk entry point, so two players cannot hold Nook at once.
+3. **Shop tier and lifetime sales.** `ShopStockState::tier` and `sales_sum` are
+   persisted and drive the shelf, but nothing advances them -- `mSP_PlusSales`
+   is still a local call, so the store never upgrades online and Nook's Cranny
+   never unlocks its later tools.
+4. **Wire `gen_shop_tables.py --check` into `make check`.** The generated tables
+   are load-bearing for pricing now, and nothing enforces their freshness
+   automatically.
+
+Still outstanding from the previous cycle, and unaffected by this change:
+
+- **Carried-letter handling.** Rearranging letters and storing them on a card
+  still go through the generic drag hand, which is refused online. That needs
+  either a server-side letter reorder operation or a rule that the carried
+  order is presentation-only.
+- **Posting a letter.** The post office addresses a recipient by name and the
+  server by account, so a name-to-account lookup has to be exposed before
+  `AttachMail` can be reached from the counter.
+
+### Beyond that: villagers
+
+The same audit found the villager gaps below. They are a roadmap phase, not a
+follow-up, and are listed here so the next cycle starts from a real inventory
+rather than re-deriving it.
+
+- **`ResourceKind::Npc` is declared and never produced.** No NPC delta is ever
+  appended, so even the two server NPCs (shopkeeper 1000, islander 1001) are
+  frozen between baselines. There is also no client accessor for the NPC list —
+  `c_api.h` has `acnet_client_remote_players()` and nothing equivalent — so the
+  decoded `ZoneBaseline::npcs` is unreachable.
+- **Conversation leases are unreachable.** `acnet_client_request_conversation`
+  exists and `NpcAuthority` is tested, but no `Net_RequestConversation` hook
+  exists and nothing in `src/` calls it. Two players can hold the same villager
+  in conversation at once.
+- **The hourly `npc-schedules` job writes state nothing reads.**
+- **Villagers diverge permanently after the first boot.**
+  `mSDI_OnlineTownGenerationBegin` seeds `sqrand()` from the server's town seed,
+  so a fresh save generates the same roster — after which each client owns a
+  private `Save_t.animals[]` that evolves alone. `mNpc_Grow()` runs at boot
+  (`m_start_data_init.c:577`) behind a local `RANDOM(100)` roll, a per-save
+  `last_grow_time`, and a "has talked to every villager" gate, so move-ins
+  differ per client; move-outs are chosen locally from dialogue. Friendship,
+  memories, mood, clothes, catchphrase, `animal_relations[]`, and home acre are
+  all client-local and unpersisted.
+- **`ANIMAL_MEMORY_NUM` is 7** against a 16-player capacity, so the per-villager
+  memory table cannot hold a full town.
+- **Villagers cannot perceive remote players.** Remote players are deliberately
+  not `PLAYER_ACTOR`s; villager AI targets the local player exclusively
+  (`ac_npc2_action.c_inc:96`, `ac_npc2_think.c_inc:71`), and 72 of the 230 files
+  under `src/actor/npc/` reference `GET_PLAYER_ACTOR` or `Now_Private`. This one
+  runs straight into the sole-player audit in `ARCHITECTURE_AUDIT.md` and must
+  not be mechanically rewritten.
+- **Special and event NPCs are unmodelled.** Redd, Gulliver, Wisp, K.K.,
+  Katrina, Saharah, and the holiday set all spawn from local date and local RNG.
+  `ac_halloween_npc_talk.c_inc:36` writes straight into `Now_Private->inventory`,
+  which the authoritative projection then reverts — the same defect class as the
+  shop.
 
 ## Scope boundaries
 

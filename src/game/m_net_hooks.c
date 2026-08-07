@@ -59,6 +59,7 @@ static u32 last_mail_revision = 0;
 static u64 projected_mailbox_ids[HOME_MAILBOX_SIZE];
 static u64 projected_carried_ids[mPr_INVENTORY_MAIL_COUNT];
 static u32 last_house_revision = 0;
+static u32 last_shop_revision = 0;
 static u64 last_house_id = 0;
 static u64 house_candidate_hash = 0;
 static u64 house_submitted_hash = 0;
@@ -912,6 +913,7 @@ int Net_SubmitInitialTown(void) {
     island_count = Net_CaptureIslandBootstrap(island_tiles, ARRAY_COUNT(island_tiles), island_block_x);
     return acnet_client_submit_town_bootstrap(Save_Get(land_info).name,
                                                Save_Get(land_info).id,
+                                               (u16)Save_Get(fruit),
                                                &appearance,
                                                tiles,
                                                index,
@@ -1565,12 +1567,108 @@ static int Net_AnimateTileChange(GAME_PLAY* play, const AcNetTileChange* change)
     return FALSE;
 }
 
+int Net_EconomyAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_inventory_revision() != 0;
+}
+
+/* Sell the submenu's selected items as one server transaction. The counter
+ * sells a whole selection and quotes a single total, so the slots go over as a
+ * mask rather than one request each -- separate requests would all quote the
+ * same inventory revision and every one after the first would be refused as
+ * stale.
+ *
+ * Nothing is mutated locally. Net_ApplyAuthoritativeState projects the wallet,
+ * the emptied slots, and any overflow money bags once the result lands. */
+int Net_RequestSellItems(GAME_PLAY* play, int count) {
+    Submenu_Item_c* item_p;
+    u16 slot_mask = 0;
+    int i;
+    if (!Net_EconomyAuthoritative() || play == NULL || count <= 0) return FALSE;
+    item_p = play->submenu.item_p;
+    if (item_p == NULL) return FALSE;
+    for (i = 0; i < count; ++i) {
+        int slot = item_p[i].slot_no;
+        if (slot < 0 || slot >= mPr_POCKETS_SLOT_COUNT) continue;
+        if (Now_Private->inventory.pockets[slot] == EMPTY_NO) continue;
+        slot_mask |= (u16)(1U << slot);
+    }
+    if (slot_mask == 0) return FALSE;
+    if (!acnet_client_request_sell(slot_mask)) return FALSE;
+    /* Force the next projection: the accepted result is what moves the money,
+     * and the counter has already closed by the time it arrives. */
+    last_inventory_revision = 0;
+    return TRUE;
+}
+
+/* Buy `item` off the shelf. The server names a row by index, so the index is
+ * recovered from the projected shelf -- which is the server's own list, so the
+ * lookup cannot drift. Duplicated rows are interchangeable, hence first match.
+ *
+ * Only the payment is redirected. The item still arrives through the usual
+ * hand-over actor, optimistically, and Net_ApplyAuthoritativeState reconciles
+ * the pockets and the wallet when the result lands. */
+int Net_RequestBuyItem(mActor_name_t item) {
+    mActor_name_t* items;
+    int i;
+    if (!Net_ShopStockAuthoritative() || !Net_EconomyAuthoritative() || item == EMPTY_NO) return FALSE;
+    items = Save_Get(shop).items;
+    for (i = 0; i < mSP_GOODS_COUNT; ++i) {
+        if (items[i] != item) continue;
+        if (!acnet_client_request_economy_auto(NET_ECONOMY_BUY, acnet_client_inventory_revision(),
+                                               acnet_client_shop_revision(), (u32)i, 0, (u16)item, 0, 0, 0))
+            return FALSE;
+        last_inventory_revision = 0;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Donate the pocket item at `slot` to the museum. One town has one collection,
+ * so the server decides whether the species is already displayed; the local
+ * pocket clear is skipped and the projection does it once the result lands. */
+int Net_RequestDonate(int inventory_slot, mActor_name_t item) {
+    if (!Net_EconomyAuthoritative() || inventory_slot < 0 || inventory_slot >= mPr_POCKETS_SLOT_COUNT ||
+        item == EMPTY_NO)
+        return FALSE;
+    if (!acnet_client_request_economy_auto(NET_ECONOMY_DONATE, acnet_client_inventory_revision(),
+                                           acnet_client_museum_revision(), 0, (u8)inventory_slot, (u16)item, 0, 0, 0))
+        return FALSE;
+    last_inventory_revision = 0;
+    return TRUE;
+}
+
+int Net_ShopStockAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_shop_revision() != 0;
+}
+
+/* Copy the server's shelf into Save_t so every UI that reads Save_Get(shop)
+ * -- the counter, the catalogue check, the sale report -- sees the same rows
+ * the server will validate a purchase against. The row index is the contract:
+ * NET_ECONOMY_BUY names a position in this array.
+ *
+ * Rows past the server's count are cleared rather than left alone, so a
+ * shrinking shelf cannot leave yesterday's item buyable at the end. */
+void Net_ApplyAuthoritativeShopStock(void) {
+    AcNetShopEntry stock[mSP_GOODS_COUNT];
+    mActor_name_t* items;
+    size_t count;
+    size_t i;
+    if (!Net_ShopStockAuthoritative()) return;
+    count = acnet_client_shop_stock(stock, ARRAY_COUNT(stock));
+    items = Save_Get(shop).items;
+    for (i = 0; i < ARRAY_COUNT(stock); ++i) {
+        items[i] = i < count ? (mActor_name_t)stock[i].item : EMPTY_NO;
+    }
+    Save_Set(shop.rare_item, (mActor_name_t)acnet_client_shop_rare_item());
+}
+
 static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     AcNetItemSlot slots[15];
     u32 baseline_serial;
     u32 inventory_revision;
     u32 ledger_revision;
     u32 mail_revision;
+    u32 shop_revision;
     u32 tile_zone;
     size_t count;
     size_t i;
@@ -1656,6 +1754,13 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     if (mail_revision != 0 && mail_revision != last_mail_revision) {
         Net_ApplyAuthoritativeMail();
         last_mail_revision = mail_revision;
+    }
+    /* The shelf changes when anyone buys and again at the day boundary, both
+     * of which arrive as a town-wide delta rather than a new baseline. */
+    shop_revision = acnet_client_shop_revision();
+    if (shop_revision != 0 && shop_revision != last_shop_revision) {
+        Net_ApplyAuthoritativeShopStock();
+        last_shop_revision = shop_revision;
     }
 }
 

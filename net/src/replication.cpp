@@ -285,10 +285,16 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     for (const MailRecord& letter : baseline.mail) {
         if (!encode_mail(writer, letter)) return false;
     }
-    if (!writer.u32(baseline.shop.revision) ||
+    if (!writer.u32(baseline.shop.revision) || !writer.u16(baseline.shop.rare_item) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.shop.stock.size()))) return false;
     for (const ShopEntry& entry : baseline.shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
+    }
+    {
+        std::vector<std::uint8_t> museum;
+        if (!encode_museum_delta(baseline.museum, museum) ||
+            !writer.u32(static_cast<std::uint32_t>(museum.size())) ||
+            !writer.bytes(museum.data(), museum.size())) return false;
     }
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
@@ -359,12 +365,19 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     }
     if (baseline.mailbox.mail.size() > kMailboxCapacity ||
         baseline.mailbox.carried.size() > kCarriedMailCapacity) return false;
-    if (!reader.u32(baseline.shop.revision) || !reader.u16(shop_count) || baseline.shop.revision == 0 ||
-        shop_count > kMaximumShopEntries) return false;
+    if (!reader.u32(baseline.shop.revision) || !reader.u16(baseline.shop.rare_item) || !reader.u16(shop_count) ||
+        baseline.shop.revision == 0 || shop_count > kMaximumShopEntries) return false;
     baseline.shop.stock.clear();
     baseline.shop.stock.resize(shop_count);
     for (ShopEntry& entry : baseline.shop.stock) {
         if (!reader.u16(entry.item) || !reader.u32(entry.price) || !reader.u16(entry.quantity)) return false;
+    }
+    {
+        std::uint32_t museum_bytes;
+        if (!reader.u32(museum_bytes) || museum_bytes > kMaximumBaselineBytes) return false;
+        std::vector<std::uint8_t> museum(museum_bytes);
+        if (!reader.bytes(museum.data(), museum.size()) || !decode_museum_delta(museum, baseline.museum))
+            return false;
     }
     baseline.has_house = has_house != 0;
     baseline.house = {};
@@ -430,6 +443,81 @@ TileChangeCause tile_change_cause(WorldOpType type) {
         case WorldOpType::FillHole: return TileChangeCause::FillHole;
     }
     return TileChangeCause::Server;
+}
+
+bool encode_shop_delta(const ShopState& shop, std::vector<std::uint8_t>& output) {
+    if (shop.revision == 0 || shop.stock.size() > kMaximumShopEntries) return false;
+    ByteWriter writer(8 + kMaximumShopEntries * 8);
+    if (!writer.u32(shop.revision) || !writer.u16(shop.rare_item) ||
+        !writer.u16(static_cast<std::uint16_t>(shop.stock.size()))) return false;
+    for (const ShopEntry& entry : shop.stock) {
+        if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode_shop_delta(const std::vector<std::uint8_t>& input, ShopState& shop) {
+    ByteReader reader(input);
+    std::uint16_t count;
+    if (!reader.u32(shop.revision) || !reader.u16(shop.rare_item) || !reader.u16(count) || shop.revision == 0 ||
+        count > kMaximumShopEntries) return false;
+    shop.stock.clear();
+    shop.stock.resize(count);
+    for (ShopEntry& entry : shop.stock) {
+        if (!reader.u16(entry.item) || !reader.u32(entry.price) || !reader.u16(entry.quantity)) return false;
+    }
+    return reader.finished();
+}
+
+/* A whole museum is bounded by the number of donatable species, which is far
+ * below the item space; this is a sanity bound, not a design limit. */
+constexpr std::size_t kMaximumMuseumItems = 4096;
+
+bool encode_museum_delta(const MuseumState& museum, std::vector<std::uint8_t>& output) {
+    if (museum.revision == 0 || museum.donated_items.size() > kMaximumMuseumItems) return false;
+    std::vector<std::uint16_t> sorted(museum.donated_items.begin(), museum.donated_items.end());
+    std::sort(sorted.begin(), sorted.end());
+    ByteWriter writer(8 + sorted.size() * 2);
+    if (!writer.u32(museum.revision) || !writer.u16(static_cast<std::uint16_t>(sorted.size()))) return false;
+    for (std::uint16_t item : sorted) {
+        if (item == 0 || !writer.u16(item)) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode_museum_delta(const std::vector<std::uint8_t>& input, MuseumState& museum) {
+    ByteReader reader(input);
+    std::uint16_t count;
+    if (!reader.u32(museum.revision) || !reader.u16(count) || museum.revision == 0 ||
+        count > kMaximumMuseumItems) return false;
+    museum.donated_items.clear();
+    for (std::uint16_t i = 0; i < count; ++i) {
+        std::uint16_t item;
+        if (!reader.u16(item) || item == 0 || !museum.donated_items.insert(item).second) return false;
+    }
+    return reader.finished();
+}
+
+bool encode_npc_delta(const NpcState& npc, std::vector<std::uint8_t>& output) {
+    if (npc.entity == 0 || npc.zone == 0 || npc.revision == 0 || !finite(npc.transform.position) ||
+        !finite(npc.transform.velocity)) return false;
+    ByteWriter writer(64);
+    if (!writer.u64(npc.entity) || !writer.u32(npc.zone) || !writer.u32(npc.revision) ||
+        !writer.u16(npc.schedule_state) || !writer.u16(npc.animation) || !writer.u16(npc.emotion) ||
+        !writer.u64(npc.destination) || !encode_transform(writer, npc.transform)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_npc_delta(const std::vector<std::uint8_t>& input, NpcState& npc) {
+    ByteReader reader(input);
+    if (!reader.u64(npc.entity) || !reader.u32(npc.zone) || !reader.u32(npc.revision) ||
+        !reader.u16(npc.schedule_state) || !reader.u16(npc.animation) || !reader.u16(npc.emotion) ||
+        !reader.u64(npc.destination) || !decode_transform(reader, npc.transform) || npc.entity == 0 ||
+        npc.zone == 0 || npc.revision == 0) return false;
+    return reader.finished();
 }
 
 bool encode_tile_delta(const TileStateDelta& delta, std::vector<std::uint8_t>& output) {
@@ -525,7 +613,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
     if (delta.target_account != 0 && delta.target_account != interest.account) return false;
     if (delta.kind == ResourceKind::Clock || delta.kind == ResourceKind::Weather ||
         delta.kind == ResourceKind::Town ||
-        delta.kind == ResourceKind::Resident) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Resident || delta.kind == ResourceKind::Shop ||
+        delta.kind == ResourceKind::Museum) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

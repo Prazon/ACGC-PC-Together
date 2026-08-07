@@ -104,6 +104,23 @@ int Net_MailAuthoritative(void);
 /* Identifier of the letter currently projected into slot `index` of the house
  * mailbox / the carried mail array, or 0 if that slot is empty. */
 u64 Net_MailboxMailId(int index);
+
+/* TRUE once the server has reported a shelf. Save_Get(shop).items is then a
+ * projection of it and must not be rolled locally: the row index is what a
+ * purchase names, so a locally rolled shelf would buy the wrong thing. */
+int Net_ShopStockAuthoritative(void);
+void Net_ApplyAuthoritativeShopStock(void);
+
+/* TRUE when the server owns the pockets and the wallet, which it does whenever
+ * a baseline has arrived. Local bell and pocket writes are pointless then --
+ * the next projection overwrites them. */
+int Net_EconomyAuthoritative(void);
+/* Sell the submenu's first `count` selected items in one transaction. */
+int Net_RequestSellItems(GAME_PLAY* play, int count);
+/* Buy one shelf item. The row index comes from the projected shelf. */
+int Net_RequestBuyItem(mActor_name_t item);
+/* Donate a pocket item to the town's museum. */
+int Net_RequestDonate(int inventory_slot, mActor_name_t item);
 u64 Net_CarriedMailId(int index);
 /* Mailbox to pocket, present out of a carried letter, and throwing an emptied
  * letter away -- the same three steps the original UI performs locally. */
@@ -149,6 +166,12 @@ int Net_RequestDiscardMail(u64 mail_id);
 #define Net_RequestBankTransfer(amount) FALSE
 #define Net_RequestPayDebt(amount) FALSE
 #define Net_MailAuthoritative() FALSE
+#define Net_ShopStockAuthoritative() FALSE
+#define Net_ApplyAuthoritativeShopStock() ((void)0)
+#define Net_EconomyAuthoritative() FALSE
+#define Net_RequestSellItems(play, count) FALSE
+#define Net_RequestBuyItem(item) FALSE
+#define Net_RequestDonate(inventory_slot, item) FALSE
 #define Net_MailboxMailId(index) 0
 #define Net_CarriedMailId(index) 0
 #define Net_RequestTakeMail(mail_id) FALSE

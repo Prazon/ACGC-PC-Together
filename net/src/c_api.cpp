@@ -345,6 +345,56 @@ extern "C" uint32_t acnet_client_inventory_revision(void) {
     return client && client->baseline() != nullptr ? client->baseline()->inventory.revision : 0;
 }
 
+extern "C" size_t acnet_client_shop_stock(AcNetShopEntry* output, size_t capacity) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const auto& stock = client->baseline()->shop.stock;
+        const std::size_t count = std::min<std::size_t>(capacity, stock.size());
+        if (output != nullptr) {
+            for (std::size_t i = 0; i < count; ++i)
+                output[i] = {stock[i].item, stock[i].price, stock[i].quantity};
+        }
+        return output == nullptr ? stock.size() : count;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_shop_revision(void) {
+    return client && client->baseline() != nullptr ? client->baseline()->shop.revision : 0;
+}
+
+extern "C" size_t acnet_client_npcs(AcNetNpcState* output, size_t capacity) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const auto& npcs = client->baseline()->npcs;
+        const std::size_t count = std::min<std::size_t>(capacity, npcs.size());
+        if (output != nullptr) {
+            for (std::size_t i = 0; i < count; ++i) {
+                const acnet::NpcState& npc = npcs[i];
+                output[i] = {npc.entity,          npc.zone,
+                             npc.revision,        npc.transform.position.x,
+                             npc.transform.position.y, npc.transform.position.z,
+                             npc.transform.yaw,   npc.schedule_state,
+                             npc.animation,       npc.emotion};
+            }
+        }
+        return output == nullptr ? npcs.size() : count;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_museum_revision(void) {
+    return client && client->baseline() != nullptr ? client->baseline()->museum.revision : 0;
+}
+
+extern "C" int acnet_client_museum_has(uint16_t item) {
+    if (!client || client->baseline() == nullptr) return 0;
+    const auto& donated = client->baseline()->museum.donated_items;
+    return donated.find(item) != donated.end() ? 1 : 0;
+}
+
+extern "C" uint16_t acnet_client_shop_rare_item(void) {
+    return client && client->baseline() != nullptr ? client->baseline()->shop.rare_item : 0;
+}
+
 extern "C" uint16_t acnet_client_equipped_item(void) {
     return client && client->baseline() != nullptr ? client->baseline()->inventory.equipped.item : 0;
 }
@@ -442,6 +492,7 @@ extern "C" size_t acnet_client_residents(AcNetResident* output, size_t capacity)
 
 extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                                     uint16_t land_id,
+                                                    uint16_t native_fruit,
                                                     const AcNetPlayerAppearance* appearance,
                                                     const AcNetTownBootstrapTile* tiles,
                                                     size_t tile_count,
@@ -462,6 +513,7 @@ extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
         acnet::TownBootstrap bootstrap;
         bootstrap.town_seed = client->town_seed();
         bootstrap.land_id = land_id;
+        bootstrap.native_fruit = native_fruit;
         std::copy(town_name, town_name + bootstrap.town_name.size(), bootstrap.town_name.begin());
         appearance_from_c(*appearance, bootstrap.appearance, bootstrap.pattern);
         bootstrap.tiles.reserve(tile_count);
@@ -563,6 +615,20 @@ extern "C" int acnet_client_request_world_auto(uint8_t operation_type,
         return acnet_client_request_world(operation_type, zone_id, x, z, expected_tile_revision,
                                           expected_inventory_revision, inventory_slot, expected_item,
                                           key.high, key.low);
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_sell(uint16_t slot_mask) {
+    try {
+        if (!client || client->baseline() == nullptr || slot_mask == 0) return 0;
+        if ((slot_mask >> acnet::kInventorySlots) != 0) return 0;
+        acnet::EconomyRequest request;
+        request.type = acnet::EconomyOpType::Sell;
+        request.idempotency = random_idempotency();
+        request.expected_inventory_revision = client->baseline()->inventory.revision;
+        request.slot_mask = slot_mask;
+        return request.idempotency.valid() &&
+               client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }
 }
 

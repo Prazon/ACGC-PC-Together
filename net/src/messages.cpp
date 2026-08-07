@@ -98,7 +98,7 @@ bool encode(const TownBootstrap& value, std::vector<std::uint8_t>& output) {
     if (value.town_seed == 0 || (value.land_id & 0xFF00U) != 0x3000U ||
         value.tiles.size() != kTownBootstrapTileCount || !valid_island_bootstrap(value)) return false;
     ByteWriter writer(kMaximumTransferBytes);
-    if (!writer.u32(value.town_seed) || !writer.u16(value.land_id) ||
+    if (!writer.u32(value.town_seed) || !writer.u16(value.land_id) || !writer.u16(value.native_fruit) ||
         !writer.bytes(value.town_name.data(), value.town_name.size()) ||
         !appearance(writer, value.appearance, value.pattern) ||
         !writer.u32(static_cast<std::uint32_t>(value.tiles.size()))) return false;
@@ -118,7 +118,7 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrap& value) {
     if (input.size() > kMaximumTransferBytes) return false;
     ByteReader reader(input);
     std::uint32_t count;
-    if (!reader.u32(value.town_seed) || !reader.u16(value.land_id) ||
+    if (!reader.u32(value.town_seed) || !reader.u16(value.land_id) || !reader.u16(value.native_fruit) ||
         !reader.bytes(value.town_name.data(), value.town_name.size()) ||
         !appearance(reader, value.appearance, value.pattern) ||
         !reader.u32(count) || value.town_seed == 0 || (value.land_id & 0xFF00U) != 0x3000U ||
@@ -236,8 +236,8 @@ bool encode(const EconomyRequest& value, std::vector<std::uint8_t>& output) {
         !writer.u8(static_cast<std::uint8_t>(value.type)) || !writer.u64(value.account) ||
         !idempotency(writer, value.idempotency) || !writer.u32(value.expected_inventory_revision) ||
         !writer.u32(value.expected_aux_revision) || !writer.u32(value.shop_index) ||
-        !writer.u8(value.inventory_slot) || !writer.u16(value.expected_item) || !writer.u64(value.amount) ||
-        !writer.u64(value.recipient) || !writer.u64(value.mail_id)) return false;
+        !writer.u8(value.inventory_slot) || !writer.u16(value.slot_mask) || !writer.u16(value.expected_item) ||
+        !writer.u64(value.amount) || !writer.u64(value.recipient) || !writer.u64(value.mail_id)) return false;
     output = writer.data();
     return true;
 }
@@ -248,7 +248,7 @@ bool decode(const std::vector<std::uint8_t>& input, EconomyRequest& value) {
     if (!reader.u8(type) || type > kMaximumClientEconomyOp ||
         !reader.u64(value.account) || !idempotency(reader, value.idempotency) ||
         !reader.u32(value.expected_inventory_revision) || !reader.u32(value.expected_aux_revision) ||
-        !reader.u32(value.shop_index) || !reader.u8(value.inventory_slot) ||
+        !reader.u32(value.shop_index) || !reader.u8(value.inventory_slot) || !reader.u16(value.slot_mask) ||
         !reader.u16(value.expected_item) || !reader.u64(value.amount) || !reader.u64(value.recipient) ||
         !reader.u64(value.mail_id) || !reader.finished()) return false;
     value.type = static_cast<EconomyOpType>(type);
@@ -596,7 +596,7 @@ bool encode_deltas(const std::vector<ReplicationDelta>& value, std::vector<std::
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u16(static_cast<std::uint16_t>(value.size()))) return false;
     for (const ReplicationDelta& delta : value) {
-        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Resident) ||
+        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Museum) ||
             delta.payload.size() > 65535 || !writer.u32(delta.revision) ||
             !writer.u8(static_cast<std::uint8_t>(delta.kind)) || !writer.u32(delta.zone) ||
             !writer.u64(delta.target_account) || !writer.u64(delta.entity) ||
@@ -621,7 +621,7 @@ bool decode_deltas(const std::vector<std::uint8_t>& input, std::vector<Replicati
         std::uint8_t reliable;
         std::uint8_t has_position;
         std::uint16_t size;
-        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Resident) ||
+        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Museum) ||
             !reader.u32(delta.zone) || !reader.u64(delta.target_account) || !reader.u64(delta.entity) ||
             !reader.u8(reliable) || !reader.u8(has_position) || reliable > 1 || has_position > 1 ||
             !vec3(reader, delta.position) || !reader.u16(size) || size > reader.remaining()) return false;

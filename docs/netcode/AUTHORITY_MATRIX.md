@@ -11,9 +11,14 @@
 | Mail and mailboxes | Client requests | Server transaction, mail revision | Account-targeted `Mail` delta |
 | Carried letters | Client requests | Server transaction, mail revision | Account-targeted `Mail` delta |
 | Tiles and ground items | Client requests | Server transaction | Reliable `Tile` delta, carrying the acting account and `TileChangeCause` |
-| NPC transform/animation | Client (each client simulates its own villagers) | Not committed | Not replicated |
-| NPC schedule state | Server | Server, hourly job | Zone baseline only |
-| Conversation | Client requests | Server lease owner | Reliable lease/result |
+| Villager transform/animation | Client (each client simulates its own villagers) | Not committed | Not replicated |
+| Server NPC transform/animation | Server | Server | Baseline plus zone-scoped `Npc` delta |
+| NPC schedule state | Server | Server, hourly job | Baseline plus zone-scoped `Npc` delta |
+| Conversation | Client requests | Server lease owner | Reliable lease/result (no client caller yet) |
+| Shop stock and prices | Server rolls daily | Server, `EconomyAuthority` | Baseline plus town-wide `Shop` delta |
+| Selling to Nook | Client requests | Server transaction, generated price | Reliable result |
+| Buying from Nook | Client requests | Server transaction, shop revision | Reliable result |
+| Museum collection | Client requests | Server transaction, museum revision | Baseline plus town-wide `Museum` delta |
 | Zone transition | Client requests | Coordinator | Reliable transfer token |
 | House/furniture | Client requests | Server transaction | Reliable revisioned delta |
 | Resident roster (who owns each of the four houses) | Server | Server, from the persistent account table | Baseline plus town-wide `Resident` delta |
@@ -36,6 +41,24 @@ replicated: every client runs the original villager code locally, so two players
 do not see a villager standing in the same place. `NpcState::animation` and
 `NpcState::emotion` ride the zone baseline and are never written. Making
 villagers authoritative is a roadmap phase, not an oversight in this one.
+
+One row still says "no client caller yet". Conversation leases are implemented
+and tested, but nothing in `src/` requests one: a lease names a server entity,
+and the game's NPC actors have no mapping to the two the server owns. NPC state
+is now replicated with an accessor, which is the prerequisite, but the mapping
+and the call site are not built.
+
+Nook's counter used to be the sharp edge here. The wallet **is** authoritative:
+`Net_ApplyAuthoritativeInventory` overwrites `Now_Private->inventory.wallet` and
+the pockets from the server on every inventory revision, so a purchase, sale, or
+donation that only mutated locally was *undone* a frame later -- the bells came
+back and the item did not. Buying, selling, and donating now go through the
+server, and the local mutation is skipped rather than duplicated.
+
+The shelf is a shared object, not a per-client roll. `Save_Get(shop).items` is a
+projection of `ShopState::stock`, and a purchase names a **row index** into it,
+so the two must agree exactly -- which is why the server rolls the tools, paint,
+signboard, umbrella, saplings, and flowers too, not just the rarity draws.
 
 What a player is holding is inventory state, not appearance: it lives in
 `InventoryState::equipped`, moves only through the `HoldItem` transaction, and

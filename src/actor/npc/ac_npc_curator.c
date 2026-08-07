@@ -3,6 +3,7 @@
 #include "m_common_data.h"
 #include "m_item_name.h"
 #include "m_msg.h"
+#include "m_net_hooks.h"
 
 enum {
   aCR_ACTION_WAIT,

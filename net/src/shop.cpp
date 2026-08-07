@@ -24,25 +24,6 @@ constexpr std::size_t kListA = 0;
 constexpr std::size_t kListB = 1;
 constexpr std::size_t kListC = 2;
 
-/* Per-tier goods counts, l_goods_count_table in src/game/m_shop.c. Only the
- * categories this authority rolls are kept; saplings, tools, and plants are
- * fixed shelf stock rather than a daily draw. */
-struct TierCounts {
-    std::uint8_t paper;
-    std::uint8_t cloth;
-    std::uint8_t furniture;
-    std::uint8_t rare_furniture;
-    std::uint8_t carpet;
-    std::uint8_t wallpaper;
-};
-
-constexpr TierCounts kTierCounts[4] = {
-    {1, 1, 1, 0, 1, 1}, // l_zakka_goods
-    {2, 2, 2, 0, 1, 1}, // l_conbini_goods
-    {2, 3, 3, 1, 2, 2}, // l_super_goods
-    {4, 5, 5, 1, 3, 3}, // l_dsuper_goods
-};
-
 bool item_span(std::size_t category, std::size_t list, std::uint32_t& offset, std::uint32_t& count) {
     if (category >= kShopCategoryCount || list >= kShopListCount) return false;
     const ShopListSpan& span = kShopListSpans[category][list];
@@ -109,45 +90,104 @@ void draw_items(const ShopStockState& state,
     }
 }
 
+/* mSP_SelectTool: the tools, then the rotating paint colour and a signboard at
+ * Nookway and above, then one umbrella.
+ *
+ * The original picks a tool at random and retries on a duplicate, in a loop
+ * with no bound -- fine on a console where a hang is a hang, not acceptable in
+ * a server tick. The attempt cap only ever fires if the draw is pathologically
+ * unlucky; the shelf is then one tool short for the day rather than stuck. */
+void select_tools(ShopStockState& state,
+                  const std::uint8_t* counts,
+                  const std::function<std::uint64_t()>& random,
+                  std::vector<std::uint16_t>& out) {
+    constexpr std::uint16_t kTools[4] = {
+        static_cast<std::uint16_t>(kShop_ITM_SHOVEL), static_cast<std::uint16_t>(kShop_ITM_NET),
+        static_cast<std::uint16_t>(kShop_ITM_ROD), static_cast<std::uint16_t>(kShop_ITM_AXE)};
+    const std::uint32_t tier = static_cast<std::uint32_t>(state.tier) & 3U;
+
+    /* Nook's Cranny unlocks tools by lifetime sales; every later tier stocks
+     * all four. */
+    std::uint32_t tool_max;
+    if (tier > kShop_SHOP_TYPE_ZAKKA) tool_max = 4;
+    else if (state.sales_sum < kShop_NET_SALES_SUM) tool_max = 1;
+    else if (state.sales_sum < kShop_ROD_SALES_SUM) tool_max = 2;
+    else if (state.sales_sum < kShop_AXE_SALES_SUM) tool_max = 3;
+    else tool_max = 4;
+
+    std::uint32_t wanted = counts[kShop_GOODS_TYPE_TOOL];
+    if (wanted > tool_max) wanted = tool_max;
+    std::uint32_t added = 0;
+    for (std::uint32_t attempt = 0; added < wanted && attempt < wanted * 256U; ++attempt) {
+        const std::uint16_t tool = kTools[random() % tool_max];
+        if (std::find(out.begin(), out.end(), tool) != out.end()) continue;
+        out.push_back(tool);
+        ++added;
+    }
+
+    if (tier >= kShop_SHOP_TYPE_SUPER) {
+        if (state.paint_color >= kShop_PAINT_NUM) state.paint_color = 0;
+        out.push_back(static_cast<std::uint16_t>(kShop_ITM_RED_PAINT + state.paint_color));
+        ++state.paint_color;
+        out.push_back(static_cast<std::uint16_t>(kShop_ITM_SIGNBOARD));
+    }
+
+    out.push_back(static_cast<std::uint16_t>(kShop_ITM_UMBRELLA00 + random() % kShop_UMBRELLA_NUM));
+}
+
+/* mSP_SelectPlant: a cedar sapling at Nookway and above, then plain saplings,
+ * then distinct flower bags. The Halloween and grab-bag-sale variations are not
+ * modelled; the server rolls the ordinary shelf on those days. */
+void select_plants(const ShopStockState& state,
+                   const std::uint8_t* counts,
+                   const std::function<std::uint64_t()>& random,
+                   std::vector<std::uint16_t>& out) {
+    const std::uint32_t tier = static_cast<std::uint32_t>(state.tier) & 3U;
+    std::uint32_t saplings = counts[kShop_GOODS_TYPE_SAPLING];
+    std::uint32_t flowers = counts[kShop_GOODS_TYPE_PLANT];
+
+    if (tier >= kShop_SHOP_TYPE_SUPER && saplings > 0) {
+        out.push_back(static_cast<std::uint16_t>(kShop_ITM_CEDAR_SAPLING));
+        --saplings;
+    }
+    for (; saplings > 0; --saplings) out.push_back(static_cast<std::uint16_t>(kShop_ITM_SAPLING));
+
+    std::vector<bool> used(kShop_FLOWER_NUM, false);
+    for (std::uint32_t attempt = 0; flowers > 0 && attempt < kShop_FLOWER_NUM * 256U; ++attempt) {
+        const std::size_t index = static_cast<std::size_t>(random() % kShop_FLOWER_NUM);
+        if (used[index]) continue;
+        used[index] = true;
+        out.push_back(static_cast<std::uint16_t>(kShop_ITM_WHITE_PANSY_BAG + index));
+        --flowers;
+    }
+}
+
 } // namespace
 
-std::uint32_t shop_item_price(std::uint16_t item) {
+std::uint32_t shop_item_price(std::uint16_t item, std::uint16_t native_fruit, std::uint16_t year) {
     if (item == 0) return 0;
-    /* Furniture: the low two bits are the facing, and the price table is
-     * indexed by furniture index (mRmTp_FtrItemNo2FtrIdx). */
-    if (item >= kShop_FTR1_START) {
-        const std::size_t index = 0x400 + ((item - kShop_FTR1_START) >> 2);
-        return index < kShopPriceCounts[kCatFurniture] ? kShopPriceTables[kCatFurniture][index] : 0;
+    /* The grab bag costs whatever year it is bought in, so it is town state
+     * rather than table data and the generated sweep leaves it out. */
+    if (item == kShop_HUKUBUKURO_BAG) return year;
+    /* A fruit is cheap at home and dear everywhere else. The swept table holds
+     * the foreign price, so only the town's own fruit needs the override. */
+    if (item == native_fruit) {
+        for (std::size_t i = 0; i < kShopFruitCount; ++i) {
+            if (kShopFruitIds[i] == item) return kShopNativeFruitPrices[i];
+        }
     }
-    if (item >= kShop_FTR0_START && item < kShop_ITM_PAPER_START) {
-        const std::size_t index = (item - kShop_FTR0_START) >> 2;
-        return index < kShopPriceCounts[kCatFurniture] ? kShopPriceTables[kCatFurniture][index] : 0;
-    }
-    /* Stationery repeats one price block across its design sets, and each
-     * successive set costs a multiple of the base. */
-    if (item >= kShop_ITM_PAPER_START && item < kShop_ITM_PAPER_START + 1024) {
-        const std::uint32_t paper_index = item - kShop_ITM_PAPER_START;
-        const std::size_t index = paper_index % kShop_PAPER_UNIQUE_NUM;
-        if (index >= kShopPriceCounts[kCatPaper]) return 0;
-        return kShopPriceTables[kCatPaper][index] * ((paper_index / kShop_PAPER_UNIQUE_NUM) + 1);
-    }
-    struct Simple {
-        std::uint32_t base;
-        std::size_t category;
-    };
-    const Simple simple[] = {
-        {kShop_ITM_CLOTH_START, kCatCloth},
-        {kShop_ITM_CARPET_START, kCatCarpet},
-        {kShop_ITM_WALL_START, kCatWallpaper},
-        {kShop_ITM_DIARY_START, kCatDiary},
-    };
-    for (const Simple& entry : simple) {
-        if (item < entry.base) continue;
-        const std::size_t index = item - entry.base;
-        if (index < kShopPriceCounts[entry.category])
-            return kShopPriceTables[entry.category][index];
-    }
-    return 0;
+    const std::uint16_t* const end = kShopPriceIds + kShopPriceCount;
+    const std::uint16_t* const found = std::lower_bound(kShopPriceIds, end, item);
+    if (found == end || *found != item) return 0;
+    return kShopPriceValues[found - kShopPriceIds];
+}
+
+std::uint32_t shop_sell_price(std::uint16_t item, std::uint16_t native_fruit, std::uint16_t year) {
+    return shop_item_price(item, native_fruit, year) / kShopSellBuyRatio;
+}
+
+WalletOverflowRule shop_wallet_overflow_rule() {
+    return {kShop_WALLET_MAX, kShop_MONEY_BAG_VALUE, static_cast<std::uint16_t>(kShop_MONEY_BAG_ITEM)};
 }
 
 void shop_randomise_priorities(ShopStockState& state, const std::function<std::uint64_t()>& random) {
@@ -166,13 +206,13 @@ void shop_randomise_priorities(ShopStockState& state, const std::function<std::u
 
 std::vector<ShopEntry> roll_shop_stock(ShopStockState& state,
                                        const std::function<std::uint64_t()>& random) {
-    const TierCounts& counts = kTierCounts[static_cast<std::size_t>(state.tier) & 3];
+    const std::uint8_t* counts = kShopGoodsCounts[static_cast<std::size_t>(state.tier) & 3];
     std::vector<std::uint16_t> items;
     items.reserve(kShopMaximumGoods);
 
     /* Rare furniture is rolled first and kept aside, as the original does. */
     state.rare_item = 0;
-    if (counts.rare_furniture != 0) {
+    if (counts[kShop_GOODS_TYPE_RARE_FTR] != 0) {
         std::vector<std::uint16_t> rare;
         std::uint32_t offset = 0;
         std::uint32_t count = 0;
@@ -183,13 +223,21 @@ std::vector<ShopEntry> roll_shop_stock(ShopStockState& state,
         (void)rare;
     }
 
-    draw_items(state, kCatFurniture, counts.furniture, random, items);
-    draw_items(state, kCatPaper, counts.paper, random, items);
+    draw_items(state, kCatFurniture, counts[kShop_GOODS_TYPE_FTR], random, items);
+    draw_items(state, kCatPaper, counts[kShop_GOODS_TYPE_PAPER], random, items);
     /* Only Nookway and above stock a diary. */
     if (state.tier >= ShopTier::Super) draw_items(state, kCatDiary, 1, random, items);
-    draw_items(state, kCatCloth, counts.cloth, random, items);
-    draw_items(state, kCatCarpet, counts.carpet, random, items);
-    draw_items(state, kCatWallpaper, counts.wallpaper, random, items);
+    draw_items(state, kCatCloth, counts[kShop_GOODS_TYPE_CLOTH], random, items);
+    draw_items(state, kCatCarpet, counts[kShop_GOODS_TYPE_CARPET], random, items);
+    draw_items(state, kCatWallpaper, counts[kShop_GOODS_TYPE_WALL], random, items);
+
+    /* The rest of the shelf is not a daily draw from the rarity lists but the
+     * fixed stock mSP_MakeGoodsList appends after it: tools, paint, signboard,
+     * umbrella, saplings, and flower bags. They belong in ShopState::stock
+     * because a Buy names a row by index, and an index that skipped them would
+     * not agree with the shelf the player is looking at. */
+    select_tools(state, counts, random, items);
+    select_plants(state, counts, random, items);
 
     std::vector<ShopEntry> stock;
     stock.reserve(items.size());

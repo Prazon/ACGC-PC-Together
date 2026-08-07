@@ -34,6 +34,10 @@ enum class ResourceKind : std::uint8_t {
      * derivable from the viewer's interest set: a resident who is logged out
      * still owns their house. */
     Resident,
+    /* What the museum already holds. Town-wide: one town has one collection,
+     * and a donor needs to know a species is already displayed before offering
+     * it. Carries the revision a Donate has to quote. */
+    Museum,
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -118,6 +122,9 @@ struct ZoneBaseline {
     /* The viewer's own pending letters, in mailbox order. */
     std::vector<MailRecord> mail;
     ShopState shop;
+    /* Town-wide, like the shelf: what the museum already displays, so a donor
+     * is not offered a duplicate and Donate has a revision to quote. */
+    MuseumState museum;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;
@@ -158,6 +165,27 @@ struct TileStateDelta {
 
 bool encode_tile_delta(const TileStateDelta& delta, std::vector<std::uint8_t>& output);
 bool decode_tile_delta(const std::vector<std::uint8_t>& input, TileStateDelta& delta);
+
+/* The shop shelf, town-wide. A purchase takes the item off everyone's shelf,
+ * so the whole stock list is republished rather than the one changed row: it
+ * is at most kMaximumShopEntries short entries, and a shelf assembled from
+ * partial updates could disagree with the server about what index holds what.
+ * The index is what a Buy request names, so it has to be exact. */
+bool encode_shop_delta(const ShopState& shop, std::vector<std::uint8_t>& output);
+bool decode_shop_delta(const std::vector<std::uint8_t>& input, ShopState& shop);
+
+/* The museum's collection, town-wide. Sent whole for the same reason as the
+ * shelf, and because a donor needs the full set to know what is already
+ * displayed; the ids are sorted so the encoding is stable. */
+bool encode_museum_delta(const MuseumState& museum, std::vector<std::uint8_t>& output);
+bool decode_museum_delta(const std::vector<std::uint8_t>& input, MuseumState& museum);
+
+/* One NPC's state changing. Zone-scoped, unlike the shelf: an NPC matters only
+ * to players who can see it. `ResourceKind::Npc` was declared long before
+ * anything produced one, so a viewer's NPC list only ever refreshed on a new
+ * baseline. */
+bool encode_npc_delta(const NpcState& npc, std::vector<std::uint8_t>& output);
+bool decode_npc_delta(const std::vector<std::uint8_t>& input, NpcState& npc);
 
 bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& output);
 bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& baseline);

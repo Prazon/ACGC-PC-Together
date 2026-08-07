@@ -224,7 +224,18 @@ TownRuntime::TownRuntime(TownRuntimeConfig config)
       world_(&players_),
       /* shop zone/position/radius, museum zone, post office zone, mailbox zone
        * (0 = any: letters are read at the recipient's own mailbox), trade radius. */
-      economy_(&world_, &players_, acnet::EconomyConfig{2, {30.0F, 0.0F, 30.0F}, 220.0F, 4, 3, 0, 120.0F}),
+      economy_(&world_,
+               &players_,
+               acnet::EconomyConfig{2,
+                                    {30.0F, 0.0F, 30.0F},
+                                    220.0F,
+                                    4,
+                                    3,
+                                    0,
+                                    120.0F,
+                                    acnet::shop_wallet_overflow_rule().maximum,
+                                    acnet::shop_wallet_overflow_rule().chunk,
+                                    acnet::shop_wallet_overflow_rule().bag_item}),
       encounters_(&players_, &world_),
       npcs_(&players_),
       zones_(&players_),
@@ -454,6 +465,7 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
         const auto draw = [&shop_random]() -> std::uint64_t { return shop_random(); };
         acnet::shop_randomise_priorities(shop_stock_, draw);
         shop.stock = acnet::roll_shop_stock(shop_stock_, draw);
+        shop.rare_item = shop_stock_.rare_item;
     }
     if (!npcs_.add_npc(shopkeeper)) {
         error = "failed to initialize public interior";
@@ -510,6 +522,13 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
         }
     }
     economy_.set_shop(shop);
+    /* Nook pays the game's own price for whatever a player hands over. The
+     * resolver is installed rather than a filled table because two of the
+     * prices move: fruit depends on which one this town grows, and the new
+     * year's grab bag is worth the year it is sold in. */
+    economy_.set_sell_price_resolver([this](std::uint16_t item) {
+        return acnet::shop_sell_price(item, native_fruit_, town_year());
+    });
     std::uint64_t checkpoint_sequence = 0;
     if (checkpoint.has_value()) {
         checkpoint_sequence = checkpoint->sequence;
@@ -546,6 +565,7 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
                 if (npc == nullptr) continue;
                 npc->schedule_state = schedule;
                 npc->revision = advance_revision(npc->revision);
+                publish_npc_change(*npc);
             }
             for (auto& connection : connections_) connection.second.has_exterior_chunk = false;
             ++metrics_.hourly_jobs;
@@ -571,7 +591,17 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
             std::mt19937_64 shop_random(entropy);
             shop.stock = acnet::roll_shop_stock(shop_stock_,
                                                 [&shop_random]() -> std::uint64_t { return shop_random(); });
+            shop.rare_item = shop_stock_.rare_item;
             economy_.set_shop(shop);
+            /* Yesterday's shelf is gone, so tell everyone before they next walk
+             * into the shop rather than waiting for their next baseline. */
+            {
+                acnet::ReplicationDelta shop_delta;
+                shop_delta.kind = acnet::ResourceKind::Shop;
+                shop_delta.zone = 0;
+                shop_delta.target_account = 0;
+                if (acnet::encode_shop_delta(shop, shop_delta.payload)) deltas_.append(std::move(shop_delta));
+            }
             const auto tiles = world_.tiles_in_zone(1);
             for (const auto& entry : tiles) {
                 if (entry.second.terrain != acnet::TerrainState::Planted) continue;
@@ -999,6 +1029,15 @@ void TownRuntime::publish_presentation(const acnet::PlayerView& player) {
 
 /* The hand is inventory state, so the presentation mirror is refreshed from the
  * authority rather than tracked alongside it. */
+void TownRuntime::publish_npc_change(const acnet::NpcState& npc) {
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Npc;
+    delta.zone = npc.zone;
+    delta.has_position = true;
+    delta.position = npc.transform.position;
+    if (acnet::encode_npc_delta(npc, delta.payload)) deltas_.append(std::move(delta));
+}
+
 void TownRuntime::refresh_equipped_item(acnet::AccountId account) {
     acnet::PlayerView* player = players_.by_account(account);
     const acnet::InventoryState* inventory = world_.inventory(account);
@@ -1101,6 +1140,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     if (mailbox != nullptr) baseline.mailbox = *mailbox;
     baseline.mail = economy_.mail_for(connection.account);
     baseline.shop = economy_.shop();
+    baseline.museum = economy_.museum();
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1242,6 +1282,11 @@ bool TownRuntime::dispatch(Connection& connection,
                     player->appearance = request.appearance;
                     player->pattern = request.pattern;
                 }
+                /* The fruit is decided during town generation, so the client
+                 * that creates the town is the one that knows it. Later
+                 * bootstraps repeat the same value; a client that could not
+                 * report one leaves whatever is already recorded alone. */
+                if (request.native_fruit != 0) native_fruit_ = request.native_fruit;
                 const bool initialized_now = !town_bootstrapped_;
                 if (initialized_now) {
                     std::size_t index = 0;
@@ -1436,15 +1481,36 @@ bool TownRuntime::dispatch(Connection& connection,
                 /* Holding, and only holding, changes what onlookers see in this
                  * player's hand. */
                 if (request.type == acnet::EconomyOpType::HoldItem) refresh_equipped_item(connection.account);
-                acnet::ReplicationDelta delta;
-                delta.kind = request.type == acnet::EconomyOpType::Donate ? acnet::ResourceKind::Event
-                                                                          : acnet::ResourceKind::Shop;
-                delta.zone = 0;
-                delta.target_account = request.type == acnet::EconomyOpType::Buy ||
-                                               request.type == acnet::EconomyOpType::Sell
-                                           ? 0 : connection.account;
-                delta.payload = payload;
-                deltas_.append(std::move(delta));
+                /* A purchase takes the item off the shelf everyone is looking
+                 * at, so the shelf is republished town-wide. Nothing else here
+                 * is public: the requester already has its own outcome from the
+                 * InventoryResult sent below, and broadcasting that result --
+                 * which carries the player's wallet, bank balance, and debt --
+                 * would hand every peer another player's finances. */
+                if (request.type == acnet::EconomyOpType::Buy) {
+                    acnet::ReplicationDelta delta;
+                    delta.kind = acnet::ResourceKind::Shop;
+                    delta.zone = 0;
+                    delta.target_account = 0;
+                    if (!acnet::encode_shop_delta(economy_.shop(), delta.payload)) {
+                        error = "failed to serialize shop delta";
+                        return false;
+                    }
+                    deltas_.append(std::move(delta));
+                }
+                /* One town, one collection: a donation changes what everyone
+                 * else will be offered the chance to donate. */
+                if (request.type == acnet::EconomyOpType::Donate) {
+                    acnet::ReplicationDelta delta;
+                    delta.kind = acnet::ResourceKind::Museum;
+                    delta.zone = 0;
+                    delta.target_account = 0;
+                    if (!acnet::encode_museum_delta(economy_.museum(), delta.payload)) {
+                        error = "failed to serialize museum delta";
+                        return false;
+                    }
+                    deltas_.append(std::move(delta));
+                }
             }
             return send_payload(connection, acnet::MessageType::InventoryResult, acnet::Channel::Transactions,
                                 payload, monotonic_ms, error);
@@ -1504,6 +1570,11 @@ bool TownRuntime::dispatch(Connection& connection,
                 result.completed = true;
                 result.code = npcs_.release_conversation(request.account, request.npc, request.lease_id)
                                   ? acnet::ResultCode::Ok : acnet::ResultCode::NotFound;
+            }
+            /* Starting and ending a conversation turn the NPC to face its
+             * partner, which onlookers in the same zone should see. */
+            if (result.code == acnet::ResultCode::Ok) {
+                if (const acnet::NpcState* npc = npcs_.npc(request.npc)) publish_npc_change(*npc);
             }
             std::vector<std::uint8_t> payload;
             if (!acnet::encode(result, payload)) { error = "failed to serialize conversation result"; return false; }
