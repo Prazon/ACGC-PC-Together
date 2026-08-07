@@ -62,9 +62,18 @@ jobs:
         run: |
           file pc/build64/bin/AnimalCrossing.exe | grep -q 'PE32+.*x86-64'
           file pc/build64/bin/AnimalCrossingServer.exe | grep -q 'PE32+.*x86-64'
+      # Actions runs pwsh with $ErrorActionPreference = 'Stop', which turns any
+      # stderr from a native command into a thrown NativeCommandError and hides
+      # the real exit code. Call the executable explicitly, let it finish, then
+      # report and propagate its status so a failure names itself in the log.
       - name: Windows dedicated-server smoke
         shell: pwsh
-        run: pc/build64/bin/AnimalCrossingServer.exe --smoke --ticks 120 --data pc/build64/server-smoke
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & .\pc\build64\bin\AnimalCrossingServer.exe --smoke --ticks 120 --no-dashboard --data pc\build64\server-smoke
+          $code = $LASTEXITCODE
+          Write-Host "AnimalCrossingServer exited with $code"
+          if ($code -ne 0) { exit $code }
       - name: Build asset-free release package
         shell: pwsh
         run: scripts/package_windows.ps1 -Version ci
