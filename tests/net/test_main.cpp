@@ -2311,6 +2311,14 @@ void clock_jobs_and_replication_survive_empty_time() {
         clock.state().weather_intensity, world, players, npcs);
     baseline.town_population = 3;
     baseline.town_capacity = 16;
+    baseline.residents.slots[0].account = 9001;
+    baseline.residents.slots[0].name = {'K', 'I', 'K', 'I', ' ', ' ', ' ', ' '};
+    baseline.residents.slots[0].gender = 1;
+    baseline.residents.slots[0].occupied = true;
+    baseline.residents.slots[2].account = 9002;
+    baseline.residents.slots[2].name = {'R', 'E', 'X', ' ', ' ', ' ', ' ', ' '};
+    baseline.residents.slots[2].gender = 0;
+    baseline.residents.slots[2].occupied = true;
     std::vector<std::uint8_t> baseline_bytes;
     CHECK(acnet::encode_baseline(baseline, baseline_bytes));
     acnet::ZoneBaseline decoded;
@@ -2329,6 +2337,12 @@ void clock_jobs_and_replication_survive_empty_time() {
      * interest set above (one visible player, three in town). */
     CHECK(decoded.town_population == 3);
     CHECK(decoded.town_capacity == 16);
+    /* House ownership likewise: slot 2's resident is not in the interest set and
+     * need not even be logged in. */
+    CHECK(decoded.residents == baseline.residents);
+    CHECK(decoded.residents.slots[2].account == 9002);
+    CHECK(!decoded.residents.slots[1].occupied);
+    CHECK(decoded.residents.slots[1].account == 0);
     baseline_bytes.pop_back();
     CHECK(!acnet::decode_baseline(baseline_bytes, decoded));
 
@@ -2419,6 +2433,75 @@ void clock_jobs_and_replication_survive_empty_time() {
     for (int i = 0; i < 3; ++i) deltas.append(clock_delta);
     CHECK(deltas.size() == 4);
     CHECK(deltas.since(1, interest, 20).requires_baseline);
+}
+
+void resident_roster_replication() {
+    acnet::ResidentRoster roster;
+    roster.slots[1].account = 4242;
+    roster.slots[1].name = {'N', 'O', 'O', 'K', ' ', ' ', ' ', ' '};
+    roster.slots[1].gender = 2;
+    roster.slots[1].occupied = true;
+    std::vector<std::uint8_t> bytes;
+    CHECK(acnet::encode_resident_delta(roster, bytes));
+    CHECK(bytes.size() == acnet::kOriginalResidentSlots * 18U);
+    acnet::ResidentRoster decoded;
+    CHECK(acnet::decode_resident_delta(bytes, decoded));
+    CHECK(decoded == roster);
+    CHECK(decoded.slots[1].name[0] == 'N');
+    CHECK(!decoded.slots[0].occupied);
+
+    /* An all-vacant roster is a legitimate state -- a town nobody has claimed
+     * yet -- and must survive the round trip rather than be treated as absent. */
+    const acnet::ResidentRoster empty;
+    std::vector<std::uint8_t> empty_bytes;
+    CHECK(acnet::encode_resident_delta(empty, empty_bytes));
+    CHECK(acnet::decode_resident_delta(empty_bytes, decoded));
+    CHECK(decoded == empty);
+
+    /* A vacant slot carries no identity, so a peer cannot smuggle a name or an
+     * account past a reader that only consults the flag. */
+    acnet::ResidentRoster smuggled;
+    smuggled.slots[0].account = 7;
+    CHECK(!acnet::encode_resident_delta(smuggled, bytes));
+    CHECK(acnet::encode_resident_delta(roster, bytes));
+    bytes[18] = 0; /* clear slot 1's `occupied` while leaving its payload behind */
+    CHECK(!acnet::decode_resident_delta(bytes, decoded));
+
+    /* A gender the game cannot represent, an occupied slot with no account, and
+     * a truncated payload are all refused. */
+    acnet::ResidentRoster bad_gender = roster;
+    bad_gender.slots[1].gender = 3;
+    CHECK(!acnet::encode_resident_delta(bad_gender, bytes));
+    acnet::ResidentRoster no_account = roster;
+    no_account.slots[1].account = 0;
+    CHECK(!acnet::encode_resident_delta(no_account, bytes));
+    CHECK(acnet::encode_resident_delta(roster, bytes));
+    bytes.pop_back();
+    CHECK(!acnet::decode_resident_delta(bytes, decoded));
+
+    /* Town-wide: it must reach a viewer standing in a different zone, which is
+     * the whole point -- the map shows house owners from inside a house. */
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Resident;
+    delta.zone = 0;
+    delta.reliable = true;
+    CHECK(acnet::encode_resident_delta(roster, delta.payload));
+    std::vector<std::uint8_t> batch_bytes;
+    std::vector<acnet::ReplicationDelta> batch{delta};
+    CHECK(acnet::encode_deltas(batch, batch_bytes));
+    std::vector<acnet::ReplicationDelta> batch_decoded;
+    CHECK(acnet::decode_deltas(batch_bytes, batch_decoded));
+    CHECK(batch_decoded.size() == 1);
+    CHECK(batch_decoded[0].kind == acnet::ResourceKind::Resident);
+
+    acnet::DeltaLog log(4);
+    log.append(delta);
+    acnet::InterestContext elsewhere;
+    elsewhere.account = 4242;
+    elsewhere.zone = 101;
+    const auto visible = log.since(0, elsewhere, 20);
+    CHECK(visible.deltas.size() == 1);
+    CHECK(visible.deltas[0].kind == acnet::ResourceKind::Resident);
 }
 
 void real_runtime_serves_eight_moving_bots() {
@@ -2715,6 +2798,36 @@ void production_clients_connect_move_and_render_each_other() {
                             second_remotes[0].pattern.texture == patterned.pattern.texture;
     }
     CHECK(pattern_converged);
+
+    /* Both accounts took an original resident slot, so each client must be able
+     * to name the owner of every occupied house -- including, after the update
+     * above, the other player's current name. This is what the town map reads;
+     * a client's own save knows only the account it logged in as. */
+    auto find_resident = [](const acnet::ResidentRoster& roster, acnet::AccountId account) {
+        return std::find_if(roster.slots.begin(), roster.slots.end(),
+                            [account](const acnet::ResidentIdentity& resident) {
+                                return resident.occupied && resident.account == account;
+                            });
+    };
+    auto roster_converged = [&](const acnet::ClientRuntime& viewer) {
+        if (!viewer.has_residents()) return false;
+        const acnet::ResidentRoster& roster = viewer.residents();
+        const auto owner = find_resident(roster, first_config.account);
+        return owner != roster.slots.end() && owner->name == patterned.appearance.name &&
+               find_resident(roster, second_config.account) != roster.slots.end() &&
+               /* The two remaining slots are authoritatively vacant, not unreported. */
+               std::count_if(roster.slots.begin(), roster.slots.end(),
+                             [](const acnet::ResidentIdentity& resident) { return resident.occupied; }) == 2;
+    };
+    bool residents_converged = false;
+    for (std::uint64_t i = 0; i < 200 && !residents_converged; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        CHECK(server.step(++settle_now, wall + 5, error));
+        CHECK(first.poll(settle_now, error));
+        CHECK(second.poll(settle_now, error));
+        residents_converged = roster_converged(first) && roster_converged(second);
+    }
+    CHECK(residents_converged);
 
     bool actions_converged = false;
     for (std::uint64_t i = 0; i < 120 && !actions_converged; ++i) {
@@ -3454,6 +3567,7 @@ int main() {
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
         {"snapshot round trip", snapshot_round_trip},
+        {"resident roster replication", resident_roster_replication},
         {"stable entity IDs", entity_ids_are_stable_and_not_reused},
         {"sessions and reconnect", sessions_negotiate_capacity_and_reconnect},
         {"snapshot interpolation", interpolation_orders_and_extrapolates},

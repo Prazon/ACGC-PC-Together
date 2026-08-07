@@ -11,6 +11,7 @@
 #include "sys_matrix.h"
 #include "m_malloc.h"
 #include "m_common_data.h"
+#include "m_net_hooks.h"
 
 extern u8 kan_tizu_f_TA_tex_txt[];
 extern u8 kan_tizu_tst1_TA_tex_txt[];
@@ -720,16 +721,37 @@ static void mMP_set_house_data(mMP_Ovl_c* map_ovl, mSM_MenuInfo_c* menu) {
 
     residents = 0;
     for (i = 0; i < PLAYER_NUM; i++, priv++) {
-        if (mPr_CheckPrivate(priv) == TRUE && (Common_Get(now_private) != priv || mEv_CheckFirstIntro() == FALSE)) {
+        u8 net_name[PLAYER_NAME_LEN];
+        s8 net_gender;
+        /* A connected client's Save_t only holds the account it logged in as, so
+         * mPr_CheckPrivate would report the town's other three houses vacant.
+         * The server owns resident identity in that case, including for
+         * residents who are currently logged out. */
+        const int net_resident = Net_ResidentIdentity(i, net_name, &net_gender);
+
+        if (Common_Get(now_private) == priv && mEv_CheckFirstIntro() != FALSE) {
+            continue;
+        }
+
+        if (net_resident >= 0) {
+            if (net_resident == 0) {
+                continue;
+            }
+            mPr_CopyPlayerName(resident_p->name, net_name);
+            resident_p->sex = net_gender;
+        } else if (mPr_CheckPrivate(priv) == TRUE) {
             mPr_CopyPlayerName(resident_p->name, priv->player_ID.player_name);
             resident_p->sex = priv->gender;
-            resident_p->house_layer = 0;
-            resident_p->house_idx = 0;
-
-            block_label->residents[residents] = resident_p;
-            residents++;
-            resident_p++;
+        } else {
+            continue;
         }
+
+        resident_p->house_layer = 0;
+        resident_p->house_idx = 0;
+
+        block_label->residents[residents] = resident_p;
+        residents++;
+        resident_p++;
     }
 
     for (residents; residents < PLAYER_NUM; residents++, resident_p++) {

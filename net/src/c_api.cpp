@@ -352,6 +352,26 @@ extern "C" int acnet_client_town_population(uint8_t* population, uint8_t* capaci
     return 1;
 }
 
+extern "C" size_t acnet_client_residents(AcNetResident* output, size_t capacity) {
+    try {
+        if (!client || !client->has_residents()) return 0;
+        const acnet::ResidentRoster& roster = client->residents();
+        const std::size_t count = std::min<std::size_t>(capacity, roster.slots.size());
+        if (output != nullptr) {
+            for (std::size_t i = 0; i < count; ++i) {
+                const acnet::ResidentIdentity& resident = roster.slots[i];
+                output[i].account_id = resident.account;
+                std::copy(resident.name.begin(), resident.name.end(), output[i].name);
+                output[i].gender = resident.gender;
+                output[i].occupied = resident.occupied ? 1 : 0;
+            }
+        }
+        return count;
+    } catch (...) {
+        return 0;
+    }
+}
+
 extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                                     uint16_t land_id,
                                                     const AcNetPlayerAppearance* appearance,

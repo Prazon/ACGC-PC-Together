@@ -29,6 +29,13 @@ int Net_WorldTilesAuthoritative(void);
 int Net_ConfigureQuickstart(const char* name, int gender);
 int Net_QuickstartEnabled(void);
 int Net_ResidentSlot(void);
+/* Who owns original resident slot `slot`, which a connected client cannot read
+ * out of Save_t: its private_data only ever holds the account it logged in as,
+ * so every other slot looks vacant. Returns -1 when there is no authoritative
+ * roster and the caller must fall back to Save_t, 0 when the slot is
+ * authoritatively empty, and 1 after writing PLAYER_NAME_LEN bytes to `name`
+ * and the gender to `gender` (either may be NULL). */
+int Net_ResidentIdentity(int slot, u8* name, s8* gender);
 int Net_PrefillQuickstartName(void);
 int Net_ApplyQuickstartIdentity(void);
 void Net_ApplyTownIdentity(void);
@@ -91,6 +98,7 @@ int Net_RequestDiscardMail(u64 mail_id);
 #define Net_ConfigureQuickstart(name, gender) FALSE
 #define Net_QuickstartEnabled() FALSE
 #define Net_ResidentSlot() (-1)
+#define Net_ResidentIdentity(slot, name, gender) (-1)
 #define Net_PrefillQuickstartName() FALSE
 #define Net_ApplyQuickstartIdentity() FALSE
 #define Net_ApplyTownIdentity() ((void)0)

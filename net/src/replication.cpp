@@ -173,11 +173,52 @@ bool decode_appearance(ByteReader& reader,
     return !pattern.present || reader.bytes(pattern.texture.data(), pattern.texture.size());
 }
 
+/* A vacant slot carries no identity at all, so a peer cannot smuggle a name or
+ * an account through one and have a reader pick it up by ignoring the flag. */
+bool valid_resident(const ResidentIdentity& resident) {
+    if (!resident.occupied) {
+        return resident.account == 0 && resident.gender == 0 &&
+               std::all_of(resident.name.begin(), resident.name.end(),
+                           [](std::uint8_t byte) { return byte == 0; });
+    }
+    return resident.account != 0 && resident.gender <= 2;
+}
+
+bool encode_roster(ByteWriter& writer, const ResidentRoster& roster) {
+    for (const ResidentIdentity& resident : roster.slots) {
+        if (!valid_resident(resident) || !writer.u8(resident.occupied ? 1 : 0) ||
+            !writer.u8(resident.gender) || !writer.u64(resident.account) ||
+            !writer.bytes(resident.name.data(), resident.name.size())) return false;
+    }
+    return true;
+}
+
+bool decode_roster(ByteReader& reader, ResidentRoster& roster) {
+    for (ResidentIdentity& resident : roster.slots) {
+        std::uint8_t occupied;
+        if (!reader.u8(occupied) || !reader.u8(resident.gender) || !reader.u64(resident.account) ||
+            !reader.bytes(resident.name.data(), resident.name.size()) || occupied > 1) return false;
+        resident.occupied = occupied != 0;
+        if (!valid_resident(resident)) return false;
+    }
+    return true;
+}
+
 Revision next_revision(Revision revision) {
     return revision == std::numeric_limits<Revision>::max() ? 1 : revision + 1;
 }
 
 } // namespace
+
+bool ResidentRoster::operator==(const ResidentRoster& other) const {
+    for (std::size_t i = 0; i < slots.size(); ++i) {
+        const ResidentIdentity& left = slots[i];
+        const ResidentIdentity& right = other.slots[i];
+        if (left.occupied != right.occupied || left.account != right.account ||
+            left.gender != right.gender || left.name != right.name) return false;
+    }
+    return true;
+}
 
 bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& output) {
     if (baseline.zone == 0 || baseline.revision == 0 || baseline.tiles.size() > kMaximumBaselineTiles ||
@@ -196,7 +237,8 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         !writer.u32(static_cast<std::uint32_t>(baseline.tiles.size())) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.players.size())) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.npcs.size())) ||
-        !writer.u32(baseline.inventory.revision) || !writer.u32(baseline.inventory.bells)) return false;
+        !writer.u32(baseline.inventory.revision) || !writer.u32(baseline.inventory.bells) ||
+        !encode_roster(writer, baseline.residents)) return false;
     for (const ItemSlot& slot : baseline.inventory.slots) {
         if (!writer.u16(slot.item) || !writer.u8(slot.condition)) return false;
     }
@@ -255,7 +297,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         npc_count > kMaximumBaselineNpcs || town_time > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
         return false;
     if (!reader.u32(baseline.inventory.revision) || !reader.u32(baseline.inventory.bells) ||
-        baseline.inventory.revision == 0) return false;
+        baseline.inventory.revision == 0 || !decode_roster(reader, baseline.residents)) return false;
     for (ItemSlot& slot : baseline.inventory.slots) {
         if (!reader.u16(slot.item) || !reader.u8(slot.condition)) return false;
     }
@@ -395,6 +437,18 @@ bool decode_mail_delta(const std::vector<std::uint8_t>& input, MailDelta& delta)
     return true;
 }
 
+bool encode_resident_delta(const ResidentRoster& roster, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(kOriginalResidentSlots * 18U);
+    if (!encode_roster(writer, roster)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_resident_delta(const std::vector<std::uint8_t>& input, ResidentRoster& roster) {
+    ByteReader reader(input);
+    return decode_roster(reader, roster) && reader.finished();
+}
+
 DeltaLog::DeltaLog(std::size_t capacity) : capacity_(std::max<std::size_t>(1, capacity)) {}
 
 Revision DeltaLog::append(ReplicationDelta delta) {
@@ -408,7 +462,8 @@ Revision DeltaLog::append(ReplicationDelta delta) {
 bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& interest) {
     if (delta.target_account != 0 && delta.target_account != interest.account) return false;
     if (delta.kind == ResourceKind::Clock || delta.kind == ResourceKind::Weather ||
-        delta.kind == ResourceKind::Town) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Town ||
+        delta.kind == ResourceKind::Resident) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;
