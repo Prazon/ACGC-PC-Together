@@ -12,6 +12,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -40,6 +41,15 @@ struct ClientConfig {
     std::uint32_t simulation_rate = 60;
     std::uint64_t timeout_ms = 5000;
     std::string invite_key;
+};
+
+/* One tile change that arrived as a delta rather than in a baseline, carrying
+ * the cause and the acting account so a viewer can animate it. */
+struct TileChange {
+    TileAddress address;
+    TileState state;
+    AccountId actor = 0;
+    TileChangeCause cause = TileChangeCause::Server;
 };
 
 struct RemotePresentation {
@@ -84,6 +94,21 @@ public:
     std::uint64_t packets_sent() const { return packets_sent_; }
     const ZoneBaseline* baseline() const { return has_baseline_ ? &baseline_ : nullptr; }
     Revision baseline_revision() const { return baseline_revision_; }
+    /* Counts whole baselines received, and nothing else. baseline_revision()
+     * moves for every delta of every kind -- a viewer that keyed its bulk tile
+     * projection on it rewrote the entire interest chunk each time a nearby
+     * player changed animation. */
+    std::uint32_t baseline_serial() const { return baseline_serial_; }
+    /* Tile changes that arrived as deltas since the last drain, oldest first.
+     * Separate from the baseline mirror because a viewer wants to react to the
+     * change -- animate a drop -- not just observe the new state. A baseline
+     * supersedes the queue and clears it. */
+    std::size_t drain_tile_changes(TileChange* output, std::size_t capacity);
+    std::size_t pending_tile_changes() const { return tile_changes_.size(); }
+    /* True when the queue evicted an entry before it could be drained. The
+     * reader must fall back to a full projection: the lost change is otherwise
+     * invisible until the next baseline. Cleared by the drain. */
+    bool tile_changes_overflowed() const { return tile_changes_overflowed_; }
     std::int64_t estimated_town_time(std::uint64_t now_ms) const;
     std::uint32_t town_seed() const { return town_seed_; }
     std::uint16_t town_land_id() const { return town_land_id_; }
@@ -112,6 +137,12 @@ public:
     bool request(ConversationRequest request, std::uint64_t now_ms, std::string& error);
     bool request(ZoneTransferRequest request, std::uint64_t now_ms, std::string& error);
     bool ready(ZoneReadyRequest request, std::uint64_t now_ms, std::string& error);
+    /* Applies one already-decrypted message, reassembling fragments first. This
+     * is what handle_datagram calls once a datagram has been authenticated, and
+     * it is public so a test can drive message handling without standing up a
+     * server and a handshake. It performs no authentication of its own -- never
+     * hand it bytes that have not been through the transport. */
+    bool dispatch(DecodedPacket packet, std::uint64_t now_ms, std::string& error);
     bool request(FurnitureOperation operation, std::uint64_t now_ms, std::string& error);
     bool request(HouseUpdate update, std::uint64_t now_ms, std::string& error);
     bool request(EncounterRequest request, std::uint64_t now_ms, std::string& error);
@@ -153,7 +184,6 @@ private:
     bool handle_datagram(const Datagram& datagram, std::uint64_t now_ms, std::string& error);
     bool handle_server_hello(const DecodedPacket& packet, std::uint64_t now_ms, std::string& error);
     bool handle_snapshot(const DecodedPacket& packet, std::uint64_t now_ms);
-    bool dispatch(DecodedPacket packet, std::uint64_t now_ms, std::string& error);
     Tick estimated_server_tick(std::uint64_t now_ms) const;
 
     ClientConfig config_;
@@ -184,6 +214,16 @@ private:
     ZoneBaseline baseline_;
     std::uint64_t baseline_received_ms_ = 0;
     Revision baseline_revision_ = 0;
+    std::uint32_t baseline_serial_ = 0;
+    /* Bounded: a viewer that stops draining must degrade to a full projection
+     * rather than grow this without limit. */
+    static constexpr std::size_t kMaxQueuedTileChanges = 256;
+    /* The mirror keeps out-of-window tiles so a request near the chunk edge can
+     * still quote a revision, but it is not a whole-zone table and must not
+     * grow into one between baselines. */
+    static constexpr std::size_t kMaxMirroredTiles = 1024;
+    std::deque<TileChange> tile_changes_;
+    bool tile_changes_overflowed_ = false;
     bool has_baseline_ = false;
     std::uint32_t town_seed_ = 0;
     std::uint16_t town_land_id_ = 0;

@@ -123,9 +123,37 @@ struct ZoneBaseline {
     std::vector<NpcState> npcs;
 };
 
+/* Why a tile changed. The viewer needs this to decide whether the change gets
+ * an animation: a player dropping something arcs it out of their hand, while a
+ * planted sapling growing overnight simply is. Mirrors WorldOpType with a
+ * `Server` sentinel prepended so a change with no acting player -- growth, a
+ * GCI import, an operator command -- defaults to the silent path. Appended,
+ * never inserted: the wire encodes this as a u8 validated against the last
+ * value. */
+enum class TileChangeCause : std::uint8_t {
+    Server = 0,
+    Drop,
+    Pickup,
+    Dig,
+    Bury,
+    Plant,
+    ChopTree,
+    PlaceFurniture,
+    RemoveFurniture,
+    FillHole,
+};
+
+TileChangeCause tile_change_cause(WorldOpType type);
+
 struct TileStateDelta {
     TileAddress address;
     TileState state;
+    /* Who caused it, or 0 when the server did. A viewer animating the change
+     * needs the actor's position to start the arc from, and the account is the
+     * only handle that survives the trip -- the tile alone cannot say which of
+     * two players standing together threw the item. */
+    AccountId actor = 0;
+    TileChangeCause cause = TileChangeCause::Server;
 };
 
 bool encode_tile_delta(const TileStateDelta& delta, std::vector<std::uint8_t>& output);

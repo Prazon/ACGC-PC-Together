@@ -1387,7 +1387,13 @@ bool TownRuntime::dispatch(Connection& connection,
                 delta.has_position = true;
                 delta.position = {result.tile.x * 40.0F, 0.0F, result.tile.z * 40.0F};
                 const acnet::TileState* tile = world_.tile(result.tile);
-                if (tile == nullptr || !acnet::encode_tile_delta({result.tile, *tile}, delta.payload)) {
+                /* Naming the actor and the operation is what lets a viewer
+                 * animate the change instead of popping the new state in: a
+                 * drop arcs out of that player's hand, everything else does
+                 * not. */
+                if (tile == nullptr ||
+                    !acnet::encode_tile_delta({result.tile, *tile, connection.account,
+                                               acnet::tile_change_cause(request.type)}, delta.payload)) {
                     error = "failed to serialize tile delta";
                     return false;
                 }

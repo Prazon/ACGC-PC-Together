@@ -1,4 +1,4 @@
-# Dedicated town protocol v14
+# Dedicated town protocol v15
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -208,6 +208,39 @@ pattern. It no longer carries the held item, so changing tools is not an
 appearance change. `AppearanceUpdate` has its own rate bucket (1/s, burst 4)
 because each accepted one journals and re-baselines every connection, and the
 server now skips both when nothing visible actually changed.
+
+## Tile deltas
+
+A `ResourceKind::Tile` delta carries the tile address, the committed
+`TileState`, and then two fields describing *how* the tile came to change:
+`actor` (u64) and `cause` (u8).
+
+|Field|Meaning|
+|-|-|
+|`actor`|The account whose operation committed the change, or 0 when the server changed the tile on its own|
+|`cause`|`TileChangeCause`: 0 `Server`, then 1–9 mirroring `WorldOpType` — `Drop`, `Pickup`, `Dig`, `Bury`, `Plant`, `ChopTree`, `PlaceFurniture`, `RemoveFurniture`, `FillHole`|
+
+`TileChangeCause` is appended-never-inserted; the decoder rejects a value above
+the last enumerator. `actor` is 0 exactly when `cause` is `Server`, which is
+what overnight plant growth, a GCI import, and operator commands publish.
+
+The pair exists so a viewer can *present* the change rather than only observe
+it. A drop is animated: the receiving client arcs the item out of the named
+player's hand onto the tile, and the drop actor writes the field cell when it
+lands. Without the actor the arc has no origin, and two players standing
+together are indistinguishable; without the cause a sapling growing overnight
+would animate as though somebody had thrown it.
+
+A tile delta is reliable and zone-scoped, so it is not distance-culled — a drop
+anywhere in the zone reaches every client in it, whether or not the tile is in
+their interest chunk.
+
+Clients keep tile deltas in a bounded queue (256) separate from the baseline
+mirror, drained by the game layer so each change can be presented individually.
+An overflow is reported rather than silently dropped: the reader then reprojects
+the whole interest chunk. A `Baseline` supersedes the queue and clears it,
+because it is the whole truth for that chunk and replaying older changes over it
+would regress state.
 
 House baselines carry three floors of bounded room cells, canonical inventory
 item IDs plus furniture facing, furniture switch bits, light state, and music.

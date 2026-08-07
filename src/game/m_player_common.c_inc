@@ -2288,7 +2288,13 @@ static void Player_actor_putin_item(int slot, mActor_name_t item, xyz_t* pos_p) 
      * submit; routing them through the exterior tile table looked up a
      * coordinate the server does not have and silently swallowed the pickup. */
     if (pos_p != NULL && Net_WorldTilesAuthoritative()) {
-        Net_RequestPickup(pos_p, item);
+        /* Clear the cell as soon as the request is out, so the item leaves the
+         * ground when the player picks it up rather than a round trip later.
+         * The claim keeps the authoritative projection from painting it back
+         * in the meantime, and puts it back if the server refuses. */
+        if (Net_RequestPickup(pos_p, item) && Net_BeginPredictedPickup(pos_p)) {
+            mFI_SetFG_common(EMPTY_NO, *pos_p, TRUE);
+        }
         return;
     }
 #endif

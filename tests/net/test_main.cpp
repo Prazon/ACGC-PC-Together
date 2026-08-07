@@ -2615,6 +2615,153 @@ void clock_jobs_and_replication_survive_empty_time() {
     CHECK(deltas.since(1, interest, 20).requires_baseline);
 }
 
+/* A tile delta has to say who changed the tile and how, or a viewer cannot tell
+ * a player throwing an item on the ground from a sapling growing overnight --
+ * and cannot find the hand the arc should start from. */
+void tile_delta_carries_actor_and_cause() {
+    acnet::TileStateDelta delta;
+    delta.address = {1, 12, -7};
+    delta.state.revision = 9;
+    delta.state.item = 0x2801;
+    delta.state.condition = 3;
+    delta.actor = 4242;
+    delta.cause = acnet::TileChangeCause::Drop;
+    std::vector<std::uint8_t> bytes;
+    CHECK(acnet::encode_tile_delta(delta, bytes));
+    acnet::TileStateDelta decoded;
+    CHECK(acnet::decode_tile_delta(bytes, decoded));
+    CHECK(decoded.address == delta.address);
+    CHECK(decoded.state.item == 0x2801);
+    CHECK(decoded.state.condition == 3);
+    CHECK(decoded.actor == 4242);
+    CHECK(decoded.cause == acnet::TileChangeCause::Drop);
+
+    /* A change with no acting player -- growth, a save import, an operator
+     * command -- defaults to the silent path rather than animating as somebody
+     * else's drop. */
+    acnet::TileStateDelta grown;
+    grown.address = {1, 0, 0};
+    grown.state.revision = 2;
+    grown.state.item = 0x0040;
+    CHECK(grown.actor == 0);
+    CHECK(grown.cause == acnet::TileChangeCause::Server);
+    CHECK(acnet::encode_tile_delta(grown, bytes));
+    CHECK(acnet::decode_tile_delta(bytes, decoded));
+    CHECK(decoded.actor == 0);
+    CHECK(decoded.cause == acnet::TileChangeCause::Server);
+
+    /* Every WorldOpType maps onto a cause, so a new operation cannot silently
+     * arrive on the wire as Server and be mistaken for one nobody performed. */
+    CHECK(acnet::tile_change_cause(acnet::WorldOpType::DropItem) == acnet::TileChangeCause::Drop);
+    CHECK(acnet::tile_change_cause(acnet::WorldOpType::PickupItem) == acnet::TileChangeCause::Pickup);
+    CHECK(acnet::tile_change_cause(acnet::WorldOpType::FillHole) == acnet::TileChangeCause::FillHole);
+
+    /* A cause past the last enumerator is refused at both ends, and truncation
+     * at any point in the two new fields is refused too. */
+    acnet::TileStateDelta bad_cause = delta;
+    bad_cause.cause = static_cast<acnet::TileChangeCause>(
+        static_cast<std::uint8_t>(acnet::TileChangeCause::FillHole) + 1);
+    CHECK(!acnet::encode_tile_delta(bad_cause, bytes));
+    CHECK(acnet::encode_tile_delta(delta, bytes));
+    bytes.back() = static_cast<std::uint8_t>(acnet::TileChangeCause::FillHole) + 1;
+    CHECK(!acnet::decode_tile_delta(bytes, decoded));
+    for (std::size_t drop = 1; drop <= 9; ++drop) {
+        std::vector<std::uint8_t> truncated;
+        CHECK(acnet::encode_tile_delta(delta, truncated));
+        truncated.resize(truncated.size() - drop);
+        CHECK(!acnet::decode_tile_delta(truncated, decoded));
+    }
+    CHECK(acnet::encode_tile_delta(delta, bytes));
+    bytes.push_back(0);
+    CHECK(!acnet::decode_tile_delta(bytes, decoded));
+}
+
+/* The viewer reacts to tile changes one at a time so it can animate them, and
+ * reprojects the whole chunk only when it has to. Both halves of that are
+ * client state, so both are tested here rather than inferred from the game. */
+void tile_changes_queue_separately_from_baselines() {
+    acnet::ClientRuntime client;
+    const auto apply = [&](acnet::MessageType type, const std::vector<std::uint8_t>& payload) {
+        acnet::DecodedPacket packet;
+        packet.header.message_type = type;
+        packet.payload = payload;
+        std::string error;
+        const bool ok = client.dispatch(packet, 1000, error);
+        if (!ok) throw std::runtime_error("dispatch rejected message: " + error);
+        return ok;
+    };
+    const auto tile_delta = [](std::int16_t x, acnet::AccountId actor, acnet::TileChangeCause cause) {
+        acnet::ReplicationDelta delta;
+        delta.kind = acnet::ResourceKind::Tile;
+        delta.zone = 1;
+        acnet::TileStateDelta tile;
+        tile.address = {1, x, 0};
+        tile.state.revision = 2;
+        tile.state.item = 0x2801;
+        tile.actor = actor;
+        tile.cause = cause;
+        CHECK(acnet::encode_tile_delta(tile, delta.payload));
+        return delta;
+    };
+
+    /* Without a baseline there is nothing to apply a delta against. */
+    CHECK(client.baseline_serial() == 0);
+    CHECK(client.pending_tile_changes() == 0);
+
+    acnet::ZoneBaseline baseline;
+    baseline.revision = 5;
+    baseline.zone = 1;
+    baseline.tiles.emplace_back(acnet::TileAddress{1, 0, 0}, acnet::TileState{});
+    std::vector<std::uint8_t> baseline_bytes;
+    CHECK(acnet::encode_baseline(baseline, baseline_bytes));
+    CHECK(apply(acnet::MessageType::Baseline, baseline_bytes));
+    const std::uint32_t serial = client.baseline_serial();
+    CHECK(serial == 1);
+
+    std::vector<std::uint8_t> delta_bytes;
+    CHECK(acnet::encode_deltas({tile_delta(3, 4242, acnet::TileChangeCause::Drop),
+                                tile_delta(4, 0, acnet::TileChangeCause::Server)}, delta_bytes));
+    CHECK(apply(acnet::MessageType::ReplicationDeltas, delta_bytes));
+    /* A delta must not read as a new baseline: keying the bulk projection on
+     * the replication revision is what made every nearby animation change
+     * rewrite the whole interest chunk. */
+    CHECK(client.baseline_serial() == serial);
+    CHECK(client.pending_tile_changes() == 2);
+    CHECK(!client.tile_changes_overflowed());
+
+    /* The drain removes exactly what it copies, oldest first, so a reader with
+     * a buffer smaller than the queue loses nothing. */
+    acnet::TileChange drained[1];
+    CHECK(client.drain_tile_changes(drained, 1) == 1);
+    CHECK(drained[0].address.x == 3);
+    CHECK(drained[0].actor == 4242);
+    CHECK(drained[0].cause == acnet::TileChangeCause::Drop);
+    CHECK(client.pending_tile_changes() == 1);
+    CHECK(client.drain_tile_changes(drained, 1) == 1);
+    CHECK(drained[0].address.x == 4);
+    CHECK(drained[0].cause == acnet::TileChangeCause::Server);
+    CHECK(client.drain_tile_changes(drained, 1) == 0);
+
+    /* A reader that stops draining must be told, not silently starved: the lost
+     * change is invisible until the next baseline otherwise. */
+    for (std::int16_t x = 0; x < 300; ++x) {
+        CHECK(acnet::encode_deltas({tile_delta(static_cast<std::int16_t>(x + 100), 7,
+                                                acnet::TileChangeCause::Drop)}, delta_bytes));
+        CHECK(apply(acnet::MessageType::ReplicationDeltas, delta_bytes));
+    }
+    CHECK(client.pending_tile_changes() == 256);
+    CHECK(client.tile_changes_overflowed());
+
+    /* A baseline is the whole truth for the chunk, so it supersedes anything
+     * queued rather than letting stale changes replay over newer state. */
+    baseline.revision = 400;
+    CHECK(acnet::encode_baseline(baseline, baseline_bytes));
+    CHECK(apply(acnet::MessageType::Baseline, baseline_bytes));
+    CHECK(client.baseline_serial() == serial + 1);
+    CHECK(client.pending_tile_changes() == 0);
+    CHECK(!client.tile_changes_overflowed());
+}
+
 void resident_roster_replication() {
     acnet::ResidentRoster roster;
     roster.slots[1].account = 4242;
@@ -3826,6 +3973,8 @@ int main() {
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
         {"snapshot round trip", snapshot_round_trip},
         {"resident roster replication", resident_roster_replication},
+        {"tile delta actor and cause", tile_delta_carries_actor_and_cause},
+        {"tile change queue and baseline serial", tile_changes_queue_separately_from_baselines},
         {"stable entity IDs", entity_ids_are_stable_and_not_reused},
         {"sessions and reconnect", sessions_negotiate_capacity_and_reconnect},
         {"snapshot interpolation", interpolation_orders_and_extrapolates},

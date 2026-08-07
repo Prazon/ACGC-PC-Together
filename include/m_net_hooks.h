@@ -43,6 +43,20 @@ void Net_RandomizeInitialAppearance(void);
 int Net_SubmitInitialTown(void);
 int Net_RequestPickup(const xyz_t* position, mActor_name_t item);
 int Net_RequestDrop(int ut_x, int ut_z, mActor_name_t item);
+/* Claims a tile for a drop animation the caller is about to start, so the
+ * authoritative tile projection leaves that cell alone until the item lands --
+ * the drop actor writes the field itself when it touches down, and painting the
+ * item in early would show it on the ground while it is still in the air.
+ * Returns FALSE when no claim slot is free, in which case the caller must skip
+ * the animation and let the projection place the item. */
+int Net_BeginPredictedDrop(int ut_x, int ut_z, mActor_name_t item);
+/* The same claim for a pickup, whose prediction is the opposite: the caller
+ * clears the cell immediately and the claim keeps the projection from painting
+ * the item back before the server confirms it is gone. */
+int Net_BeginPredictedPickup(const xyz_t* position);
+/* Drops a claim whose animation never started, so the authoritative projection
+ * takes the tile back instead of leaving it untouched for the whole budget. */
+void Net_CancelPredictedTile(int ut_x, int ut_z);
 int Net_RequestDig(const xyz_t* position);
 int Net_RequestFillHole(const xyz_t* position);
 int Net_RequestBury(const xyz_t* position, mActor_name_t item, int inventory_slot);
@@ -119,6 +133,9 @@ int Net_RequestDiscardMail(u64 mail_id);
 #define Net_SubmitInitialTown() FALSE
 #define Net_RequestPickup(position, item) FALSE
 #define Net_RequestDrop(ut_x, ut_z, item) FALSE
+#define Net_BeginPredictedDrop(ut_x, ut_z, item) FALSE
+#define Net_BeginPredictedPickup(position) FALSE
+#define Net_CancelPredictedTile(ut_x, ut_z) ((void)0)
 #define Net_RequestDig(position) FALSE
 #define Net_RequestFillHole(position) FALSE
 #define Net_RequestBury(position, item, inventory_slot) FALSE

@@ -258,6 +258,32 @@ extern "C" uint32_t acnet_client_baseline_zone(void) {
     return client && client->baseline() != nullptr ? client->baseline()->zone : 0;
 }
 
+extern "C" uint32_t acnet_client_baseline_serial(void) {
+    return client ? client->baseline_serial() : 0;
+}
+
+extern "C" size_t acnet_client_drain_tile_changes(AcNetTileChange* output, size_t capacity) {
+    try {
+        if (!client || output == nullptr || capacity == 0) return 0;
+        std::vector<acnet::TileChange> changes(capacity);
+        const std::size_t count = client->drain_tile_changes(changes.data(), capacity);
+        for (std::size_t i = 0; i < count; ++i) {
+            output[i].tile = {changes[i].address.zone, changes[i].address.x, changes[i].address.z,
+                              changes[i].state.revision, changes[i].state.item, changes[i].state.condition,
+                              static_cast<std::uint8_t>(changes[i].state.terrain),
+                              static_cast<std::uint8_t>(changes[i].state.buried),
+                              static_cast<std::uint8_t>(changes[i].state.placed_furniture)};
+            output[i].actor_account = changes[i].actor;
+            output[i].cause = static_cast<std::uint8_t>(changes[i].cause);
+        }
+        return count;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_tile_changes_overflowed(void) {
+    return client && client->tile_changes_overflowed() ? 1 : 0;
+}
+
 extern "C" uint8_t acnet_client_house_light_mask(void) {
     return client ? client->house_light_mask() : 0;
 }

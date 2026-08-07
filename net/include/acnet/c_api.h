@@ -112,6 +112,28 @@ typedef struct AcNetTileState {
     uint8_t placed_furniture;
 } AcNetTileState;
 
+/* Why a tile changed, mirroring acnet::TileChangeCause. ACNET_TILE_CAUSE_SERVER
+ * means no player caused it -- overnight growth, a save import, an operator
+ * command -- and must never be animated. */
+#define ACNET_TILE_CAUSE_SERVER 0
+#define ACNET_TILE_CAUSE_DROP 1
+#define ACNET_TILE_CAUSE_PICKUP 2
+#define ACNET_TILE_CAUSE_DIG 3
+#define ACNET_TILE_CAUSE_BURY 4
+#define ACNET_TILE_CAUSE_PLANT 5
+#define ACNET_TILE_CAUSE_CHOP 6
+#define ACNET_TILE_CAUSE_PLACE_FURNITURE 7
+#define ACNET_TILE_CAUSE_REMOVE_FURNITURE 8
+#define ACNET_TILE_CAUSE_FILL_HOLE 9
+
+/* One tile change that arrived as a delta. `actor_account` is 0 exactly when
+ * `cause` is ACNET_TILE_CAUSE_SERVER. */
+typedef struct AcNetTileChange {
+    AcNetTileState tile;
+    uint64_t actor_account;
+    uint8_t cause;
+} AcNetTileChange;
+
 typedef struct AcNetItemSlot {
     uint16_t item;
     uint8_t condition;
@@ -272,6 +294,16 @@ size_t acnet_client_baseline_tiles(AcNetTileState* output, size_t capacity);
 int acnet_client_tile(uint32_t zone_id, int16_t x, int16_t z, AcNetTileState* output);
 uint32_t acnet_client_baseline_revision(void);
 uint32_t acnet_client_baseline_zone(void);
+/* Counts whole baselines, unlike acnet_client_baseline_revision which moves for
+ * every delta of every kind. A viewer projecting the whole interest chunk keys
+ * on this so an unrelated animation change does not rewrite the field. */
+uint32_t acnet_client_baseline_serial(void);
+/* Drains tile changes that arrived as deltas, oldest first, removing exactly
+ * what it copies. Returns the number written. */
+size_t acnet_client_drain_tile_changes(AcNetTileChange* output, size_t capacity);
+/* Non-zero when a change was evicted before the caller drained it; the caller
+ * must then reproject the whole chunk. Cleared once the queue empties. */
+int acnet_client_tile_changes_overflowed(void);
 uint8_t acnet_client_house_light_mask(void);
 int acnet_client_house(AcNetHouseState* output);
 size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);

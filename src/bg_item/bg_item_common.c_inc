@@ -1304,14 +1304,30 @@ static int bIT_actor_player_drop_entry(GAME* game, mActor_name_t fg_item, int ut
     u16 drop_type;
 
 #ifdef NETCODE_ENABLED
+    int predicted = FALSE;
+
     /* Exterior drops are a server transaction; indoor drops stay local and are
      * replicated by the house-state submit. Sending an indoor drop to the
      * exterior tile table always failed, so dropping anything inside a building
      * reported "no room" while online. */
     if (Net_WorldTilesAuthoritative()) {
-        (void)game;
-        (void)layer;
-        return Net_RequestDrop(ut_x, ut_z, fg_item) ? 1 : -1;
+        /* 0, not -1. Callers test this result as a boolean and -1 is truthy, so
+         * a refused request read as a successful drop: the pocket was cleared,
+         * no warning window opened, and nothing had been sent. The offline
+         * path keeps the original -1. */
+        if (!Net_RequestDrop(ut_x, ut_z, fg_item)) {
+            return 0;
+        }
+        /* Claim the cell and fall through to the original animation. The drop
+         * actor writes the field when it lands, so the item appears in the
+         * player's hand and arcs out of it exactly as it does offline, instead
+         * of popping onto the ground a round trip later. Without a claim slot
+         * there is no way to hold the projection off, so skip the animation
+         * rather than show the item twice. */
+        predicted = Net_BeginPredictedDrop(ut_x, ut_z, fg_item);
+        if (!predicted) {
+            return 1;
+        }
     }
 #endif
 
@@ -1351,8 +1367,42 @@ static int bIT_actor_player_drop_entry(GAME* game, mActor_name_t fg_item, int ut
         res = -1;
     }
 
+#ifdef NETCODE_ENABLED
+    if (predicted && res != 1) {
+        /* The request is already on the wire, so this is still a successful
+         * drop from the caller's point of view -- only the animation failed to
+         * start. Give the tile back so the server's result is projected in the
+         * ordinary way. */
+        Net_CancelPredictedTile(ut_x, ut_z);
+        res = 1;
+    }
+#endif
+
     return res;
 }
+
+#ifdef NETCODE_ENABLED
+/* A drop another player made. The arc starts at their hand and lands on the
+ * tile the server named; bIT_drop_entry_v1 reserves the cell on the way out and
+ * the drop actor writes the item when it touches down, so the caller must not
+ * project the tile itself. */
+static int bIT_net_remote_drop_entry(mActor_name_t fg_item, xyz_t* source_pos, int ut_x, int ut_z) {
+    xyz_t target_pos;
+
+    if (source_pos == NULL || bIT_CLIP == NULL || bIT_CLIP->bg_item_common_p == NULL) {
+        return FALSE;
+    }
+    mFI_UtNum2CenterWpos(&target_pos, ut_x, ut_z);
+    target_pos.y = mCoBG_GetBgY_OnlyCenter_FromWpos2(target_pos, -1.0f);
+    /* A remote drop can name any tile in the zone, including an acre this
+     * viewer has not loaded. bIT_drop_entry_v1 dereferences the cell without
+     * checking, so the bounds test belongs here. */
+    if (mFI_GetUnitFG(target_pos) == NULL) {
+        return FALSE;
+    }
+    return bIT_drop_entry_v1(fg_item, source_pos, &target_pos) == 1;
+}
+#endif
 
 static int bIT_drop_entry_v1(mActor_name_t fg_item, xyz_t* pos, xyz_t* target_pos) {
     int res = 0;

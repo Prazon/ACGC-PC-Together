@@ -16,7 +16,7 @@ and the C headers reject a non-64-bit build.
 
 ## Delivered systems
 
-- Explicit protocol v13 codecs, selective reliability, sequencing,
+- Explicit protocol v15 codecs, selective reliability, sequencing,
   fragmentation, authenticated encryption, invitation proofs, rate limits,
   reconnect credentials, bounded parsing, and stable generated entity IDs.
 - Client-authoritative original movement/collision with finite bounded transform
@@ -518,15 +518,110 @@ Known limitations:
 - Not verified with a legitimate disc: the client has been built and linked but
   the new animations and held-item rendering have never been drawn on screen.
 
+### Item drops are shown, not popped in (protocol v15)
+
+Dropping and picking up an item were correctly replicated but had no
+presentation. `bIT_actor_player_drop_entry` returned before
+`bIT_actor_drop_entry`, so no `bg_item_drop_c` was ever created online: the arc,
+the bounce, and the landing SFX (`sAdo_OngenTrgStart(0x2A, ...)`, which lives in
+the drop actor's move proc) never played for anybody, and the item teleported
+onto the ground when the authoritative tile projection next ran. This change
+makes an online drop look like an offline one on every client.
+
+- `TileStateDelta` carries `actor` (u64) and `cause` (`TileChangeCause`, u8).
+  Without them a viewer cannot tell a thrown item from a sapling that grew
+  overnight, and cannot find the hand the arc should start from — two players
+  standing together are otherwise indistinguishable. Server-originated changes
+  (growth, GCI import, operator commands) publish `actor = 0` / `Server` and are
+  never animated.
+- The dropping client animates at request time. `Net_BeginPredictedDrop` claims
+  the tile and the original body runs unchanged, reserving the cell with
+  `RSV_NO` exactly as offline; the drop actor writes the field itself on
+  landing. Observers animate from the drained tile change, arcing from the named
+  player's hand via `bIT_net_remote_drop_entry` → `bIT_drop_entry_v1`. A dropper
+  outside the viewer's interest set has no hand to throw from, so that change is
+  projected directly — which is what every drop did before.
+- A claim is resolved by what the field actually shows, not by a timer: once the
+  cell holds the predicted item the animation has finished, and the mirror then
+  says whether the server agreed. Disagreement force-writes the authoritative
+  value and rolls the pocket back. The 90-frame budget is only the backstop for
+  an animation that never lands (the longest player drop is ~65 frames).
+- A refusal is invisible to the mirror — the tile revision does not move and the
+  item never appears — so `Net_ExpireRefusedClaims` consumes the `WorldResult`
+  that nothing previously read and marks the claim. It deliberately does not
+  correct the tile there: an animation still in the air would land after the
+  correction and paint the refused item straight back. The reconciler acts the
+  moment it touches down. Missing a result (the client keeps only the newest)
+  costs no more than falling back to the frame budget.
+- A refused request now returns 0 rather than -1. All four callers of
+  `mTG_common_throw_put_field` test the result as a boolean and -1 is truthy, so
+  a refusal read as a successful drop: the pocket was cleared, no warning window
+  opened, and nothing had been sent. Only the netcode branch changed; the
+  offline path keeps the original -1.
+- `Net_ApplyAuthoritativeState` keys its bulk projection on a new baseline
+  *serial* instead of `acnet_client_baseline_revision()`. That revision moves for
+  every delta of every kind, so one nearby player changing animation rewrote the
+  entire 256-tile interest chunk and rebuilt the field's draw and collision
+  tables with it. Individual changes now arrive through a bounded (256) client
+  queue drained per frame; an overflow is reported and triggers one full
+  reprojection rather than silently losing a change. Because the chunk buffer is
+  now filled only from real baselines, it can no longer be overrun by tile
+  deltas accumulating between them.
+- The town and island revision watermarks collapse into one serial: it is
+  monotonic across zones, so crossing between them always arrives on a value the
+  client has not seen.
+- Pickup is symmetric — the cell is cleared when the request goes out instead of
+  a round trip later, under the same claim.
+- `Net_RequestDrop`/`Net_RequestPickup` no longer zero `last_inventory_revision`.
+  That forced reprojection was the rollback mechanism, but it also undid the
+  caller's optimistic pocket change on the very next frame, which is the whole
+  of the prediction. `Net_ReconcileTileClaims` rolls back instead, and only on an
+  actual refusal.
+- `ClientRuntime::dispatch` is public so a test can drive message handling
+  without a server and a handshake. It authenticates nothing; the transport
+  still does.
+
+Verification:
+
+- `make check`: 41/41 tests, protocol fuzz, eight-client load, chaos, the
+  accelerated 31-day soak, and headless smoke. `make sanitize`: the same 41/41
+  under ASan and UBSan.
+- New coverage: `tile delta actor and cause` (round trip, the `Server`/0 default,
+  every `WorldOpType` mapping, an out-of-range cause refused at both ends,
+  truncation at each byte of the two new fields, trailing bytes) and `tile change
+  queue and baseline serial` (delta does not bump the serial, FIFO drain removes
+  exactly what it copies, the 256-entry bound raises the overflow flag, a
+  baseline supersedes the queue and clears the flag).
+- The Windows client and dedicated server build and link, covering the four
+  changed decompiled translation units.
+
+Known limitations:
+
+- Not verified with a legitimate disc. The arc, the landing sound, and the
+  remote timing have never been seen on screen — only the state machinery
+  underneath them is covered by the headless suite.
+- A drop refused by the server after its arc has already started stays visible
+  until the item lands, then snaps to the authoritative value. Killing an
+  in-flight drop actor would need a handle into `bg_item`'s drop table that the
+  clip does not expose, so the correction waits for the landing rather than
+  fighting it.
+- The claim table holds 8 tiles. A marked multi-item put larger than that
+  degrades to the previous pop-in behaviour for the remainder, which the
+  server's 6-tick operation cooldown already paces well below.
+
 ## Compatibility note for this change
 
-Protocol v14 and town state v8 are not backwards compatible with an older
-client: negotiation is strict, so client and server must be updated together.
-The town directory is forward compatible — v4 through v7 state files still
-load, with older records receiving migration defaults, and a v7 held item is
-migrated out of the appearance into the inventory — but once a v8 checkpoint is
-written an older server can no longer read the directory. Back up the town
-folder before upgrading.
+Protocol v15 is not backwards compatible with an older client: negotiation is
+strict, so client and server must be updated together. Town state is unchanged
+at v8 — `TileState` on disk did not change, only the wire delta grew, so a v8
+town directory needs no migration for this change.
+
+The preceding v14 work also moved town state to v8. The town directory is
+forward compatible — v4 through v7 state files still load, with older records
+receiving migration defaults, and a v7 held item is migrated out of the
+appearance into the inventory — but once a v8 checkpoint is written an older
+server can no longer read the directory. Back up the town folder before
+upgrading.
 
 ## Verified release candidate
 
