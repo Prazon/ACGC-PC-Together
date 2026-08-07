@@ -592,6 +592,42 @@ static void mFI_SetRegisterBgInfo(int bg_num, u32 rom_start, u32 rom_size) {
     bg_info->unused_rom_size = rom_size;
 }
 
+static int mFI_CheckFinishBgDma(int bg_num);
+
+#ifdef TARGET_PC
+/* Which blocks are registered and have finished streaming, as one value.
+ *
+ * mFI_GetItemTable() only sees a block once its DMA has landed, and the flags
+ * that ask bg_item to re-read the table are one-shot. The original game did not
+ * care: crossing an acre always ended in a wade, and WADE_END forced a rebuild
+ * after streaming had settled. Borderless acres removes the wade, so a rebuild
+ * that lands mid-stream can leave two of the four acres out of the draw table
+ * with nothing left to put them back. Comparing this signature gives the
+ * borderless path the same "the window changed, look again" edge. */
+extern u32 mFI_GetLoadedBlockSignature(void) {
+    mFM_field_draw_info_c* draw_info;
+    u32 sig = 0;
+    int i;
+
+    if (mFI_CheckFieldData() == FALSE) {
+        return 0;
+    }
+
+    draw_info = mFI_BGDisplayListTop();
+    for (i = 0; i < mFM_VISIBLE_BLOCK_NUM; i++, draw_info++) {
+        u32 entry = 0xFFFFFFFF;
+
+        if (mFI_CheckFinishBgDma(i) == TRUE) {
+            entry = ((u32)(draw_info->block_x & 0xFF) << 8) | (u32)(draw_info->block_z & 0xFF);
+        }
+
+        sig = sig * 65537u + entry;
+    }
+
+    return sig;
+}
+#endif
+
 static int mFI_CheckFinishBgDma(int bg_num) {
     int res = FALSE;
 

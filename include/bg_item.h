@@ -242,6 +242,10 @@ struct bg_common_s {
     u16 flags;
     int _139E0[mFM_VISIBLE_BLOCK_NUM];
     int _139F4[mFM_VISIBLE_BLOCK_NUM];
+#ifdef TARGET_PC
+    /* Last loaded block set this actor rebuilt for; see bg_item_common_move. */
+    u32 pc_last_block_sig;
+#endif
 };
 
 extern ACTOR_PROFILE BgItem_Profile;

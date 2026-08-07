@@ -295,6 +295,9 @@ extern void mFI_SetFGUpData();
 extern void mFI_BornItemON();
 // extern MATCH_FORCESTRIP void mFI_BornItemOFF();
 extern int mFI_ItemisBorn();
+#ifdef TARGET_PC
+extern u32 mFI_GetLoadedBlockSignature(void);
+#endif
 extern int mFI_ActorisBorn();
 extern void mFI_SetBearActor(GAME_PLAY* play, xyz_t wpos, int set_flag);
 extern int mFI_search_unit_around(xyz_t* wpos, mActor_name_t item);

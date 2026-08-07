@@ -3013,6 +3013,27 @@ static void bg_item_common_move(GAME_PLAY* play, ACTOR* actorx, bg_item_common_c
         flags |= 1;
     }
 
+#ifdef TARGET_PC
+    /* Borderless acres walks straight into the next acre, so WADE_END above
+     * never fires and the only rebuild trigger left is a one-shot flag that
+     * mFI_GetItemTable() clears. Consume that flag on a frame where some of the
+     * four blocks are still streaming and the acres that missed the cut are
+     * dropped from the draw table -- their trees, rocks, signs and bulletin
+     * boards stop being drawn and stay gone until an unrelated event happens to
+     * set the flag again, which can be tens of seconds. Take the edge on the
+     * loaded block set instead: it moves exactly when a block lands or leaves,
+     * so the table is re-read as streaming settles and never spins when the
+     * window is legitimately short at the edge of the map. */
+    if (g_mPlib_wade_disabled) {
+        u32 block_sig = mFI_GetLoadedBlockSignature();
+
+        if (block_sig != common->pc_last_block_sig) {
+            common->pc_last_block_sig = block_sig;
+            flags |= 2;
+        }
+    }
+#endif
+
     if (flags != 0) {
         bg_item_common_renew_draw_and_crs_data_perfect(play, common, flags);
     }
@@ -3281,4 +3302,9 @@ static void bg_item_common_construct(GAME* game, bg_item_common_c* common) {
     common->drop_info.count = bIT_DROP_NUM;
     common->fruit_drop_info.drop_p = common->fruit_drop;
     common->fruit_drop_info.count = bIT_FRUIT_DROP_NUM;
+#ifdef TARGET_PC
+    /* Never a real signature, so the first move rebuilds for whatever the
+     * scene loaded while this actor was being constructed. */
+    common->pc_last_block_sig = 0;
+#endif
 }
