@@ -43,8 +43,8 @@ struct TownRuntimeConfig {
     std::uint32_t snapshot_rate = 15;
     std::uint64_t connection_timeout_ms = 30000;
     std::uint64_t build_id = 0;
+    // Blank runs the town open: no invite proof, no session encryption.
     std::string invite_key;
-    bool allow_unauthenticated = false;
     bool dashboard = true;
     ClockConfig clock;
 };

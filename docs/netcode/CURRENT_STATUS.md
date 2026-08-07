@@ -608,13 +608,78 @@ Known limitations:
 - The claim table holds 8 tiles. A marked multi-item put larger than that
   degrades to the previous pop-in behaviour for the remainder, which the
   server's 6-tick operation cooldown already paces well below.
+## Hosting a town without an invitation key (2026-08-06)
 
-## Compatibility note for this change
+The server used to refuse to start when `invite_key` was blank, which is what a
+packaged `server.ini` ships with. Double-clicked from Explorer that read as a
+broken executable: the process printed `an invitation key is required...` to a
+console Windows destroyed on exit, so the window only flashed.
 
-Protocol v15 is not backwards compatible with an older client: negotiation is
-strict, so client and server must be updated together. Town state is unchanged
-at v8 — `TileState` on disk did not change, only the wire delta grew, so a v8
-town directory needs no migration for this change.
+- A blank key is now a supported mode. `TownRuntime::initialize` no longer
+  rejects it, the `allow_unauthenticated` config field is gone, and
+  `--insecure-local` is accepted but does nothing.
+- Such a start prints a warning naming the port: no invite proof is demanded and
+  no session keys are derived, so anyone who can reach it may join as any
+  account over unencrypted traffic. Set `invite_key` to close the town.
+- A fatal exit now holds the console open when the process owns the window, so
+  the reason stays readable. It never waits when the console is shared with a
+  shell or when either standard handle is redirected, which keeps the smoke
+  scripts and CI from blocking. `GetConsoleProcessList` is only trusted when it
+  reports more than one process; it returns 0 outright under some console hosts.
+- `write_default_town_config` now writes `config.invite_key` instead of an empty
+  string, so migrating a legacy `config.toml` no longer silently drops the
+  operator's key and leaves a server that will not start.
+
+## Items on top of dragged furniture (2026-08-06)
+
+Dragging or spinning furniture that had anything sitting on it deleted whatever
+was on top, permanently and server-side. Offline was never affected.
+
+The original game lifts every layer-1 occupant above the furniture out of the
+room grid for the duration of the animation and parks it in
+`my_room->parent_ftr.fit_ftr_table[]` (`aMR_RequestItemToFitFurniture`,
+`ac_my_room_move.c_inc:98`), putting it back only when the keyframe settles
+(`aMR_RequestItemToUnFitFurniture`, `:194`). That grid is `Save_t` itself —
+`m_field_make.c:850` points `fg2_p` straight at the home's layer arrays — and
+`Net_CaptureHouse` reads it. Because the capture deliberately skips its settle
+window while a move is playing, the client submitted a room the items had been
+deleted from; the server committed it, and the broadcast overwrote the local
+restore on the frame the animation ended.
+
+- `Net_CaptureHouse` now captures layer 1 of the active floor from a patched
+  copy that reinserts the in-flight items at the units they will land on, so the
+  submitted candidate is complete and the hash does not change across the
+  settle. `aMR_NetFittedItems` (`ac_my_room.c`) reports them, evaluating the
+  parent's *final* position and angle rather than its in-flight ones, and
+  predicting the orientation the unfit will give an item of furniture on top. A
+  cell the grid already claims is never overwritten.
+- `aMR_NetFurnitureMoveActive` now covers the rotate states (`WAIT_LROTATE`
+  through `RROTATE`) and any fitted parent. It previously stopped at
+  `aFTR_STATE_PULL`, and `mPlib_check_player_actor_main_index_Furniture_Move`
+  only matches PUSH/PULL, so a spin suppressed neither the reconcile nor the
+  furniture rebuild.
+- `aMR_NetReloadFurniture` drops the fit table before destructing the actor
+  list. A rebuild ends the animation without ever reaching the unfit, which used
+  to leave `parent_ftr.ftrID` pointing into a list that no longer described it.
+  The authoritative grid the caller just applied is what the items come back
+  from.
+
+No decompiled game logic changed — the fit/unfit code is untouched upstream, so
+an `NETCODE_ENABLED=OFF` or offline build behaves exactly as before.
+
+Verified: Windows build (966 targets, client and dedicated server link),
+`make test` 39/39. Not yet exercised on screen with a legitimate disc — the
+two-client staging under `pc/build64/manual-two-client-test/` has been restaged
+with these binaries for that.
+
+## Compatibility note for the protocol version
+
+Protocol v15 (the item-drop presentation work above) is not backwards compatible
+with an older client: negotiation is strict, so client and server must be
+updated together. Town state is unchanged at v8 — `TileState` on disk did not
+change, only the wire delta grew, so a v8 town directory needs no migration for
+it. The invitation-key and dragged-furniture changes above carry no wire or
+state version of their own.
 
 The preceding v14 work also moved town state to v8. The town directory is
 forward compatible — v4 through v7 state files still load, with older records

@@ -18,9 +18,14 @@ Nintendo asset may be distributed with the client or server.
 
 ## Running a town
 
-The server requires an invitation key unless `--insecure-local` is explicitly
-used. Edit the host-side `server.ini`, set a randomly generated private
-`invite_key`, and expose only its UDP game port (24680 by default):
+The invitation key is the town's only door lock, and it is optional. Leave
+`invite_key` blank and the server starts open: it demands no proof from a
+joining client and derives no session keys, so anyone who can reach the port may
+join as any account and the traffic is unencrypted. The server prints a warning
+at every such start. That is a reasonable choice on a LAN or behind a firewall
+and a poor one for a port-forwarded host. Set a randomly generated private
+`invite_key` in the host-side `server.ini` to close it, and expose only the UDP
+game port (24680 by default):
 
 ```bat
 AnimalCrossingServer.exe --config server.ini
@@ -52,8 +57,8 @@ Supported settings are
 `empty_town_simulation`, `data_directory`, `dashboard`, `invite_required`, and
 `invite_key`, and `town_seed`. Keep the name at eight printable characters or
 fewer and never change the seed after residents have created the canonical
-town. Keep `invite_required = true` for networked hosts and protect the
-file because it may contain the shared secret. `ACGC_INVITE_KEY` or
+town. Set an `invite_key` for any host reachable from the Internet and protect
+the file because it may contain that shared secret. `ACGC_INVITE_KEY` or
 `--invite-key` can override the stored key. A different file may be selected
 with `--config FILE`.
 

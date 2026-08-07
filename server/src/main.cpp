@@ -35,6 +35,28 @@ void stop_server(int) {
     running.store(false);
 }
 
+#ifdef _WIN32
+/* A double-clicked server owns the console window Windows created for it, so
+ * the window - and the message explaining why it stopped - disappears the
+ * instant the process exits. Wait for a key only then: a console shared with
+ * cmd.exe has more than one process attached, and a smoke script redirects the
+ * error stream away from the console, so neither may ever block. */
+void hold_console_open() {
+    /* GetConsoleProcessList counts the processes sharing this console, but it
+     * reports 0 - failure - under several console hosts, so only a definite
+     * count above one proves a shell owns the window and will keep it open. */
+    DWORD attached[8] = {};
+    if (GetConsoleProcessList(attached, 8) > 1) return;
+    /* Both ends must still be the console: a smoke script redirects them to
+     * files, where waiting for a key nobody can press would hang the run. */
+    DWORD console_mode = 0;
+    if (GetConsoleMode(GetStdHandle(STD_ERROR_HANDLE), &console_mode) == 0) return;
+    if (GetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), &console_mode) == 0) return;
+    std::cerr << "\nPress Enter to close this window.\n";
+    std::cin.get();
+}
+#endif
+
 bool parse_u64(const std::string& text, std::uint64_t& value) {
     try {
         std::size_t consumed = 0;
@@ -47,7 +69,7 @@ bool parse_u64(const std::string& text, std::uint64_t& value) {
 
 void usage() {
     std::cout << "AnimalCrossingServer [--port N] [--town N] [--data DIR] [--config FILE] [--ticks N] "
-                 "--invite-key KEY [--smoke] [--no-sleep] [--no-dashboard] [--insecure-local] "
+                 "[--invite-key KEY] [--smoke] [--no-sleep] [--no-dashboard] "
                  "[--ban N|--unban N|--import-gci FILE|--export-gci FILE|--checkpoint-now]\n"
                  "  Operator gifts (run with the town stopped, one shot):\n"
                  "    --list-accounts                 print every known account, its bank, and its mailbox\n"
@@ -493,9 +515,7 @@ void print_startup_banner(const acserver::TownRuntime& runtime, const acserver::
               << "============================================================\n" << std::flush;
 }
 
-} // namespace
-
-int main(int argc, char** argv) {
+int run_server(int argc, char** argv) {
     /* Windows stdout can otherwise remain block-buffered when launched from a
      * batch file or redirected by an operator. Console status must be visible
      * immediately, not only when the process exits. */
@@ -521,17 +541,18 @@ int main(int argc, char** argv) {
         std::error_code filesystem_error;
         if (!std::filesystem::exists(config_file, filesystem_error)) {
             const std::filesystem::path legacy_config = config.data_directory / "config.toml";
-            if (std::filesystem::exists(legacy_config, filesystem_error)) {
-                if (!acserver::load_town_config(legacy_config, config, invite_required, false, error) ||
-                    !acserver::write_default_town_config(config_file, config, invite_required, error)) {
-                    std::cerr << "Server configuration migration failed: " << error << '\n';
-                    return 2;
-                }
-                std::cout << "Migrated legacy configuration to " << config_file.string() << '\n';
-            } else if (!acserver::write_default_town_config(config_file, config, invite_required, error)) {
-                std::cerr << "Server configuration creation failed: " << error << '\n';
+            const bool migrating = std::filesystem::exists(legacy_config, filesystem_error);
+            if (migrating && !acserver::load_town_config(legacy_config, config, invite_required, false, error)) {
+                std::cerr << "Server configuration migration failed: " << error << '\n';
                 return 2;
             }
+            if (!acserver::write_default_town_config(config_file, config, invite_required, error)) {
+                std::cerr << (migrating ? "Server configuration migration failed: "
+                                        : "Server configuration creation failed: ")
+                          << error << '\n';
+                return 2;
+            }
+            if (migrating) std::cout << "Migrated legacy configuration to " << config_file.string() << '\n';
         }
     }
     if (!acserver::load_town_config(config_file, config, invite_required, false, error)) {
@@ -542,7 +563,6 @@ int main(int argc, char** argv) {
         (config.clock.mode != acserver::ClockMode::Realtime || config.clock.starting_town_unix_seconds >= 0)) {
         std::cout << "sync_to_system_clock is on: clock_mode, clock_scale, and starting_datetime are ignored.\n";
     }
-    if (!invite_required) config.allow_unauthenticated = true;
     if (const char* environment_key = std::getenv("ACGC_INVITE_KEY");
         environment_key != nullptr && environment_key[0] != '\0') {
         config.invite_key = environment_key;
@@ -586,7 +606,8 @@ int main(int argc, char** argv) {
             continue;
         }
         if (argument == "--insecure-local") {
-            config.allow_unauthenticated = true;
+            /* Kept for scripts that still pass it. A blank invite_key already
+             * runs the town open, so there is nothing left to unlock. */
             continue;
         }
         if (argument == "--checkpoint-now") {
@@ -643,7 +664,6 @@ int main(int argc, char** argv) {
     }
     if (smoke) {
         config.port = 0;
-        if (config.invite_key.empty()) config.allow_unauthenticated = true;
         no_sleep = true;
         if (maximum_ticks == 0) maximum_ticks = 120;
     }
@@ -658,7 +678,14 @@ int main(int argc, char** argv) {
     const bool one_shot_admin = checkpoint_now || list_accounts || ban_account != 0 || unban_account != 0 ||
                                 grant_account != 0 || mail_account != 0 ||
                                 !import_gci.empty() || !export_gci.empty();
-    if (one_shot_admin && config.invite_key.empty()) config.allow_unauthenticated = true;
+    /* Say it once, before the town listens, and only for a run that will take
+     * connections: an open town is a choice, not something to discover later. */
+    if (config.invite_key.empty() && !one_shot_admin && !smoke) {
+        std::cout << "WARNING: no invite key is set. Anyone who can reach UDP port " << config.port
+                  << " may join this\n         town as any account, and traffic is not encrypted. Set "
+                     "invite_key in\n         "
+                  << config_file.string() << " to require one.\n";
+    }
     std::signal(SIGINT, stop_server);
     std::signal(SIGTERM, stop_server);
     OperatorConsole operator_console;
@@ -734,4 +761,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     return 0;
+}
+
+} // namespace
+
+int main(int argc, char** argv) {
+    const int status = run_server(argc, argv);
+#ifdef _WIN32
+    if (status != 0) hold_console_open();
+#endif
+    return status;
 }

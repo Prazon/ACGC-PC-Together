@@ -415,10 +415,9 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
         error = "invalid runtime initialization";
         return false;
     }
-    if (config_.invite_key.empty() && !config_.allow_unauthenticated) {
-        error = "an invitation key is required unless unauthenticated mode is explicitly enabled";
-        return false;
-    }
+    /* A blank invite key is a supported configuration: the town runs open, with
+     * no invite proof demanded and no session encryption. Refusing to start was
+     * worse - it stopped a host who wanted exactly that. The caller warns. */
     if (!persistence_.initialize(error)) return false;
     if (!database_.initialize(error)) return false;
     const auto checkpoint = persistence_.load_latest_checkpoint(error);

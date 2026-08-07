@@ -390,8 +390,11 @@ bool write_default_town_config(const std::filesystem::path& path,
               "data_directory = " << quote_ini(data_directory.generic_string()) << "\n\n"
               "[security]\n"
               "invite_required = " << (invite_required ? "true" : "false") << "\n"
-              "; Keep this private. It may instead be supplied via ACGC_INVITE_KEY.\n"
-              "invite_key = \"\"\n";
+              "; Leave blank to run the town open to anyone who can reach the port,\n"
+              "; with no session encryption. Set a key and the players you invite put\n"
+              "; the same string in their network.ini. It may instead be supplied via\n"
+              "; ACGC_INVITE_KEY. Keep it private.\n"
+              "invite_key = " << quote_ini(config.invite_key) << "\n";
     if (!output) {
         error = "failed while writing server configuration: " + path.string();
         return false;

@@ -693,7 +693,9 @@ void town_configuration_is_loaded_and_validated() {
     CHECK(generated_config.town_name == config.town_name);
     CHECK(generated_config.clock.sync_to_system_clock);
     CHECK(generated_config.clock.starting_town_unix_seconds == config.clock.starting_town_unix_seconds);
-    CHECK(generated_config.invite_key.empty());
+    /* The key survives the round trip, semicolon and all, so migrating an older
+     * configuration does not silently leave a server that refuses to start. */
+    CHECK(generated_config.invite_key == config.invite_key);
     CHECK(generated_invite_required);
 
     {
@@ -2848,7 +2850,6 @@ void real_runtime_serves_eight_moving_bots() {
     config.data_directory = root / "town";
     config.capacity = 8;
     config.connection_timeout_ms = 60000;
-    config.allow_unauthenticated = true;
     acserver::TownRuntime runtime(config);
     std::string error;
     constexpr std::int64_t wall_start = 1700000000;
@@ -3551,7 +3552,6 @@ void canonical_town_bootstrap_survives_clients_and_restart() {
     server_config.port = 0;
     server_config.data_directory = root / "town";
     server_config.connection_timeout_ms = 60000;
-    server_config.allow_unauthenticated = true;
     server_config.town_name = "BootTown";
     server_config.town_seed = 42;
     constexpr std::int64_t wall = 1700000000;
@@ -3692,7 +3692,6 @@ void island_is_an_authoritative_shared_zone() {
     server_config.port = 0;
     server_config.data_directory = root / "town";
     server_config.connection_timeout_ms = 60000;
-    server_config.allow_unauthenticated = true;
     server_config.town_name = "IsleTown";
     server_config.town_seed = 77;
     constexpr std::int64_t wall = 1700000000;
