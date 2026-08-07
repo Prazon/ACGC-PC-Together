@@ -16,7 +16,8 @@ bool load_town_config(const std::filesystem::path& path,
                       bool allow_missing,
                       std::string& error);
 
-// Writes a complete, commented host configuration without including a secret.
+// Writes a complete, commented host configuration, including config.invite_key
+// when one is set so a generated file can start the server unattended.
 bool write_default_town_config(const std::filesystem::path& path,
                                const TownRuntimeConfig& config,
                                bool invite_required,

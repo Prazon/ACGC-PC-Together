@@ -518,6 +518,28 @@ Known limitations:
 - Not verified with a legitimate disc: the client has been built and linked but
   the new animations and held-item rendering have never been drawn on screen.
 
+## Hosting a town without an invitation key (2026-08-06)
+
+The server used to refuse to start when `invite_key` was blank, which is what a
+packaged `server.ini` ships with. Double-clicked from Explorer that read as a
+broken executable: the process printed `an invitation key is required...` to a
+console Windows destroyed on exit, so the window only flashed.
+
+- A blank key is now a supported mode. `TownRuntime::initialize` no longer
+  rejects it, the `allow_unauthenticated` config field is gone, and
+  `--insecure-local` is accepted but does nothing.
+- Such a start prints a warning naming the port: no invite proof is demanded and
+  no session keys are derived, so anyone who can reach it may join as any
+  account over unencrypted traffic. Set `invite_key` to close the town.
+- A fatal exit now holds the console open when the process owns the window, so
+  the reason stays readable. It never waits when the console is shared with a
+  shell or when either standard handle is redirected, which keeps the smoke
+  scripts and CI from blocking. `GetConsoleProcessList` is only trusted when it
+  reports more than one process; it returns 0 outright under some console hosts.
+- `write_default_town_config` now writes `config.invite_key` instead of an empty
+  string, so migrating a legacy `config.toml` no longer silently drops the
+  operator's key and leaves a server that will not start.
+
 ## Compatibility note for this change
 
 Protocol v14 and town state v8 are not backwards compatible with an older
