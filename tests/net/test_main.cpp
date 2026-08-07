@@ -3389,6 +3389,170 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(server.shutdown(error));
 }
 
+/* A player who steps indoors and comes back must still look like themselves to
+ * everyone who stayed put.
+ *
+ * Appearance is baseline-owned so the transform snapshot stays under the MTU,
+ * and baselines used to reach only the client that joined or transferred. A
+ * viewer therefore dropped the traveller's whole track while they were gone and
+ * picked them back up from the snapshot alone, with a default-constructed
+ * appearance -- wrong gender, wrong face, wrong shirt -- and nothing ever
+ * corrected it, because the traveller's appearance had not changed and so no
+ * AppearanceUpdate was broadcast. Using a door corrupted how every other player
+ * saw you for the rest of the session. */
+void appearance_survives_a_zone_round_trip() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-zone-appearance-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup{root};
+
+    acserver::TownRuntimeConfig server_config;
+    server_config.port = 0;
+    server_config.data_directory = root / "town";
+    server_config.connection_timeout_ms = 60000;
+    server_config.invite_key = "zone-appearance-key";
+    acserver::TownRuntime server(server_config);
+    std::string error;
+    constexpr std::int64_t wall = 1700000000;
+    CHECK(server.initialize(wall, error));
+
+    acnet::ClientConfig stayer_config;
+    stayer_config.server_port = server.bound_port();
+    stayer_config.town = server_config.town_id;
+    stayer_config.account = 81;
+    stayer_config.invite_key = server_config.invite_key;
+    acnet::ClientConfig traveller_config = stayer_config;
+    traveller_config.account = 82;
+    acnet::ClientRuntime stayer(stayer_config);
+    acnet::ClientRuntime traveller(traveller_config);
+    constexpr std::uint64_t start = 10000;
+    CHECK(stayer.start(start, error));
+    CHECK(traveller.start(start, error));
+
+    acnet::Transform stayer_local;
+    stayer_local.position = {2200.0F, 0.0F, 1000.0F};
+    acnet::Transform traveller_local = stayer_local;
+    traveller_local.position.x = 2240.0F;
+
+    std::uint64_t now = start;
+    const auto pump = [&]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        acnet::Transform corrected;
+        bool has_correction = false;
+        CHECK(stayer.frame(++now, 0, 0, 0, 0, {}, stayer_local, corrected, has_correction, error));
+        CHECK(traveller.frame(now, 0, 0, 0, 0, {}, traveller_local, corrected, has_correction, error));
+        CHECK(server.step(now, wall + 5, error));
+        CHECK(stayer.poll(now, error));
+        CHECK(traveller.poll(now, error));
+    };
+    for (std::uint64_t i = 0; i < 240; ++i) pump();
+    CHECK(stayer.state() == acnet::ClientConnectionState::Connected);
+    CHECK(traveller.state() == acnet::ClientConnectionState::Connected);
+
+    /* Nothing about this appearance is a default, so seeing it later can only
+     * mean it survived rather than being coincidentally reconstructed. */
+    acnet::AppearanceUpdate distinctive;
+    distinctive.appearance.name = {{'T', 'r', 'a', 'v', 'e', 'l', 'e', 'r'}};
+    distinctive.appearance.gender = 1;
+    distinctive.appearance.face = 6;
+    distinctive.appearance.clothing = 0xFE20;
+    distinctive.appearance.clothing_index = 0x42;
+    CHECK(traveller.update_appearance(distinctive, ++now, error));
+
+    const auto stayer_sees_traveller = [&]() -> std::optional<acnet::RemotePresentation> {
+        for (const acnet::RemotePresentation& remote : stayer.remote_players())
+            if (remote.account == traveller_config.account) return remote;
+        return std::nullopt;
+    };
+
+    bool appearance_arrived = false;
+    for (std::uint64_t i = 0; i < 300 && !appearance_arrived; ++i) {
+        pump();
+        const auto seen = stayer_sees_traveller();
+        appearance_arrived = seen.has_value() && seen->appearance.gender == 1 &&
+                             seen->appearance.face == 6 && seen->appearance.clothing_index == 0x42;
+    }
+    CHECK(appearance_arrived);
+
+    const auto transfer = [&](std::uint32_t door_id, acnet::ZoneId destination, const acnet::Vec3& arrival) {
+        acnet::ZoneTransferRequest request;
+        request.door_id = door_id;
+        CHECK(traveller.request(request, ++now, error));
+        std::optional<acnet::TransferOffer> offer;
+        for (std::uint64_t i = 0; i < 300 && !offer.has_value(); ++i) {
+            pump();
+            offer = traveller.take_transfer_offer();
+        }
+        CHECK(offer.has_value());
+        CHECK(offer->code == acnet::ResultCode::Ok);
+        CHECK(offer->destination_zone == destination);
+        acnet::ZoneReadyRequest ready;
+        ready.token = offer->token;
+        ready.destination_transform.position = arrival;
+        CHECK(traveller.ready(ready, ++now, error));
+        bool arrived = false;
+        for (std::uint64_t i = 0; i < 300 && !arrived; ++i) {
+            pump();
+            arrived = traveller.baseline() != nullptr && traveller.baseline()->zone == destination;
+        }
+        CHECK(arrived);
+        (void)traveller.take_transfer_offer();
+    };
+
+    /* Indoors. The stayer must stop drawing them -- a vanished player standing
+     * frozen in the doorway would be its own bug. */
+    transfer(100, 100, {120.0F, 0.0F, 220.0F});
+    bool traveller_left_view = false;
+    for (std::uint64_t i = 0; i < 400 && !traveller_left_view; ++i) {
+        pump();
+        traveller_left_view = !stayer_sees_traveller().has_value();
+    }
+    CHECK(traveller_left_view);
+
+    /* Back out through the return door, without touching their appearance. */
+    transfer(200, 1, {2240.0F, 0.0F, 1000.0F});
+    bool traveller_returned = false;
+    for (std::uint64_t i = 0; i < 400 && !traveller_returned; ++i) {
+        pump();
+        traveller_returned = stayer_sees_traveller().has_value();
+    }
+    CHECK(traveller_returned);
+
+    const auto returned = stayer_sees_traveller();
+    CHECK(returned.has_value());
+    if (returned->appearance.gender != 1 || returned->appearance.face != 6 ||
+        returned->appearance.clothing_index != 0x42) {
+        throw TestFailure("traveller returned wearing a default appearance: gender=" +
+                          std::to_string(static_cast<int>(returned->appearance.gender)) +
+                          " face=" + std::to_string(static_cast<int>(returned->appearance.face)) +
+                          " clothing_index=" + std::to_string(returned->appearance.clothing_index));
+    }
+    CHECK(returned->appearance.name == distinctive.appearance.name);
+    CHECK(returned->appearance.revision != 0);
+
+    /* The stayer's own baseline must carry it too, which is the half of the fix
+     * that lives on the server: occupants of the destination zone are
+     * re-baselined when someone arrives, exactly as they are when someone
+     * joins. Retention on the client alone would leave any absence longer than
+     * the retention window still broken. */
+    CHECK(stayer.baseline() != nullptr);
+    bool baseline_has_traveller = false;
+    for (const acnet::PlayerSnapshot& player : stayer.baseline()->players) {
+        if (player.account != traveller_config.account) continue;
+        baseline_has_traveller = player.appearance.gender == 1 && player.appearance.face == 6 &&
+                                 player.appearance.clothing_index == 0x42;
+    }
+    CHECK(baseline_has_traveller);
+
+    CHECK(server.shutdown(error));
+}
+
 void canonical_town_bootstrap_survives_clients_and_restart() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -3843,6 +4007,7 @@ int main() {
         {"clock jobs and replication", clock_jobs_and_replication_survive_empty_time},
         {"real runtime eight-bot smoke", real_runtime_serves_eight_moving_bots},
         {"production client loopback", production_clients_connect_move_and_render_each_other},
+        {"appearance survives a zone round trip", appearance_survives_a_zone_round_trip},
         {"canonical town bootstrap restart", canonical_town_bootstrap_survives_clients_and_restart},
         {"island authoritative shared zone", island_is_an_authoritative_shared_zone},
         {"island cabin shared room", island_cabin_is_a_shared_room},

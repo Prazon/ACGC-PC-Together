@@ -275,8 +275,30 @@ bool ClientRuntime::handle_snapshot(const DecodedPacket& packet, std::uint64_t n
         remote.last_tick = snapshot.server_tick;
         remote.history.push(snapshot.server_tick, player.transform);
     }
+    /* Absence is handled in two stages, because dropping the track outright
+     * destroys identity that only a reliable baseline can replace.
+     *
+     * Stage one stops drawing them. TransformHistory::sample only fails on an
+     * empty history -- otherwise it extrapolates or repeats the last sample --
+     * so clearing is what actually makes a vanished player disappear rather
+     * than stand frozen where they were last seen.
+     *
+     * Stage two, much later, reclaims the entry. Appearance and presentation
+     * are baseline-owned and no snapshot carries them, so an account erased
+     * after half a second of packet loss came back with a default-constructed
+     * appearance -- wrong gender, face and shirt -- and stayed that way until
+     * something happened to trigger a re-baseline. Retaining the track means a
+     * player who blinks out of the snapshot, whether through loss or through a
+     * short trip indoors, is drawn correctly the moment they return. */
+    const Tick draw_timeout = config_.simulation_rate / 2U;
+    const Tick retain_timeout = config_.simulation_rate * 30U;
     for (auto it = remotes_.begin(); it != remotes_.end();) {
-        if (snapshot.server_tick - it->second.last_tick > config_.simulation_rate / 2U) {
+        /* Guard the unsigned subtraction: an out-of-order snapshot would
+         * otherwise underflow to a huge age and evict a live player. */
+        const Tick absent =
+            snapshot.server_tick >= it->second.last_tick ? snapshot.server_tick - it->second.last_tick : 0;
+        if (absent > draw_timeout) it->second.history.clear();
+        if (absent > retain_timeout) {
             it = remotes_.erase(it);
         } else {
             ++it;

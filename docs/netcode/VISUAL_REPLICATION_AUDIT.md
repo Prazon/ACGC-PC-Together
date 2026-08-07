@@ -56,23 +56,23 @@ journalled.
   writes hand positions straight into. Needs per-player float ownership across
   the fish AI (`ac_gyo_test.c`, `ac_gyo_kaseki.c`) before a remote can have one.
 - **Net catch label.** What a remote caught is a server-owned encounter outcome.
-- **Opposite-gender body.** Only the local player's gender object bank is
-  resident (`Object_Exchange_keep_new_Player` → `mPlib_get_player_Object_Bank`,
-  `ACTOR_OBJ_BANK_8` male / `ACTOR_OBJ_BANK_51` female). A remote of the other
-  gender resolves its display lists against the wrong bank, re-established at
-  every scene load — this is the reported "appearance changes when entering an
-  interior" bug. Fixing it means making a second player bank resident, which
-  costs memory and belongs to scene resource loading.
+An earlier draft of this page listed a third item here — the opposite-gender
+player object bank — as the cause of the reported "appearance changes when
+entering an interior" bug. **That was wrong and is withdrawn.**
+`cKF_bs_r_boy_1` and `cKF_bs_r_grl_1` are ordinary linked data in
+`src/data/model/`, and their joint tables point at linked display lists, so no
+bank is involved in drawing a remote body and nothing about it is
+scene-dependent. The real cause was that zone-transfer baselines never reached
+the players already standing in the destination zone; it is fixed and covered by
+a regression test — see `CURRENT_STATUS.md` → "Appearance across a zone
+transition".
 
 ## Recommended order
 
 1. **Category B first.** No wire change, no version bump, and it includes the
    two most visible gaps (lean and nameplate). It can also be verified on screen
    independently of any protocol work.
-2. **Then D's gender bank**, because it is a correctness bug rather than a
-   missing feature, and because it is the one item on this page a player has
-   actually reported.
-3. **Category C last, as one bump.** Batching every field into a single version
+2. **Category C last, as one bump.** Batching every field into a single version
    change is much cheaper than three separate strict-negotiation breaks. Settle
    the appearance-vs-presentation question above before writing any of it.
 

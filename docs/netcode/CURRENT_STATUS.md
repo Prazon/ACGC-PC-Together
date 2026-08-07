@@ -611,30 +611,70 @@ Known limitations:
   collision points, the rod tip) are deliberately not reproduced — they feed
   collision and the fishing state machine, and a presentation actor has neither.
 
-## Open bug: appearance changes across an interior transition
+## Appearance across a zone transition (2026-08-06)
 
-Reported from two-client testing, diagnosed by reading, **not yet fixed**.
+A player who used a door came back looking like somebody else to everyone who
+stayed behind — wrong gender, wrong face, wrong shirt — and stayed that way for
+the rest of the session. Reported from two-client testing. **Fixed, and covered
+by a regression test.**
 
-`Object_Exchange_keep_new_Player` (`m_scene.c:28`) runs on every scene load and
-sets up the player model bank, both clothing texture/palette bank slots, and the
-face texture/palette banks. All of it is keyed on the **local** player:
-`mPlib_Object_Exchange_keep_new_PlayerMdl` assigns the player profile's
-`obj_bank_id` from `mPlib_get_player_Object_Bank()`, which returns
-`ACTOR_OBJ_BANK_8` for a male local player and `ACTOR_OBJ_BANK_51` for a female
-one. Only one gender's player bank is resident per scene.
+An earlier reading of this blamed the gender object bank. That was wrong:
+`cKF_bs_r_boy_1` and `cKF_bs_r_grl_1` are ordinary linked data in
+`src/data/model/`, and their joint tables point at linked display lists, so no
+bank swap is involved and nothing about the body is scene-dependent.
 
-`Net_Remote_Player_Profile` declares `ACTOR_OBJ_BANK_KEEP` and has no bank of
-its own. A remote's face and clothing are safe — it loads those into its own
-buffers and binds them with `gSPSegment` — but its *body* is `cKF_bs_r_boy_1` /
-`cKF_bs_r_grl_1`, whose display lists resolve through the resident player bank.
-A remote of the opposite gender to the local player therefore draws against the
-wrong bank, and the binding is re-established at every scene load, which is why
-it changes when crossing a door.
+The real cause is on the wire. Appearance is deliberately baseline-owned so the
+15 Hz transform snapshot stays under the unfragmented MTU, and as
+`town_runtime.cpp:965` states, *"baselines only reach a client on join and zone
+transfer"*. Three things then compose into the bug:
 
-Fixing it means making a second player bank resident whenever a remote of the
-other gender is present, rather than anything in the presentation actor. That
-is a change to scene resource loading with a real memory cost, it needs a disc
-to verify, and it should not be bundled with presentation work.
+1. A client drops a remote's entire `RemoteTrack` — appearance, custom pattern
+   *and* presentation — once that account stops appearing in snapshots for half
+   a second. Walking into a house does exactly that to everyone left outside.
+2. When the traveller comes back, `remotes_[account]` is default-constructed and
+   repopulated from the snapshot, which carries transform but no appearance. The
+   viewer draws gender 0, face 0, clothing 0.
+3. Nothing repairs it. The returning player's appearance has not *changed*, so
+   the `appearance_changed` guard means no `AppearanceUpdate` is broadcast; and
+   the destination-zone baseline goes only to the traveller, not to the people
+   already standing there.
+
+`handle_hello` already re-baselines every viewer when a player joins, with a
+comment giving precisely this reason. The zone-transfer path simply never got
+the same treatment.
+
+- **Server.** `ZoneReady` now re-baselines every connection standing in the
+  destination zone, not just the arriving one. Scoped to the destination:
+  occupants of the source zone need nothing, because the departing player simply
+  stops appearing in their snapshots, which their client already handles.
+- **Client.** Absence is now handled in two stages. At half a second the
+  transform history is cleared, which is what actually makes a vanished player
+  disappear rather than stand frozen — `TransformHistory::sample` only fails on
+  an empty history, so it would otherwise extrapolate forever. The track itself,
+  carrying the baseline-owned appearance and presentation, is retained for
+  thirty seconds. That makes a brief absence — packet loss as much as a door —
+  survivable without a round trip. The unsigned tick subtraction is now guarded
+  so an out-of-order snapshot cannot underflow and evict a live player.
+
+Verification:
+
+- New test `appearance survives a zone round trip`: two clients meet, one sets a
+  deliberately non-default appearance, walks into a house, comes back, and the
+  stayer must still see the real appearance *and* have it in their own baseline.
+  The baseline assertion is what covers the server half specifically; client
+  retention alone would leave any absence longer than the window still broken.
+- With the fix reverted the new test fails with exactly the reported symptom
+  (`gender=0 face=0 clothing_index=0`). With the fix, 40/40.
+
+Known issue, pre-existing and unrelated: `production client loopback` is flaky
+at `CHECK(actions_converged)` (`test_main.cpp:3048`). Measured on pristine
+pre-change netcode it fails roughly 1 run in 5, and with these changes applied
+2 in 5 — the same rate within the noise of that sample size. It is not caused or
+cured by anything here. Unlike the loops around it, that convergence loop has no
+`sleep_for` and gives real UDP loopback only 120 iterations of 1 ms to settle, so
+it is sensitive to machine load; `make check` runs it under heavier load than a
+bare `make test`. It needs a proper budget or a virtual clock, and until then a
+red `make check` should be re-run before it is believed.
 
 ## Hosting a town without an invitation key (2026-08-06)
 

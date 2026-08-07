@@ -1565,7 +1565,29 @@ bool TownRuntime::dispatch(Connection& connection,
             if (!acnet::encode(reply, payload) ||
                 !send_payload(connection, acnet::MessageType::ZoneTransferOffer, acnet::Channel::Transactions,
                               payload, monotonic_ms, error)) return false;
-            return reply.code != acnet::ResultCode::Ok || send_baseline(connection, monotonic_ms, error);
+            if (reply.code != acnet::ResultCode::Ok) return true;
+            /* The arriving player needs the destination's baseline, and so does
+             * everyone already standing in it -- for the same reason
+             * handle_hello refreshes every viewer when a player joins.
+             * Appearance is baseline-owned so the transform snapshot stays
+             * under the MTU, and a client drops a remote's whole track once it
+             * stops appearing in snapshots. Without this the occupants of the
+             * destination zone pick the returning player back up from the
+             * snapshot alone and render them with a default-constructed
+             * appearance: wrong gender, wrong face, wrong shirt. That is what
+             * made a character change the moment they walked through a door.
+             *
+             * Scoped to the destination. Occupants of the source zone need
+             * nothing: the departing player simply stops appearing in their
+             * snapshots, which is exactly what their client already handles. */
+            for (auto& connected : connections_) {
+                if (connected.second.account != connection.account) {
+                    const acnet::PlayerView* viewer = players_.by_account(connected.second.account);
+                    if (viewer == nullptr || viewer->zone != reply.destination_zone) continue;
+                }
+                if (!send_baseline(connected.second, monotonic_ms, error)) return false;
+            }
+            return true;
         }
         case acnet::MessageType::FurnitureRequest: {
             acnet::FurnitureOperation request;
