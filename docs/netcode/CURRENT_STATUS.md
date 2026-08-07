@@ -1095,6 +1095,61 @@ mapping to the two entities the server owns (shopkeeper 1000, islander 1001).
 NPC replication was the prerequisite and is now done; the mapping and the call
 site are not.
 
+## A blank town erasing every client's field (2026-08-07)
+
+Reported as "trees and rocks disappear when you get close", and the bulletin
+board with them. It was not a rendering fault. The three things named are all
+foreground tiles, and the server was deleting them.
+
+**What happens.** `Net_ApplyAuthoritativeState` writes the zone baseline's tile
+chunk straight into `Save_t.fg` through `mFI_UtNumtoFGSet_common`. The server
+sends a 16x16 chunk centred on the player, so the chunk follows the player
+around -- which is why the erasure tracks proximity rather than acre crossings.
+If the server's own foreground is empty, every chunk is an eraser, and the tile
+is gone for the rest of the session.
+
+Measured on the two-client test town by logging every projection that changed a
+cell: 503 changes on one scripted walk, 503 of them to `EMPTY_NO`, including 71
+trees, 6 rocks and 22 `NOTICE` (the bulletin board).
+
+**Why the server was empty.** `Net_SubmitInitialTown` is the only thing that
+installs a foreground, and its only callers are the two guide-NPC scripts that
+run when a resident creates a town from the intro. It captured `Save_t.fg`
+without checking that the field existed yet, and the server takes the first
+bootstrap as final -- `town_bootstrapped_` closes the door. A bootstrap sent
+before the save's field was generated therefore installed 7680 empty tiles
+permanently. The test town's checkpoint is state version 9 with the flag set and
+a foreground of nothing behind it.
+
+**The fix, both ends.**
+
+- `Net_SubmitInitialTown` counts occupied tiles and refuses to submit a
+  foreground of nothing, so the one-shot can no longer be spent on an empty
+  save.
+- `Net_SubmitTownIfUninitialized` offers the world on any frame where the server
+  reports the town uninitialised, throttled to once a second. Previously a
+  `--quickstart` login, or any login into a town restored without a foreground,
+  had no path to install one at all.
+- `TownRuntime::decode_state` treats a town flagged as created whose foreground
+  holds fewer occupied tiles than a single acre as never created, so an
+  already-damaged town is repaired by the next resident instead of erasing
+  everyone forever. A real foreground clears that floor by an order of
+  magnitude; a blank town only accumulates a handful of tiles from dropped
+  items, which is why the test is a floor and not "any".
+
+**Verified.** Same scripted walk on the same town: 503 wipes to 1, a
+`town_bootstrap` audit row now exists, and the client's remaining 40 projected
+differences are buried-item representation (`f0xx`/`f1xx` against `58xx`/`a0xx`)
+with no tree, rock or sign among them -- a separate, pre-existing discrepancy.
+`make check` green including the new `blank town bootstrap repairable` case,
+which installs an empty foreground, restarts, and asserts the town reopens for a
+real one.
+
+**Known-good saves are unaffected.** The erasure lives in the in-memory field;
+the GCI on disk still held ~540 trees and ~36 rocks throughout. A player who
+saves while the world is wiped would persist the damage, so the fix wants to
+land before any long online session.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as

@@ -471,6 +471,28 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         if (!housing_.restore_house(house)) { error = "failed to restore house"; return false; }
     }
     if (!reader.finished()) { error = "trailing town state data"; return false; }
+    /* A town flagged as bootstrapped with no foreground behind it is worse than
+     * one that was never bootstrapped: town_bootstrapped_ closes the only path
+     * that installs a world, and every interest window the town then answers is
+     * an all-empty chunk which the client writes straight over its own field.
+     * Trees, rocks and the bulletin board disappear one acre at a time as the
+     * player walks up to them, and never come back. Pre-v3 state has no flag to
+     * read and is assumed bootstrapped, which is how such a town arises.
+     * Nothing here can be lost by reopening the door -- there is nothing to
+     * lose -- so let the next resident install the foreground. */
+    if (town_bootstrapped_) {
+        const auto town_tiles = world_.tiles_in_zone(1);
+        const std::size_t occupied =
+            static_cast<std::size_t>(std::count_if(town_tiles.begin(), town_tiles.end(),
+                                                   [](const auto& entry) { return entry.second.item != 0; }));
+        /* One acre's worth. A generated town's foreground is thousands of tiles
+         * -- trees, rocks, weeds, signs -- across every acre, so any real one
+         * clears this by an order of magnitude. A town that was flagged as
+         * created without ever being given a foreground still accumulates a
+         * handful of occupied tiles from dropped items, which is why the test
+         * is a floor rather than "any". */
+        if (occupied < acnet::kBlockUnits * acnet::kBlockUnits) town_bootstrapped_ = false;
+    }
     return true;
 }
 

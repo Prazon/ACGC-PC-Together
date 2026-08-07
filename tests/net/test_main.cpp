@@ -4237,6 +4237,124 @@ void appearance_survives_a_zone_round_trip() {
     CHECK(server.shutdown(error));
 }
 
+/* A town can be recorded as created without ever being given a foreground:
+ * before the client refused to send one, a bootstrap submitted while the save's
+ * field was still blank installed 7680 empty tiles and closed the only path
+ * that installs a world. The town then answered every interest window with an
+ * all-empty chunk, which the client writes straight over its own field -- the
+ * trees, rocks and bulletin board vanish an acre at a time as the player walks
+ * up to them, and never come back. A restart must reopen the door. */
+void blank_town_bootstrap_is_repairable_after_restart() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-blank-bootstrap-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup{root};
+
+    acserver::TownRuntimeConfig server_config;
+    server_config.port = 0;
+    server_config.data_directory = root / "town";
+    server_config.connection_timeout_ms = 60000;
+    server_config.town_name = "BlankTown";
+    server_config.town_seed = 77;
+    constexpr std::int64_t wall = 1700000000;
+    std::uint64_t now = 1;
+    std::string error;
+
+    const auto make_bootstrap = [&](std::uint16_t fill_item) {
+        acnet::TownBootstrap bootstrap;
+        bootstrap.town_seed = server_config.town_seed;
+        bootstrap.land_id = static_cast<std::uint16_t>(0x3000U | (server_config.town_seed & 0xFFU));
+        bootstrap.town_name = {{'B', 'l', 'a', 'n', 'k', 'T', 'o', 'w'}};
+        bootstrap.appearance.name = {{'P', 'l', 'a', 'y', 'e', 'r', ' ', ' '}};
+        bootstrap.appearance.face = 1;
+        bootstrap.tiles.resize(acnet::kTownBootstrapTileCount);
+        for (auto& tile : bootstrap.tiles) tile.item = fill_item;
+        return bootstrap;
+    };
+
+    const auto run_until = [&](acserver::TownRuntime& server, acnet::ClientRuntime& client,
+                               const std::function<bool()>& done) {
+        for (std::uint64_t i = 0; i < 800 && !done(); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            ++now;
+            CHECK(server.step(now, wall, error));
+            CHECK(client.poll(now, error));
+        }
+    };
+
+    /* Install a foreground of nothing, exactly as the old client could. */
+    {
+        acserver::TownRuntime server(server_config);
+        CHECK(server.initialize(wall, error));
+        acnet::ClientConfig config;
+        config.server_port = server.bound_port();
+        config.account = 9101;
+        acnet::ClientRuntime client(config);
+        CHECK(client.start(++now, error));
+        run_until(server, client,
+                  [&] { return client.state() == acnet::ClientConnectionState::Connected; });
+        CHECK(client.state() == acnet::ClientConnectionState::Connected);
+        CHECK(!client.town_initialized());
+
+        CHECK(client.submit_town_bootstrap(make_bootstrap(0), ++now, error));
+        std::optional<acnet::TownBootstrapResult> result;
+        run_until(server, client, [&] {
+            result = client.take_town_bootstrap_result();
+            return result.has_value();
+        });
+        CHECK(result.has_value());
+        CHECK(result->code == acnet::ResultCode::Ok);
+        CHECK(client.town_initialized());
+        client.stop(++now);
+        for (std::uint64_t i = 0; i < 20 && server.connected_clients() != 0; ++i)
+            CHECK(server.step(++now, wall, error));
+        CHECK(server.shutdown(error));
+    }
+
+    /* Restarting must not carry the empty world forward as authoritative. */
+    acserver::TownRuntime restarted(server_config);
+    CHECK(restarted.initialize(wall + 30, error));
+    acnet::ClientConfig returning_config;
+    returning_config.server_port = restarted.bound_port();
+    returning_config.account = 9101;
+    acnet::ClientRuntime returning(returning_config);
+    CHECK(returning.start(++now, error));
+    run_until(restarted, returning,
+              [&] { return returning.state() == acnet::ClientConnectionState::Connected; });
+    CHECK(returning.state() == acnet::ClientConnectionState::Connected);
+    CHECK(!returning.town_initialized());
+
+    /* And a real foreground now installs and sticks. */
+    CHECK(returning.submit_town_bootstrap(make_bootstrap(0x0804), ++now, error));
+    std::optional<acnet::TownBootstrapResult> repaired;
+    run_until(restarted, returning, [&] {
+        repaired = returning.take_town_bootstrap_result();
+        return repaired.has_value();
+    });
+    CHECK(repaired.has_value());
+    CHECK(repaired->code == acnet::ResultCode::Ok);
+    CHECK(returning.town_initialized());
+    /* The repaired world reaches the client on its next baseline. */
+    const auto has_planted_tile = [&] {
+        const acnet::ZoneBaseline* baseline = returning.baseline();
+        if (baseline == nullptr) return false;
+        return std::any_of(baseline->tiles.begin(), baseline->tiles.end(),
+                           [](const auto& entry) { return entry.first.zone == 1 && entry.second.item == 0x0804; });
+    };
+    run_until(restarted, returning, has_planted_tile);
+    CHECK(has_planted_tile());
+    returning.stop(++now);
+    for (std::uint64_t i = 0; i < 20 && restarted.connected_clients() != 0; ++i)
+        CHECK(restarted.step(++now, wall + 30, error));
+    CHECK(restarted.shutdown(error));
+}
+
 void canonical_town_bootstrap_survives_clients_and_restart() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -4301,7 +4419,12 @@ void canonical_town_bootstrap_survives_clients_and_restart() {
     CHECK(!first.town_initialized());
     CHECK(!second.town_initialized());
 
-    auto canonical = make_bootstrap(0, 2);
+    /* A real foreground, not a single tile on an empty field: a restored town
+     * whose foreground is essentially empty is treated as never installed, so
+     * that a town blank-bootstrapped by the old client can be repaired instead
+     * of answering every interest window with an eraser. The fill still differs
+     * from the overwrite attempt below, which is what this case is about. */
+    auto canonical = make_bootstrap(0x1111, 2);
     /* x=49,z=19 maps to block (2,0), unit (1,3). */
     const std::size_t canonical_index = ((0U * 5U + 2U) * 16U + 3U) * 16U + 1U;
     canonical.tiles[canonical_index].item = 0x1234;
@@ -4702,6 +4825,7 @@ int main() {
         {"production client loopback", production_clients_connect_move_and_render_each_other},
         {"appearance survives a zone round trip", appearance_survives_a_zone_round_trip},
         {"canonical town bootstrap restart", canonical_town_bootstrap_survives_clients_and_restart},
+        {"blank town bootstrap repairable", blank_town_bootstrap_is_repairable_after_restart},
         {"island authoritative shared zone", island_is_an_authoritative_shared_zone},
         {"island cabin shared room", island_cabin_is_a_shared_room},
     };

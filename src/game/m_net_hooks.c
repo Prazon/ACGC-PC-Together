@@ -892,6 +892,7 @@ int Net_SubmitInitialTown(void) {
     int island_block_x[mISL_FG_BLOCK_X_NUM];
     size_t island_count;
     size_t index = 0;
+    size_t populated = 0;
     int block_z;
     int block_x;
     int unit_z;
@@ -906,10 +907,17 @@ int Net_SubmitInitialTown(void) {
                 for (unit_x = 0; unit_x < UT_X_NUM; ++unit_x, ++index) {
                     tiles[index].item = Save_Get(fg[block_z][block_x]).items[unit_z][unit_x];
                     tiles[index].buried = (u8)mFI_GetBlockDeposit(deposit, unit_x, unit_z);
+                    if (tiles[index].item != EMPTY_NO) ++populated;
                 }
             }
         }
     }
+    /* Never install an empty foreground. The bootstrap is a one-shot -- the
+     * server records the town as created and will not import another -- so a
+     * submission made before the save's field exists would leave the town
+     * permanently blank, and its baselines would then erase every client's own
+     * field an acre at a time. */
+    if (populated == 0) return FALSE;
     island_count = Net_CaptureIslandBootstrap(island_tiles, ARRAY_COUNT(island_tiles), island_block_x);
     return acnet_client_submit_town_bootstrap(Save_Get(land_info).name,
                                                Save_Get(land_info).id,
@@ -921,6 +929,31 @@ int Net_SubmitInitialTown(void) {
                                                island_count,
                                                (u8)island_block_x[0],
                                                (u8)island_block_x[1]);
+}
+
+/* The town's foreground only reaches the server through Net_SubmitInitialTown,
+ * and its only callers are the two guide-NPC scripts that run when a resident
+ * creates a town from the intro. A quickstart login skips those, and so does
+ * every login into a town that was restored without a foreground. The server
+ * then answers each interest window with an all-empty chunk and
+ * Net_ApplyAuthoritativeState writes it over the client's field, so trees,
+ * rocks and the bulletin board vanish as the player walks up to them. Offer the
+ * world whenever the server says the town is still uninitialised; the capture
+ * refuses to send an empty one, so a client whose save is not ready yet simply
+ * tries again. */
+static void Net_SubmitTownIfUninitialized(GAME_PLAY* play) {
+    static int retry_delay = 0;
+    if (play == NULL || !Net_IsConnected() || acnet_client_town_initialized()) {
+        retry_delay = 0;
+        return;
+    }
+    if (play->scene_id != SCENE_FG) return;
+    if (retry_delay > 0) {
+        retry_delay--;
+        return;
+    }
+    retry_delay = 60;
+    (void)Net_SubmitInitialTown();
 }
 
 static int Net_GameplayReadyNow(GAME_PLAY* play) {
@@ -1904,6 +1937,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
     Net_UpdateHoldResults();
     Net_ApplyAuthoritativeClock();
     Net_UpdateHouseState(play);
+    Net_SubmitTownIfUninitialized(play);
     Net_UpdateGameplayReadiness(play);
     Net_UpdateAppearance();
     Net_SynchronizeRemoteActors(play, gameplay_ready);
