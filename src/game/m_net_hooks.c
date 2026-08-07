@@ -204,22 +204,51 @@ static size_t Net_CaptureHouse(const NetRoomBinding* room,
     int z;
     int x;
     u64 hash = 1469598103934665603ULL;
+    /* A push/pull/rotate lifts whatever sits on top of the furniture out of the
+     * room grid until its animation settles, so the grid alone would describe a
+     * room those items had been deleted from. Capture from a patched copy of the
+     * affected layer instead: the same bytes the room will hold once the move
+     * finishes, which keeps the submitted candidate complete and keeps the hash
+     * stable across the settle. */
+    aMR_net_fitted_item_c fitted[4];
+    mActor_name_t fitted_items[UT_Z_NUM][UT_X_NUM];
+    int fitted_floor = -1;
+    int fitted_count = 0;
     if (room == NULL || !room->valid || baseline == NULL) return 0;
     memcpy(music_tracks, baseline->music_tracks, sizeof(baseline->music_tracks));
     if (my_room != NULL) {
         const int active_floor = mFI_GetPlayerHouseFloorNo(my_room->scene);
         aMR_NetFlushSwitches(my_room);
-        if (active_floor >= 0 && active_floor < room->floor_count)
+        if (active_floor >= 0 && active_floor < room->floor_count) {
             music_tracks[active_floor] = (int16_t)aMR_NetCurrentMusic(my_room);
+            fitted_count = aMR_NetFittedItems(my_room, fitted, (int)ARRAY_COUNT(fitted));
+            if (fitted_count > 0) {
+                int i;
+                memcpy(fitted_items, (&room->floors[active_floor].layer_main)[mCoBG_LAYER1].items,
+                       sizeof(fitted_items));
+                for (i = 0; i < fitted_count; ++i) {
+                    if (fitted[i].layer != mCoBG_LAYER1) continue;
+                    /* Never overwrite a cell the room already claims: the grid
+                     * is authoritative for everything still in it. */
+                    if (fitted_items[fitted[i].z][fitted[i].x] != EMPTY_NO) continue;
+                    fitted_items[fitted[i].z][fitted[i].x] = fitted[i].item;
+                }
+                fitted_floor = active_floor;
+            }
+        }
     }
     for (floor = 0; floor < room->floor_count; ++floor) {
         mHm_lyr_c* layers = &room->floors[floor].layer_main;
         for (layer = 0; layer < mCoBG_LAYER_NUM; ++layer) {
+            const mActor_name_t (*items)[UT_X_NUM] =
+                (floor == fitted_floor && layer == mCoBG_LAYER1)
+                    ? (const mActor_name_t(*)[UT_X_NUM])fitted_items
+                    : (const mActor_name_t(*)[UT_X_NUM])layers[layer].items;
             switches[floor * mCoBG_LAYER_NUM + layer] = layers[layer].ftr_switch;
             hash = Net_HashBytes(hash, &layers[layer].ftr_switch, sizeof(layers[layer].ftr_switch));
             for (z = 0; z < UT_Z_NUM; ++z) {
                 for (x = 0; x < UT_X_NUM; ++x) {
-                    const mActor_name_t item = layers[layer].items[z][x];
+                    const mActor_name_t item = items[z][x];
                     mActor_name_t canonical_item = item;
                     u8 orientation = 0;
                     hash = Net_HashBytes(hash, &item, sizeof(item));

@@ -168,6 +168,7 @@ const f32 aMR_angle_table[4] = { 0.0f, 90.0f, 180.0f, 270.0f };
 const u8 l_typeB0_table[4] = { aFTR_SHAPE_TYPEB_0, aFTR_SHAPE_TYPEB_90, aFTR_SHAPE_TYPEB_180, aFTR_SHAPE_TYPEB_270 };
 
 static int aMR_UnitNum2FtrItemNoFtrID(mActor_name_t* item_no, int* ftr_id, int ut_x, int ut_z, int layer);
+static mActor_name_t aMR_GetSaveAngle(f32 angle, mActor_name_t item);
 static void aMR_ReserveDefaultBgm(ACTOR* actorx, FTR_ACTOR* ftr_actor);
 static void aMR_ChangeMDBgm(ACTOR* actorx, FTR_ACTOR* ftr_actor);
 static int aMR_SetFurniture2FG(FTR_ACTOR* ftr_actor, xyz_t pos, int on_flag);
@@ -1923,11 +1924,106 @@ static void aMR_AllFurnitureDestruct(ACTOR* actorx, GAME* game) {
     }
 }
 
+/* Where a fitted item lands once its parent's animation settles. This mirrors
+ * the transform aMR_GetItemPosOnMovingFurniture applies every frame, but it is
+ * evaluated at the parent's final position and angle rather than its in-flight
+ * ones, so the answer does not depend on how far the keyframe has played. */
+static void aMR_NetFitDestination(xyz_t* dest, const FTR_ACTOR* ftr_actor, const aMR_parent_ftr_c* parent_ftr,
+                                  const aMR_fit_ftr_c* fit_ftr) {
+    /* Only push/pull moves the parent; a rotation settles where it started. */
+    const xyz_t* origin = (ftr_actor->state >= aFTR_STATE_WAIT_PUSH && ftr_actor->state <= aFTR_STATE_PULL)
+                              ? &ftr_actor->target_position
+                              : &ftr_actor->position;
+    s16 final_angle = RAD2SHORT_ANGLE2(DEG2RAD(ftr_actor->angle_y_target));
+
+    Matrix_translate(origin->x, origin->y, origin->z, MTX_LOAD);
+    Matrix_RotateY(final_angle - parent_ftr->angle_y, MTX_MULT);
+    Matrix_translate(ftr_actor->base_position.x, ftr_actor->base_position.y, ftr_actor->base_position.z, MTX_MULT);
+    Matrix_Position((xyz_t*)&fit_ftr->pos, dest);
+}
+
+extern int aMR_NetFittedItems(const MY_ROOM_ACTOR* my_room, aMR_net_fitted_item_c* out, int max) {
+    const aMR_parent_ftr_c* parent_ftr;
+    const FTR_ACTOR* parent;
+    int count = 0;
+    int i;
+
+    if (my_room == NULL || out == NULL || max <= 0 || aMR_CLIP == NULL ||
+        aMR_CLIP->my_room_actor_p != (const ACTOR*)my_room || l_aMR_work.ftr_actor_list == NULL ||
+        l_aMR_work.used_list == NULL)
+        return 0;
+
+    parent_ftr = &my_room->parent_ftr;
+    if (parent_ftr->ftrID < 0 || parent_ftr->ftrID >= l_aMR_work.list_size || !l_aMR_work.used_list[parent_ftr->ftrID])
+        return 0;
+    parent = &l_aMR_work.ftr_actor_list[parent_ftr->ftrID];
+
+    for (i = 0; i < aMR_FIT_FTR_MAX && count < max; i++) {
+        const aMR_fit_ftr_c* fit_ftr = &parent_ftr->fit_ftr_table[i];
+        mActor_name_t item;
+        xyz_t dest;
+        int ut_x;
+        int ut_z;
+
+        if (fit_ftr->exist_flag != TRUE) continue;
+
+        if (fit_ftr->ftr_ID != -1) {
+            const FTR_ACTOR* on_top;
+            s16 settled_angle;
+
+            if (fit_ftr->ftr_ID < 0 || fit_ftr->ftr_ID >= l_aMR_work.list_size || !l_aMR_work.used_list[fit_ftr->ftr_ID])
+                continue;
+            on_top = &l_aMR_work.ftr_actor_list[fit_ftr->ftr_ID];
+            /* aMR_RequestItemToUnFitFurniture turns the item on top by however
+             * far the parent turned, so predict the settled orientation too. */
+            settled_angle =
+                on_top->s_angle_y + (RAD2SHORT_ANGLE2(DEG2RAD(parent->angle_y_target)) - parent_ftr->angle_y);
+            item = mRmTp_FtrIdx2FtrItemNo(on_top->name, mRmTp_DIRECT_SOUTH);
+            item = aMR_GetSaveAngle(RAD2DEG(SHORT2RAD_ANGLE2(settled_angle)), item);
+        } else {
+            if (fit_ftr->item_no == EMPTY_NO) continue;
+            item = fit_ftr->item_no;
+        }
+
+        aMR_NetFitDestination(&dest, parent, parent_ftr, fit_ftr);
+        ut_x = (int)(dest.x / mFI_UT_WORLDSIZE_X_F);
+        ut_z = (int)(dest.z / mFI_UT_WORLDSIZE_Z_F);
+        if (ut_x < 0 || ut_x >= UT_X_NUM || ut_z < 0 || ut_z >= UT_Z_NUM) continue;
+
+        out[count].item = item;
+        out[count].x = (u8)ut_x;
+        out[count].z = (u8)ut_z;
+        out[count].layer = mCoBG_LAYER1;
+        count++;
+    }
+
+    return count;
+}
+
+/* The fit table holds a local prediction whose only home is the parent's
+ * animation. Rebuilding the furniture list ends that animation without ever
+ * reaching aMR_RequestItemToUnFitFurniture, so drop the prediction rather than
+ * leaving a stale parent ID pointing into a list that no longer describes it.
+ * The authoritative grid the caller just applied is what the items come back
+ * from. */
+static void aMR_NetDropFittedItems(MY_ROOM_ACTOR* my_room) {
+    int i;
+
+    if (my_room == NULL) return;
+    for (i = 0; i < aMR_FIT_FTR_MAX; i++) {
+        my_room->parent_ftr.fit_ftr_table[i].exist_flag = FALSE;
+        my_room->parent_ftr.fit_ftr_table[i].ftr_ID = -1;
+        my_room->parent_ftr.fit_ftr_table[i].item_no = EMPTY_NO;
+    }
+    my_room->parent_ftr.ftrID = -1;
+}
+
 extern void aMR_NetReloadFurniture(ACTOR* actorx, GAME* game) {
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
     if (actorx == NULL || game == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != actorx ||
         l_aMR_work.ftr_actor_list == NULL || l_aMR_work.used_list == NULL) return;
     l_aMR_work.net_motion_active = FALSE;
+    aMR_NetDropFittedItems(my_room);
     aMR_AllFurnitureDestruct(actorx, game);
     aMR_InitFurnitureActorExistTable();
     aMR_MakeFurnitureActor(actorx, (GAME_PLAY*)game, mCoBG_LAYER0);
@@ -1972,10 +2068,15 @@ extern int aMR_NetFurnitureMoveActive(const MY_ROOM_ACTOR* my_room) {
     int i;
     if (my_room == NULL || aMR_CLIP == NULL || aMR_CLIP->my_room_actor_p != (const ACTOR*)my_room ||
         l_aMR_work.ftr_actor_list == NULL || l_aMR_work.used_list == NULL) return FALSE;
+    /* A fitted parent has items lifted out of the room grid, so the grid does
+     * not describe the room until its animation settles -- whether that is a
+     * push, a pull or a rotation. */
+    if (my_room->parent_ftr.ftrID != -1) return TRUE;
     for (i = 0; i < l_aMR_work.list_size; ++i) {
         const FTR_ACTOR* furniture = &l_aMR_work.ftr_actor_list[i];
+        /* WAIT_PUSH..RROTATE: every state the original spends animating a move. */
         if (l_aMR_work.used_list[i] && furniture->state >= aFTR_STATE_WAIT_PUSH &&
-            furniture->state <= aFTR_STATE_PULL) return TRUE;
+            furniture->state <= aFTR_STATE_RROTATE) return TRUE;
     }
     return FALSE;
 }
