@@ -1011,6 +1011,24 @@ void TownRuntime::refresh_equipped_item(acnet::AccountId account) {
     publish_presentation(*player);
 }
 
+/* Resident identity changes rarely -- a slot is claimed on a first login, and a
+ * GCI import can rewrite all four at once -- but a client that never leaves the
+ * town zone would otherwise keep its join-time roster forever. Polled from the
+ * tick like the population count so every mutation path is covered without
+ * each one having to remember to publish. */
+void TownRuntime::publish_resident_change() {
+    const acnet::ResidentRoster roster = current_roster();
+    if (roster_published_ && roster == last_published_roster_) return;
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Resident;
+    delta.zone = 0; /* town-wide, not scoped to the viewer's zone */
+    delta.reliable = true;
+    if (!acnet::encode_resident_delta(roster, delta.payload)) return;
+    deltas_.append(std::move(delta));
+    last_published_roster_ = roster;
+    roster_published_ = true;
+}
+
 bool TownRuntime::publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error) {
     const acnet::MailboxState* mailbox = economy_.mailbox(record.recipient);
     if (mailbox == nullptr) { error = "mailbox is missing for the recipient"; return false; }
@@ -1037,6 +1055,26 @@ acnet::TownOccupancy TownRuntime::current_occupancy() const {
     occupancy.capacity = static_cast<std::uint8_t>(
         std::clamp<std::size_t>(config_.capacity, occupancy.population == 0 ? 1U : occupancy.population, 255U));
     return occupancy;
+}
+
+/* Ownership of the four original houses, read from the persistent account table
+ * rather than the connected-player directory: a resident who is logged out
+ * still owns their house, and the client has no other way to learn that. */
+acnet::ResidentRoster TownRuntime::current_roster() const {
+    acnet::ResidentRoster roster;
+    for (const auto& entry : accounts_) {
+        const AccountState& state = entry.second;
+        if (state.kind != acnet::PlayerKind::Resident ||
+            state.resident_slot >= roster.slots.size()) continue;
+        acnet::ResidentIdentity& resident = roster.slots[state.resident_slot];
+        resident.account = entry.first;
+        resident.name = state.appearance.name;
+        /* The wire rejects a gender the game cannot represent rather than
+         * letting it reach mMP_ResidentInfo_c.sex. */
+        resident.gender = state.appearance.gender > 2 ? 0 : state.appearance.gender;
+        resident.occupied = true;
+    }
+    return roster;
 }
 
 bool TownRuntime::send_baseline(Connection& connection,
@@ -1068,6 +1106,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
     baseline.town_capacity = occupancy.capacity;
+    baseline.residents = current_roster();
     baseline.house_light_mask = house_light_mask();
     if (viewer->zone >= 100 && viewer->zone < 100 + acnet::kOriginalResidentSlots) {
         for (const auto& entry : housing_.houses()) {
@@ -1790,6 +1829,7 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
     }
     disconnect_timed_out(monotonic_ms);
     publish_population_change();
+    publish_resident_change();
     const acnet::Tick checkpoint_interval = config_.tick_rate * 300U;
     if (checkpoint_interval != 0 && movement_.current_tick() - last_checkpoint_tick_ >= checkpoint_interval) {
         const std::vector<std::uint8_t> state = encode_state();

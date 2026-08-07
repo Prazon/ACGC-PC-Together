@@ -210,10 +210,12 @@ private:
     bool send_snapshots(std::uint64_t monotonic_ms, std::string& error);
     bool send_baseline(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     void publish_population_change();
+    void publish_resident_change();
     bool publish_mail_change(const acnet::MailRecord& record, bool removed, std::string& error);
     void publish_presentation(const acnet::PlayerView& player);
     void refresh_equipped_item(acnet::AccountId account);
     acnet::TownOccupancy current_occupancy() const;
+    acnet::ResidentRoster current_roster() const;
     bool send_deltas(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool refresh_interest_chunk(Connection& connection, std::uint64_t monotonic_ms, std::string& error);
     bool dispatch(Connection& connection,
@@ -273,6 +275,8 @@ private:
     std::uint8_t last_weather_intensity_ = 0;
     std::uint8_t last_published_population_ = 0;
     std::uint8_t last_published_capacity_ = 0;
+    acnet::ResidentRoster last_published_roster_;
+    bool roster_published_ = false;
     std::string background_error_;
     bool initialized_ = false;
 };

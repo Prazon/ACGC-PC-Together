@@ -81,6 +81,8 @@ void ClientRuntime::stop(std::uint64_t now_ms) {
     house_light_mask_ = 0;
     town_population_ = 0;
     town_capacity_ = 1;
+    residents_ = {};
+    has_residents_ = false;
     session_ = 0;
     local_entity_ = 0;
     has_authoritative_local_ = false;
@@ -311,6 +313,8 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             house_light_mask_ = baseline_.house_light_mask;
             town_population_ = baseline_.town_population;
             town_capacity_ = baseline_.town_capacity;
+            residents_ = baseline_.residents;
+            has_residents_ = true;
             baseline_received_ms_ = now_ms;
             has_baseline_ = true;
             latest_server_tick_ = baseline_.server_tick;
@@ -420,6 +424,16 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         baseline_.town_population = occupancy.population;
                         baseline_.town_capacity = occupancy.capacity;
                     }
+                }
+                if (delta.kind == ResourceKind::Resident) {
+                    ResidentRoster roster;
+                    if (!decode_resident_delta(delta.payload, roster)) {
+                        error = "malformed resident roster delta";
+                        return false;
+                    }
+                    residents_ = roster;
+                    has_residents_ = true;
+                    if (has_baseline_) baseline_.residents = roster;
                 }
                 if (delta.revision > baseline_revision_) baseline_revision_ = delta.revision;
             }

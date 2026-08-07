@@ -751,6 +751,22 @@ int Net_ResidentSlot(void) {
     return Net_IsConnected() && slot < PLAYER_NUM ? (int)slot : -1;
 }
 
+/* AcNetResident.name is 8 bytes and acnet::kOriginalResidentSlots is 4, matching
+ * PLAYER_NAME_LEN and PLAYER_NUM. Like the zone identifiers above, the C
+ * boundary carries plain integers and the two definitions are kept in step by
+ * hand. */
+int Net_ResidentIdentity(int slot, u8* name, s8* gender) {
+    AcNetResident roster[PLAYER_NUM];
+    size_t count;
+    if (!Net_IsConnected() || slot < 0 || slot >= PLAYER_NUM) return -1;
+    count = acnet_client_residents(roster, PLAYER_NUM);
+    if (count != PLAYER_NUM) return -1; /* no roster has arrived yet */
+    if (!roster[slot].occupied) return 0;
+    if (name != NULL) memcpy(name, roster[slot].name, PLAYER_NAME_LEN);
+    if (gender != NULL) *gender = (s8)roster[slot].gender;
+    return 1;
+}
+
 int Net_PrefillQuickstartName(void) {
     if (!quickstart_enabled || !Net_IsConnected() || Now_Private == NULL) return FALSE;
     memcpy(Now_Private->player_ID.player_name, quickstart_name, sizeof(quickstart_name));

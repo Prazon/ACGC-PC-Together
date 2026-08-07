@@ -95,6 +95,10 @@ public:
      * Population 0 means the server has not reported one. */
     std::uint8_t town_population() const { return town_population_; }
     std::uint8_t town_capacity() const { return town_capacity_; }
+    /* Who owns the four original houses. Empty until the first baseline, which
+     * is why has_residents() is separate from an all-vacant roster. */
+    const ResidentRoster& residents() const { return residents_; }
+    bool has_residents() const { return has_residents_; }
     /* The authoritative mailbox mirror: the baseline seeds it and Mail deltas
      * keep it live, so a claim always quotes a revision the server issued. */
     const MailboxState& mailbox() const { return baseline_.mailbox; }
@@ -189,6 +193,8 @@ private:
     std::uint8_t house_light_mask_ = 0;
     std::uint8_t town_population_ = 0;
     std::uint8_t town_capacity_ = 1;
+    ResidentRoster residents_;
+    bool has_residents_ = false;
     std::optional<WorldResult> world_result_;
     std::optional<EconomyResult> economy_result_;
     std::optional<TradeResult> trade_result_;

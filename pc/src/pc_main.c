@@ -3,6 +3,9 @@
 #define _GNU_SOURCE  /* needed for dladdr */
 #endif
 #include "pc_platform.h"
+#if defined(__linux__) && defined(__x86_64__)
+#include <ucontext.h>  /* REG_RIP/REG_RSP for the fatal-fault report */
+#endif
 #include "pc_gx_internal.h"
 #include "pc_texture_pack.h"
 #include "pc_settings.h"
@@ -65,11 +68,144 @@ static volatile uintptr_t pc_last_crash_addr = 0;
 
 static volatile uintptr_t pc_last_crash_data_addr = 0;
 
+/* --- Fatal-fault reporting ---
+ * The handlers below already ran for every fatal fault but only recorded an
+ * address nothing ever printed, so a crash killed the process silently. The
+ * report names the faulting instruction plus the return addresses stacked above
+ * it, as offsets from the loaded image base. Map an offset back to a function
+ * with the "nm address" column and an unstripped build:
+ *   nm --numeric-sort AnimalCrossing.exe | less
+ * Reporting never changes control flow — the jmp_buf path below is unaffected. */
+#define PC_CRASH_MAX_FRAMES 48
+
+static volatile int pc_crash_reported = 0;
+
+static uintptr_t pc_crash_preferred_base(void) {
+#ifdef _WIN32
+    HMODULE exe = GetModuleHandle(NULL);
+    if (exe != NULL) {
+        IMAGE_DOS_HEADER* dos = (IMAGE_DOS_HEADER*)exe;
+        IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)((char*)exe + dos->e_lfanew);
+        return (uintptr_t)nt->OptionalHeader.ImageBase;
+    }
+#endif
+    return 0;
+}
+
+static void pc_crash_write(FILE* out, const char* label, unsigned long code, uintptr_t fault_pc,
+                           uintptr_t data_addr, const uintptr_t* frames, int frame_count) {
+    const uintptr_t base = pc_image_base;
+    const uintptr_t end = pc_image_end;
+    const uintptr_t preferred = pc_crash_preferred_base();
+    int i;
+
+    fprintf(out, "\n=== Animal Crossing fatal fault ===\n");
+    fprintf(out, "exception  : %s (0x%08lx)\n", label, code);
+    fprintf(out, "fault pc   : 0x%016llx\n", (unsigned long long)fault_pc);
+    fprintf(out, "data addr  : 0x%016llx\n", (unsigned long long)data_addr);
+    fprintf(out, "image base : 0x%016llx  end 0x%016llx  preferred 0x%016llx\n",
+            (unsigned long long)base, (unsigned long long)end, (unsigned long long)preferred);
+    if (base != 0 && fault_pc >= base && fault_pc < end) {
+        fprintf(out, "fault rva  : 0x%llx  (nm address 0x%llx)\n",
+                (unsigned long long)(fault_pc - base),
+                (unsigned long long)(preferred + (fault_pc - base)));
+    } else {
+        fprintf(out, "fault rva  : outside the executable image (DLL or wild jump)\n");
+    }
+    fprintf(out, "return addresses inside the image, innermost first:\n");
+    for (i = 0; i < frame_count; ++i) {
+        if (base == 0 || frames[i] < base || frames[i] >= end) continue;
+        fprintf(out, "  [%02d] rva 0x%-10llx nm address 0x%llx\n", i,
+                (unsigned long long)(frames[i] - base),
+                (unsigned long long)(preferred + (frames[i] - base)));
+    }
+    fprintf(out, "=== end fatal fault ===\n");
+    fflush(out);
+}
+
+static void pc_crash_report(const char* label, unsigned long code, uintptr_t fault_pc,
+                            uintptr_t data_addr, uintptr_t stack_pointer) {
+    uintptr_t frames[PC_CRASH_MAX_FRAMES];
+    int frame_count = 0;
+    FILE* log;
+
+    if (pc_crash_reported) return;
+    pc_crash_reported = 1;
+
+    /* Emit the essentials before touching anything that could fault again. */
+    fprintf(stderr, "\n[FATAL] %s at pc 0x%016llx data 0x%016llx\n", label,
+            (unsigned long long)fault_pc, (unsigned long long)data_addr);
+    fflush(stderr);
+
+    /* A raw scan of the stack for values pointing into the image. The decomp
+     * translation units are built at -O0 so their frames are intact, and this
+     * needs no unwind tables, which is what makes it survive a wild fault.
+     * Only already-used stack (above the fault's own stack pointer) is read. */
+    if (stack_pointer != 0 && pc_image_base != 0) {
+        const uintptr_t* slot = (const uintptr_t*)(stack_pointer & ~(uintptr_t)(sizeof(uintptr_t) - 1));
+        int scan_words = 2048;
+        int scanned;
+#ifdef _WIN32
+        {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery((LPCVOID)slot, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                uintptr_t region_end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+                int available = (int)((region_end - (uintptr_t)slot) / sizeof(uintptr_t));
+                if (available < scan_words) scan_words = available;
+            } else {
+                scan_words = 0;
+            }
+        }
+#endif
+        for (scanned = 0; scanned < scan_words && frame_count < PC_CRASH_MAX_FRAMES; ++scanned) {
+            uintptr_t value = slot[scanned];
+            if (value >= pc_image_base && value < pc_image_end) frames[frame_count++] = value;
+        }
+    }
+
+    pc_crash_write(stderr, label, code, fault_pc, data_addr, frames, frame_count);
+    log = fopen("crash.log", "w");
+    if (log != NULL) {
+        pc_crash_write(log, label, code, fault_pc, data_addr, frames, frame_count);
+        fclose(log);
+    }
+}
+
+#ifdef _WIN32
+static const char* pc_crash_code_name(DWORD code) {
+    switch (code) {
+        case EXCEPTION_ACCESS_VIOLATION: return "ACCESS_VIOLATION";
+        case EXCEPTION_ILLEGAL_INSTRUCTION: return "ILLEGAL_INSTRUCTION";
+        case EXCEPTION_INT_DIVIDE_BY_ZERO: return "INT_DIVIDE_BY_ZERO";
+        case EXCEPTION_PRIV_INSTRUCTION: return "PRIV_INSTRUCTION";
+        case EXCEPTION_STACK_OVERFLOW: return "STACK_OVERFLOW";
+        case EXCEPTION_IN_PAGE_ERROR: return "IN_PAGE_ERROR";
+        default: return "UNKNOWN";
+    }
+}
+#endif
+
 #ifdef _WIN32
 /* longjmp from VEH is technically UB, but works on x86 MinGW (no SEH to corrupt).
  * GCC doesn't have __try/__except and checking every pointer in emu64 is impractical. */
 static LONG WINAPI pc_veh_handler(PEXCEPTION_POINTERS ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+    int fatal = code == EXCEPTION_ACCESS_VIOLATION ||
+                code == EXCEPTION_ILLEGAL_INSTRUCTION ||
+                code == EXCEPTION_INT_DIVIDE_BY_ZERO ||
+                code == EXCEPTION_PRIV_INSTRUCTION ||
+                code == EXCEPTION_STACK_OVERFLOW ||
+                code == EXCEPTION_IN_PAGE_ERROR;
+
+    if (fatal) {
+        pc_crash_report(pc_crash_code_name(code), (unsigned long)code,
+                        (uintptr_t)ep->ExceptionRecord->ExceptionAddress,
+                        code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR
+                            ? (uintptr_t)ep->ExceptionRecord->ExceptionInformation[1]
+                            : 0,
+                        (uintptr_t)ep->ContextRecord->Rsp);
+    }
+
     if (pc_active_jmpbuf != NULL &&
         (code == EXCEPTION_ACCESS_VIOLATION ||
          code == EXCEPTION_ILLEGAL_INSTRUCTION ||
@@ -89,7 +225,20 @@ static LONG WINAPI pc_veh_handler(PEXCEPTION_POINTERS ep) {
 #else
 /* POSIX equivalent of VEH — longjmp from signal handler (POSIX-defined for program faults) */
 static void pc_signal_handler(int sig, siginfo_t* info, void* ucontext) {
+    uintptr_t fault_pc = 0;
+    uintptr_t stack_pointer = 0;
+#if defined(__linux__) && defined(__x86_64__)
+    if (ucontext != NULL) {
+        const ucontext_t* uc = (const ucontext_t*)ucontext;
+        fault_pc = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
+        stack_pointer = (uintptr_t)uc->uc_mcontext.gregs[REG_RSP];
+    }
+#else
     (void)ucontext;
+#endif
+    pc_crash_report(sig == SIGSEGV ? "SIGSEGV" : (sig == SIGILL ? "SIGILL" : "SIGFPE"),
+                    (unsigned long)sig, fault_pc, (uintptr_t)info->si_addr, stack_pointer);
+
     if (pc_active_jmpbuf != NULL) {
         pc_last_crash_addr = (uintptr_t)info->si_addr;
         pc_last_crash_data_addr = (sig == SIGSEGV) ?
@@ -643,6 +792,11 @@ int main(int argc, char* argv[]) {
         }
     }
 #endif
+
+    /* Installed only once the image range is known, so a fault report can turn
+     * addresses into image offsets. Nothing called this before, which is why a
+     * fatal fault closed the window without leaving anything behind. */
+    pc_crash_protection_init();
 
     SDL_SetMainReady();
     pc_settings_load();

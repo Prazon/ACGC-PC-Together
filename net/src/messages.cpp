@@ -596,7 +596,7 @@ bool encode_deltas(const std::vector<ReplicationDelta>& value, std::vector<std::
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u16(static_cast<std::uint16_t>(value.size()))) return false;
     for (const ReplicationDelta& delta : value) {
-        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Mail) ||
+        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Resident) ||
             delta.payload.size() > 65535 || !writer.u32(delta.revision) ||
             !writer.u8(static_cast<std::uint8_t>(delta.kind)) || !writer.u32(delta.zone) ||
             !writer.u64(delta.target_account) || !writer.u64(delta.entity) ||
@@ -621,7 +621,7 @@ bool decode_deltas(const std::vector<std::uint8_t>& input, std::vector<Replicati
         std::uint8_t reliable;
         std::uint8_t has_position;
         std::uint16_t size;
-        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Mail) ||
+        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Resident) ||
             !reader.u32(delta.zone) || !reader.u64(delta.target_account) || !reader.u64(delta.entity) ||
             !reader.u8(reliable) || !reader.u8(has_position) || reliable > 1 || has_position > 1 ||
             !vec3(reader, delta.position) || !reader.u16(size) || size > reader.remaining()) return false;

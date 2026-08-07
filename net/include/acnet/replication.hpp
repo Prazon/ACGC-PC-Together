@@ -7,6 +7,7 @@
 #include "acnet/types.hpp"
 #include "acnet/world.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -29,6 +30,10 @@ enum class ResourceKind : std::uint8_t {
     /* One recipient's mailbox. Always account-targeted, so it reaches the
      * addressee wherever they are standing. */
     Mail,
+    /* Who occupies the town's four original resident slots. Town-wide, and not
+     * derivable from the viewer's interest set: a resident who is logged out
+     * still owns their house. */
+    Resident,
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -67,6 +72,28 @@ struct PlayerPresentationDelta {
 bool encode_player_delta(const PlayerPresentationDelta& delta, std::vector<std::uint8_t>& output);
 bool decode_player_delta(const std::vector<std::uint8_t>& input, PlayerPresentationDelta& delta);
 
+/* One original resident slot. The client's own save only ever holds the account
+ * it logged in as, so without this the other three houses read as vacant
+ * everywhere the game asks Save_t who lives in a slot -- the town map most
+ * visibly. `occupied` false means the slot is authoritatively empty, which is
+ * different from "not reported": a roster is only ever sent whole. */
+struct ResidentIdentity {
+    AccountId account = 0;
+    std::array<std::uint8_t, 8> name{};
+    std::uint8_t gender = 0;
+    bool occupied = false;
+};
+
+struct ResidentRoster {
+    std::array<ResidentIdentity, kOriginalResidentSlots> slots{};
+
+    bool operator==(const ResidentRoster& other) const;
+    bool operator!=(const ResidentRoster& other) const { return !(*this == other); }
+};
+
+bool encode_resident_delta(const ResidentRoster& roster, std::vector<std::uint8_t>& output);
+bool decode_resident_delta(const std::vector<std::uint8_t>& input, ResidentRoster& roster);
+
 struct ZoneBaseline {
     Tick server_tick = 0;
     Revision revision = 0;
@@ -80,6 +107,9 @@ struct ZoneBaseline {
     std::uint8_t town_population = 0;
     std::uint8_t town_capacity = 1;
     std::uint8_t house_light_mask = 0;
+    /* Town-wide, like town_population: who owns the four original houses,
+     * whether or not they are logged in. Resident deltas keep it live. */
+    ResidentRoster residents;
     bool has_house = false;
     HouseState house;
     InventoryState inventory;

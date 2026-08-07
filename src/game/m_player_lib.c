@@ -1240,31 +1240,40 @@ extern void mPlib_change_player_cloth(GAME* game, u16 cloth_idx) {
         u8* player_tex_p = mPlib_get_player_tex_p(game);
         uintptr_t player_tex_rom_p = mPlib_Get_PlayerTexRom_p(idx);
 
-        if (in_aram) {
-            _JW_GetResourceAram((u32)player_tex_rom_p, player_tex_p, mNW_DESIGN_TEX_SIZE);
-        } else {
-            bcopy((u8*)player_tex_rom_p, player_tex_p, mNW_DESIGN_TEX_SIZE);
-        }
+        /* An unregistered or still-pending object bank yields a null destination.
+         * The ARAM branch survives that because JKRAram::aramToMainRam allocates a
+         * buffer when handed a null one, but bcopy does not, so a custom design
+         * faulted where stock clothing silently did nothing. Skip either way, as
+         * mPlib_change_player_face/_face_pallet already do. */
+        if (player_tex_p != NULL) {
+            if (in_aram) {
+                _JW_GetResourceAram((u32)player_tex_rom_p, player_tex_p, mNW_DESIGN_TEX_SIZE);
+            } else {
+                bcopy((u8*)player_tex_rom_p, player_tex_p, mNW_DESIGN_TEX_SIZE);
+            }
 
-        DCStoreRangeNoSync(player_tex_p, mNW_DESIGN_TEX_SIZE);
+            DCStoreRangeNoSync(player_tex_p, mNW_DESIGN_TEX_SIZE);
+        }
     }
 
     {
         u16* player_pallet_p = mPlib_get_player_pallet_p(game);
         uintptr_t player_pallet_rom_p = mPlib_Get_PlayerPalletRom_p(idx);
 
-        if (in_aram) {
-            _JW_GetResourceAram((u32)player_pallet_rom_p, (u8*)player_pallet_p, mNW_PALETTE_SIZE);
-        } else {
-            bcopy((u16*)player_pallet_rom_p, player_pallet_p, mNW_PALETTE_SIZE);
-        }
+        if (player_pallet_p != NULL) {
+            if (in_aram) {
+                _JW_GetResourceAram((u32)player_pallet_rom_p, (u8*)player_pallet_p, mNW_PALETTE_SIZE);
+            } else {
+                bcopy((u16*)player_pallet_rom_p, player_pallet_p, mNW_PALETTE_SIZE);
+            }
 
 #ifdef TARGET_PC
-        if (in_aram) {
-            mPlib_ByteSwapPlayerPalette(player_pallet_p);
-        }
+            if (in_aram) {
+                mPlib_ByteSwapPlayerPalette(player_pallet_p);
+            }
 #endif
-        DCStoreRangeNoSync(player_pallet_p, mNW_PALETTE_SIZE);
+            DCStoreRangeNoSync(player_pallet_p, mNW_PALETTE_SIZE);
+        }
     }
 }
 

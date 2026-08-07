@@ -61,6 +61,15 @@ typedef struct AcNetRemotePlayer {
     uint32_t transition_expires_tick;
 } AcNetRemotePlayer;
 
+/* One original resident slot. `occupied` 0 means the slot is authoritatively
+ * empty and the other fields are zero. */
+typedef struct AcNetResident {
+    uint64_t account_id;
+    uint8_t name[8];
+    uint8_t gender;
+    uint8_t occupied;
+} AcNetResident;
+
 typedef struct AcNetHouseState {
     uint64_t house_id;
     uint64_t owner_account_id;
@@ -292,6 +301,12 @@ size_t acnet_client_town_name(uint8_t* output, size_t capacity);
  * viewer's interest set. Returns 0 when the server has reported no population
  * yet, leaving the outputs untouched. */
 int acnet_client_town_population(uint8_t* population, uint8_t* capacity);
+/* The four original resident slots, indexed by slot, filled from the newest
+ * baseline or Resident delta. Unlike acnet_client_remote_players() this covers
+ * residents who are logged out -- it is the town's ownership record, not a
+ * presence list. Returns 0 (writing nothing) until a roster has arrived, which
+ * the caller must distinguish from a roster whose slots are all vacant. */
+size_t acnet_client_residents(AcNetResident* output, size_t capacity);
 /* `island_tiles` is the two island acres in acre-major order, or NULL when the
  * client could not read the field's acre layout yet -- the server then leaves
  * the island uninitialized and adopts it from a later login. `island_block_x0`
