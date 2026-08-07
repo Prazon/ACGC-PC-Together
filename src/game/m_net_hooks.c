@@ -43,10 +43,11 @@
 #define NET_SHARED_HOUSE_SLOT 0xFF
 
 static int last_status = -1;
-static u32 last_world_revision = 0;
-/* The island baseline arrives under its own zone, so its tiles need a
- * watermark of their own or a town revision would suppress an island apply. */
-static u32 last_island_revision = 0;
+/* Counts whole baselines, so a delta of any other kind no longer forces the
+ * entire interest chunk to be rewritten. Monotonic across zones, which is why
+ * the town and island no longer need separate watermarks: crossing between them
+ * always arrives on a serial this has not seen. */
+static u32 last_baseline_serial = 0;
 static u32 last_inventory_revision = 0;
 /* The bank ledger moves on its own: a deposit changes the inventory too, but an
  * operator gift changes only the balance, so it needs its own watermark. */
@@ -204,22 +205,51 @@ static size_t Net_CaptureHouse(const NetRoomBinding* room,
     int z;
     int x;
     u64 hash = 1469598103934665603ULL;
+    /* A push/pull/rotate lifts whatever sits on top of the furniture out of the
+     * room grid until its animation settles, so the grid alone would describe a
+     * room those items had been deleted from. Capture from a patched copy of the
+     * affected layer instead: the same bytes the room will hold once the move
+     * finishes, which keeps the submitted candidate complete and keeps the hash
+     * stable across the settle. */
+    aMR_net_fitted_item_c fitted[4];
+    mActor_name_t fitted_items[UT_Z_NUM][UT_X_NUM];
+    int fitted_floor = -1;
+    int fitted_count = 0;
     if (room == NULL || !room->valid || baseline == NULL) return 0;
     memcpy(music_tracks, baseline->music_tracks, sizeof(baseline->music_tracks));
     if (my_room != NULL) {
         const int active_floor = mFI_GetPlayerHouseFloorNo(my_room->scene);
         aMR_NetFlushSwitches(my_room);
-        if (active_floor >= 0 && active_floor < room->floor_count)
+        if (active_floor >= 0 && active_floor < room->floor_count) {
             music_tracks[active_floor] = (int16_t)aMR_NetCurrentMusic(my_room);
+            fitted_count = aMR_NetFittedItems(my_room, fitted, (int)ARRAY_COUNT(fitted));
+            if (fitted_count > 0) {
+                int i;
+                memcpy(fitted_items, (&room->floors[active_floor].layer_main)[mCoBG_LAYER1].items,
+                       sizeof(fitted_items));
+                for (i = 0; i < fitted_count; ++i) {
+                    if (fitted[i].layer != mCoBG_LAYER1) continue;
+                    /* Never overwrite a cell the room already claims: the grid
+                     * is authoritative for everything still in it. */
+                    if (fitted_items[fitted[i].z][fitted[i].x] != EMPTY_NO) continue;
+                    fitted_items[fitted[i].z][fitted[i].x] = fitted[i].item;
+                }
+                fitted_floor = active_floor;
+            }
+        }
     }
     for (floor = 0; floor < room->floor_count; ++floor) {
         mHm_lyr_c* layers = &room->floors[floor].layer_main;
         for (layer = 0; layer < mCoBG_LAYER_NUM; ++layer) {
+            const mActor_name_t (*items)[UT_X_NUM] =
+                (floor == fitted_floor && layer == mCoBG_LAYER1)
+                    ? (const mActor_name_t(*)[UT_X_NUM])fitted_items
+                    : (const mActor_name_t(*)[UT_X_NUM])layers[layer].items;
             switches[floor * mCoBG_LAYER_NUM + layer] = layers[layer].ftr_switch;
             hash = Net_HashBytes(hash, &layers[layer].ftr_switch, sizeof(layers[layer].ftr_switch));
             for (z = 0; z < UT_Z_NUM; ++z) {
                 for (x = 0; x < UT_X_NUM; ++x) {
-                    const mActor_name_t item = layers[layer].items[z][x];
+                    const mActor_name_t item = items[z][x];
                     mActor_name_t canonical_item = item;
                     u8 orientation = 0;
                     hash = Net_HashBytes(hash, &item, sizeof(item));
@@ -995,6 +1025,165 @@ int Net_WorldTilesAuthoritative(void) {
     return Net_TileZone() != 0;
 }
 
+/* A tile whose next visible change is being animated locally rather than
+ * painted in by the authoritative projection. While a claim is held nothing
+ * else writes that cell: the drop actor writes the field itself when it lands
+ * (bIT_actor_drop_move), and projecting the item early would put it on the
+ * ground while it is still in the air.
+ *
+ * A claim resolves on what the field actually shows, not on a timer: once the
+ * cell holds the predicted item the animation has finished, and the mirror then
+ * says whether the server agreed. The frame budget is only the backstop for an
+ * animation that never lands -- the longest player drop is a 26-unit fall plus
+ * one bounce, about 65 frames. */
+#define NET_TILE_CLAIM_MAX 8
+#define NET_TILE_CLAIM_FRAMES 90
+
+typedef struct Net_TileClaim {
+    u32 zone; /* 0 when the slot is free */
+    s16 x;
+    s16 z;
+    mActor_name_t item; /* what the cell should hold once the animation lands */
+    u32 revision;       /* tile revision observed when the claim was made */
+    int frames;
+    int refused; /* the server said no; correct as soon as the animation lands */
+} Net_TileClaim;
+
+static Net_TileClaim net_tile_claims[NET_TILE_CLAIM_MAX];
+
+static int Net_TileClaimed(u32 zone, s16 x, s16 z) {
+    int i;
+    for (i = 0; i < NET_TILE_CLAIM_MAX; i++) {
+        if (net_tile_claims[i].zone == zone && net_tile_claims[i].x == x && net_tile_claims[i].z == z) return TRUE;
+    }
+    return FALSE;
+}
+
+static int Net_ClaimTile(u32 zone, s16 x, s16 z, mActor_name_t item, u32 revision) {
+    int i;
+    if (Net_TileClaimed(zone, x, z)) return FALSE;
+    for (i = 0; i < NET_TILE_CLAIM_MAX; i++) {
+        if (net_tile_claims[i].zone != 0) continue;
+        net_tile_claims[i].zone = zone;
+        net_tile_claims[i].x = x;
+        net_tile_claims[i].z = z;
+        net_tile_claims[i].item = item;
+        net_tile_claims[i].revision = revision;
+        net_tile_claims[i].frames = NET_TILE_CLAIM_FRAMES;
+        net_tile_claims[i].refused = FALSE;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void Net_ReleaseTileClaim(u32 zone, s16 x, s16 z) {
+    int i;
+    for (i = 0; i < NET_TILE_CLAIM_MAX; i++) {
+        if (net_tile_claims[i].zone == zone && net_tile_claims[i].x == x && net_tile_claims[i].z == z) {
+            net_tile_claims[i].zone = 0;
+            return;
+        }
+    }
+}
+
+/* Writes the authoritative cell, overriding whatever the prediction left there.
+ * Used when the server refused, superseded, or never answered a claim. */
+static void Net_ForceTile(const AcNetTileState* tile) {
+    mFI_UtNumtoFGSet_common((mActor_name_t)tile->item, tile->x, tile->z, TRUE);
+    if (tile->buried) mFI_UtNum2DepositON(tile->x, tile->z);
+    else mFI_UtNum2DepositOFF(tile->x, tile->z);
+}
+
+/* A refusal is otherwise invisible to the claim: the tile revision does not
+ * move and the item never appears, so the claim would sit out its whole budget
+ * showing an item the server rejected. The result says so directly. Nothing
+ * else consumes it, and missing one -- the client keeps only the newest --
+ * costs no more than falling back to the budget. */
+static void Net_ExpireRefusedClaims(void) {
+    AcNetWorldResult result;
+    int i;
+
+    while (acnet_client_take_world_result(&result)) {
+        if (result.result_code == 0) continue;
+        for (i = 0; i < NET_TILE_CLAIM_MAX; i++) {
+            if (net_tile_claims[i].zone != result.zone_id || net_tile_claims[i].x != result.x ||
+                net_tile_claims[i].z != result.z) {
+                continue;
+            }
+            /* Not resolved here: an animation still in the air would land
+             * after the correction and paint the refused item straight back.
+             * The reconciler acts the moment it touches down. */
+            net_tile_claims[i].refused = TRUE;
+            break;
+        }
+    }
+}
+
+static void Net_ReconcileTileClaims(void) {
+    AcNetTileState tile;
+    mActor_name_t* fg_p;
+    int landed;
+    int expired;
+    int i;
+
+    Net_ExpireRefusedClaims();
+    for (i = 0; i < NET_TILE_CLAIM_MAX; i++) {
+        Net_TileClaim* claim = &net_tile_claims[i];
+        if (claim->zone == 0) continue;
+        if (claim->frames > 0) claim->frames--;
+        expired = claim->frames == 0;
+
+        /* The claim resolves on what the field shows: while the item is in the
+         * air the cell holds the drop's RSV_NO reservation, and it holds the
+         * item itself only once the drop actor has landed and written it. */
+        fg_p = mFI_UtNum2UtFG(claim->x, claim->z);
+        landed = fg_p != NULL && *fg_p == claim->item;
+        if (!landed && !expired) continue;
+
+        if (!acnet_client_tile(claim->zone, claim->x, claim->z, &tile)) {
+            /* The interest chunk moved out from under the claim, so there is no
+             * authoritative value left to compare against. The next baseline
+             * covering this tile settles it. */
+            if (expired) claim->zone = 0;
+            continue;
+        }
+        if (tile.item == claim->item) {
+            claim->zone = 0; /* committed, and the animation already wrote it */
+            continue;
+        }
+        if (claim->refused || tile.revision != claim->revision || expired) {
+            /* Refused, superseded, or never answered. The item the prediction
+             * put on the ground is not there, and the pocket change that went
+             * with it has to come back. */
+            Net_ForceTile(&tile);
+            last_inventory_revision = 0;
+            claim->zone = 0;
+        }
+    }
+}
+
+int Net_BeginPredictedDrop(int ut_x, int ut_z, mActor_name_t item) {
+    AcNetTileState tile;
+    const u32 zone = Net_TileZone();
+    if (zone == 0 || !acnet_client_tile(zone, (s16)ut_x, (s16)ut_z, &tile)) return FALSE;
+    return Net_ClaimTile(zone, (s16)ut_x, (s16)ut_z, item, tile.revision);
+}
+
+void Net_CancelPredictedTile(int ut_x, int ut_z) {
+    const u32 zone = Net_TileZone();
+    if (zone != 0) Net_ReleaseTileClaim(zone, (s16)ut_x, (s16)ut_z);
+}
+
+int Net_BeginPredictedPickup(const xyz_t* position) {
+    AcNetTileState tile;
+    const u32 zone = Net_TileZone();
+    int ut_x;
+    int ut_z;
+    if (position == NULL || zone == 0 || !mFI_Wpos2UtNum(&ut_x, &ut_z, *position) ||
+        !acnet_client_tile(zone, (s16)ut_x, (s16)ut_z, &tile)) return FALSE;
+    return Net_ClaimTile(zone, (s16)ut_x, (s16)ut_z, EMPTY_NO, tile.revision);
+}
+
 int Net_RequestPickup(const xyz_t* position, mActor_name_t item) {
     AcNetTileState tile;
     const u32 zone = Net_TileZone();
@@ -1003,7 +1192,11 @@ int Net_RequestPickup(const xyz_t* position, mActor_name_t item) {
     if (position == NULL || zone == 0 ||
         !mFI_Wpos2UtNum(&ut_x, &ut_z, *position) ||
         !acnet_client_tile(zone, (s16)ut_x, (s16)ut_z, &tile) || tile.item != item) return FALSE;
-    last_inventory_revision = 0;
+    /* No forced inventory reprojection here. It used to be the way a rejected
+     * request got the pocket back, but it also undid the caller's optimistic
+     * change on the very next frame -- which is the whole of the prediction.
+     * Net_ReconcileTileClaims rolls back instead, and only on an actual
+     * refusal. */
     return acnet_client_request_world_auto(1, zone, (s16)ut_x, (s16)ut_z, tile.revision,
                                             acnet_client_inventory_revision(), 0, item);
 }
@@ -1020,7 +1213,6 @@ int Net_RequestDrop(int ut_x, int ut_z, mActor_name_t item) {
         if (slots[slot].item == item) break;
     }
     if (slot == count) return FALSE;
-    last_inventory_revision = 0;
     return acnet_client_request_world_auto(0, zone, (s16)ut_x, (s16)ut_z, tile.revision,
                                             acnet_client_inventory_revision(), (u8)slot, item);
 }
@@ -1318,42 +1510,122 @@ static void Net_ApplyAuthoritativeMail(void) {
 }
 
 /* The town baseline is windowed to a 16x16 interest chunk; the island is only
- * two acres and arrives whole, so this has to hold the larger of the two. */
-static AcNetTileState net_baseline_tiles[2 * UT_X_NUM * UT_Z_NUM];
+ * two acres and arrives whole, at exactly 2 * UT_X_NUM * UT_Z_NUM tiles. The
+ * mirror also carries tiles that arrived as deltas from outside the window, so
+ * this must hold the client's whole mirror (ClientRuntime::kMaxMirroredTiles)
+ * and not just a baseline: sized to the island alone, a single out-of-window
+ * delta would push the newest entries past the end and they would be dropped
+ * without a word. */
+static AcNetTileState net_baseline_tiles[1024];
+
+/* Drained per frame. Small on purpose: the drain removes exactly what it copies,
+ * so a burst just takes several frames to work through. */
+static AcNetTileChange net_tile_changes[32];
+
+/* One tile change that arrived as a delta. Returns TRUE when it was consumed by
+ * an animation and must not also be painted in. */
+static int Net_AnimateTileChange(GAME_PLAY* play, const AcNetTileChange* change) {
+    AcNetRemotePlayer states[16];
+    size_t count;
+    size_t i;
+    xyz_t source;
+
+    /* Only a drop has an animation to play, and only someone else's: the local
+     * player's own drop was already animated at request time. */
+    if (change->cause != ACNET_TILE_CAUSE_DROP || change->tile.item == EMPTY_NO ||
+        change->actor_account == 0 || change->actor_account == acnet_client_account()) {
+        return FALSE;
+    }
+    if (Common_Get(clip).bg_item_clip == NULL || Common_Get(clip).bg_item_clip->net_remote_drop_entry_proc == NULL) {
+        return FALSE;
+    }
+    /* The arc has to come from somewhere. If the dropper is not in this
+     * viewer's interest set there is no hand to throw from, so the item simply
+     * appears -- which is what happens today for every drop. */
+    count = acnet_client_remote_players(states, ARRAY_COUNT(states));
+    for (i = 0; i < count; ++i) {
+        if (states[i].account_id != change->actor_account) continue;
+        if (states[i].zone_id != Net_SceneZone(play->scene_id)) return FALSE;
+        source.x = states[i].transform.x;
+        source.y = states[i].transform.y + 50.0f; /* the hand, as the local drop path measures it */
+        source.z = states[i].transform.z;
+        if (!Net_ClaimTile(change->tile.zone_id, change->tile.x, change->tile.z,
+                           (mActor_name_t)change->tile.item, change->tile.revision)) {
+            return FALSE;
+        }
+        if (Common_Get(clip).bg_item_clip->net_remote_drop_entry_proc((mActor_name_t)change->tile.item, &source,
+                                                                     change->tile.x, change->tile.z)) {
+            return TRUE;
+        }
+        /* The drop table was full. Release the claim so the projection places
+         * the item instead of leaving the cell empty for the whole budget. */
+        Net_ReleaseTileClaim(change->tile.zone_id, change->tile.x, change->tile.z);
+        return FALSE;
+    }
+    return FALSE;
+}
 
 static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     AcNetItemSlot slots[15];
-    u32 world_revision;
+    u32 baseline_serial;
     u32 inventory_revision;
     u32 ledger_revision;
     u32 mail_revision;
     u32 tile_zone;
     size_t count;
     size_t i;
+    int outdoor;
+    int dirty;
 
     if (acnet_client_status() != ACNET_CONNECTED) return;
-    world_revision = acnet_client_baseline_revision();
+    baseline_serial = acnet_client_baseline_serial();
     tile_zone = acnet_client_baseline_zone();
+    outdoor = play->scene_id == SCENE_FG && (tile_zone == 1 || tile_zone == NET_ZONE_ISLAND);
+    if (outdoor) Net_ReconcileTileClaims();
     /* Both outdoor zones apply the same way: the island acres are part of the
      * same unit grid, and mFI_UtNumtoFGSet_common already routes a write at an
      * island acre into Save_t.island.fgblock, because mFM_SetFgUtPtoSaveData
-     * pointed that block's item array there when the field was built. The two
-     * zones keep separate revision watermarks so crossing between them cannot
-     * suppress the arriving baseline. */
-    if (play->scene_id == SCENE_FG && (tile_zone == 1 || tile_zone == NET_ZONE_ISLAND) &&
-        world_revision != 0 &&
-        world_revision != (tile_zone == 1 ? last_world_revision : last_island_revision)) {
+     * pointed that block's item array there when the field was built.
+     *
+     * Keyed on the baseline serial, not on the replication revision: the
+     * revision moves for every delta of every kind, so a nearby player changing
+     * animation used to rewrite the whole chunk and rebuild the field's draw
+     * and collision tables with it. A dropped change is the other reason to
+     * reproject -- the queue overflowed, so the individual changes are gone. */
+    if (outdoor && baseline_serial != 0 &&
+        (baseline_serial != last_baseline_serial || acnet_client_tile_changes_overflowed())) {
         count = acnet_client_baseline_tiles(net_baseline_tiles, ARRAY_COUNT(net_baseline_tiles));
         for (i = 0; i < count; ++i) {
             if (net_baseline_tiles[i].zone_id != tile_zone) continue;
+            if (Net_TileClaimed(net_baseline_tiles[i].zone_id, net_baseline_tiles[i].x,
+                                net_baseline_tiles[i].z)) continue;
             mFI_UtNumtoFGSet_common(net_baseline_tiles[i].item, net_baseline_tiles[i].x,
                                     net_baseline_tiles[i].z, FALSE);
             if (net_baseline_tiles[i].buried) mFI_UtNum2DepositON(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
             else mFI_UtNum2DepositOFF(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
         }
         if (count != 0) mFI_SetFGUpData();
-        if (tile_zone == 1) last_world_revision = world_revision;
-        else last_island_revision = world_revision;
+        last_baseline_serial = baseline_serial;
+        /* The drain both clears the overflow flag and discards changes the
+         * reprojection just superseded. */
+        while (acnet_client_drain_tile_changes(net_tile_changes, ARRAY_COUNT(net_tile_changes)) != 0) {
+        }
+    } else if (outdoor) {
+        dirty = FALSE;
+        count = acnet_client_drain_tile_changes(net_tile_changes, ARRAY_COUNT(net_tile_changes));
+        for (i = 0; i < count; ++i) {
+            if (net_tile_changes[i].tile.zone_id != tile_zone) continue;
+            if (Net_TileClaimed(net_tile_changes[i].tile.zone_id, net_tile_changes[i].tile.x,
+                                net_tile_changes[i].tile.z)) continue;
+            if (Net_AnimateTileChange(play, &net_tile_changes[i])) continue;
+            mFI_UtNumtoFGSet_common(net_tile_changes[i].tile.item, net_tile_changes[i].tile.x,
+                                    net_tile_changes[i].tile.z, FALSE);
+            if (net_tile_changes[i].tile.buried) mFI_UtNum2DepositON(net_tile_changes[i].tile.x,
+                                                                    net_tile_changes[i].tile.z);
+            else mFI_UtNum2DepositOFF(net_tile_changes[i].tile.x, net_tile_changes[i].tile.z);
+            dirty = TRUE;
+        }
+        if (dirty) mFI_SetFGUpData();
     }
     inventory_revision = acnet_client_inventory_revision();
     if (Now_Private != NULL && inventory_revision != 0 && inventory_revision != last_inventory_revision) {
@@ -1585,8 +1857,11 @@ void Net_OnActorDestroyed(ACTOR* actor) {
 
 void Net_OnSceneLoaded(GAME_PLAY* play) {
     if (play != NULL) {
-        last_world_revision = 0;
+        last_baseline_serial = 0;
         last_inventory_revision = 0;
+        /* Claims name tiles in a field that is about to be rebuilt, and the
+         * drop actors backing them do not survive the scene change. */
+        memset(net_tile_claims, 0, sizeof(net_tile_claims));
         gameplay_ready_frames = 0;
         gameplay_ready = FALSE;
         gameplay_ready_reported = FALSE;

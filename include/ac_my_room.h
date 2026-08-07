@@ -221,6 +221,15 @@ typedef struct room_parent_ftr_s {
     aMR_fit_ftr_c fit_ftr_table[aMR_FIT_FTR_MAX];
 } aMR_parent_ftr_c;
 
+/* One item that a push/pull/rotate has lifted out of the room grid for the
+ * duration of the animation, reported at the unit it will land on. */
+typedef struct room_net_fitted_item_s {
+    mActor_name_t item; /* value the layer grid will hold once the move settles */
+    u8 x;
+    u8 z;
+    u8 layer;
+} aMR_net_fitted_item_c;
+
 struct my_room_actor_s {
     ACTOR actor_class;
     s16 state;
@@ -319,6 +328,7 @@ extern void aMR_NetReloadFurnitureMotion(ACTOR* actor, GAME* game,
                                          int destination_x, int destination_z,
                                          int layer, f32 duration_frames);
 extern int aMR_NetFurnitureMoveActive(const MY_ROOM_ACTOR* my_room);
+extern int aMR_NetFittedItems(const MY_ROOM_ACTOR* my_room, aMR_net_fitted_item_c* out, int max);
 extern void aMR_NetFlushSwitches(MY_ROOM_ACTOR* my_room);
 extern int aMR_NetCurrentMusic(const MY_ROOM_ACTOR* my_room);
 extern int aMR_NetSetMusic(MY_ROOM_ACTOR* my_room, int music_track);

@@ -38,6 +38,18 @@ ClientRuntime::ClientRuntime(ClientConfig config) : config_(std::move(config)), 
     if (config_.timeout_ms < 1000) config_.timeout_ms = 1000;
 }
 
+std::size_t ClientRuntime::drain_tile_changes(TileChange* output, std::size_t capacity) {
+    /* Removes exactly what it copied, so a reader with a small buffer loses
+     * nothing -- it just takes several calls. */
+    const std::size_t count = std::min(capacity, tile_changes_.size());
+    for (std::size_t i = 0; i < count; ++i) {
+        if (output != nullptr) output[i] = tile_changes_.front();
+        tile_changes_.pop_front();
+    }
+    if (tile_changes_.empty()) tile_changes_overflowed_ = false;
+    return count;
+}
+
 std::int64_t ClientRuntime::estimated_town_time(std::uint64_t now_ms) const {
     if (!has_baseline_) return 0;
     if (now_ms <= baseline_received_ms_) return baseline_.town_unix_seconds;
@@ -339,6 +351,13 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             has_residents_ = true;
             baseline_received_ms_ = now_ms;
             has_baseline_ = true;
+            /* A baseline is the whole truth for this chunk, so anything still
+             * queued is either already reflected in it or was superseded by
+             * it. Draining it afterwards would replay stale changes over
+             * newer state. */
+            ++baseline_serial_;
+            tile_changes_.clear();
+            tile_changes_overflowed_ = false;
             latest_server_tick_ = baseline_.server_tick;
             server_tick_received_ms_ = now_ms;
             for (const PlayerSnapshot& player : baseline_.players) {
@@ -393,7 +412,18 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     const auto found = std::find_if(baseline_.tiles.begin(), baseline_.tiles.end(),
                         [&](const auto& entry) { return entry.first == tile.address; });
                     if (found != baseline_.tiles.end()) found->second = tile.state;
-                    else if (tile.address.zone == baseline_.zone) baseline_.tiles.emplace_back(tile.address, tile.state);
+                    else if (tile.address.zone == baseline_.zone) {
+                        /* Evict from the front rather than refuse the newest:
+                         * the tiles a viewer is about to act on are the ones
+                         * that just changed near them. */
+                        if (baseline_.tiles.size() >= kMaxMirroredTiles) baseline_.tiles.erase(baseline_.tiles.begin());
+                        baseline_.tiles.emplace_back(tile.address, tile.state);
+                    }
+                    if (tile_changes_.size() >= kMaxQueuedTileChanges) {
+                        tile_changes_.pop_front();
+                        tile_changes_overflowed_ = true;
+                    }
+                    tile_changes_.push_back({tile.address, tile.state, tile.actor, tile.cause});
                 }
                 if (delta.kind == ResourceKind::Mail && has_baseline_) {
                     MailDelta mail;

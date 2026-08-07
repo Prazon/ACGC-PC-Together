@@ -417,14 +417,31 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     return reader.finished();
 }
 
+TileChangeCause tile_change_cause(WorldOpType type) {
+    switch (type) {
+        case WorldOpType::DropItem: return TileChangeCause::Drop;
+        case WorldOpType::PickupItem: return TileChangeCause::Pickup;
+        case WorldOpType::Dig: return TileChangeCause::Dig;
+        case WorldOpType::Bury: return TileChangeCause::Bury;
+        case WorldOpType::Plant: return TileChangeCause::Plant;
+        case WorldOpType::ChopTree: return TileChangeCause::ChopTree;
+        case WorldOpType::PlaceFurniture: return TileChangeCause::PlaceFurniture;
+        case WorldOpType::RemoveFurniture: return TileChangeCause::RemoveFurniture;
+        case WorldOpType::FillHole: return TileChangeCause::FillHole;
+    }
+    return TileChangeCause::Server;
+}
+
 bool encode_tile_delta(const TileStateDelta& delta, std::vector<std::uint8_t>& output) {
     if (delta.address.zone == 0 || delta.state.revision == 0 ||
-        static_cast<std::uint8_t>(delta.state.terrain) > static_cast<std::uint8_t>(TerrainState::Planted)) return false;
-    ByteWriter writer(32);
+        static_cast<std::uint8_t>(delta.state.terrain) > static_cast<std::uint8_t>(TerrainState::Planted) ||
+        static_cast<std::uint8_t>(delta.cause) > static_cast<std::uint8_t>(TileChangeCause::FillHole)) return false;
+    ByteWriter writer(48);
     if (!writer.u32(delta.address.zone) || !writer.i16(delta.address.x) || !writer.i16(delta.address.z) ||
         !writer.u32(delta.state.revision) || !writer.u16(delta.state.item) || !writer.u8(delta.state.condition) ||
         !writer.u8(static_cast<std::uint8_t>(delta.state.terrain)) ||
-        !writer.u8(delta.state.buried ? 1 : 0) || !writer.u8(delta.state.placed_furniture ? 1 : 0)) return false;
+        !writer.u8(delta.state.buried ? 1 : 0) || !writer.u8(delta.state.placed_furniture ? 1 : 0) ||
+        !writer.u64(delta.actor) || !writer.u8(static_cast<std::uint8_t>(delta.cause))) return false;
     output = writer.data();
     return true;
 }
@@ -434,14 +451,18 @@ bool decode_tile_delta(const std::vector<std::uint8_t>& input, TileStateDelta& d
     std::uint8_t terrain;
     std::uint8_t buried;
     std::uint8_t placed;
+    std::uint8_t cause;
     if (!reader.u32(delta.address.zone) || !reader.i16(delta.address.x) || !reader.i16(delta.address.z) ||
         !reader.u32(delta.state.revision) || !reader.u16(delta.state.item) ||
         !reader.u8(delta.state.condition) || !reader.u8(terrain) || !reader.u8(buried) ||
-        !reader.u8(placed) || !reader.finished() || delta.address.zone == 0 || delta.state.revision == 0 ||
-        terrain > static_cast<std::uint8_t>(TerrainState::Planted) || buried > 1 || placed > 1) return false;
+        !reader.u8(placed) || !reader.u64(delta.actor) || !reader.u8(cause) ||
+        !reader.finished() || delta.address.zone == 0 || delta.state.revision == 0 ||
+        terrain > static_cast<std::uint8_t>(TerrainState::Planted) || buried > 1 || placed > 1 ||
+        cause > static_cast<std::uint8_t>(TileChangeCause::FillHole)) return false;
     delta.state.terrain = static_cast<TerrainState>(terrain);
     delta.state.buried = buried != 0;
     delta.state.placed_furniture = placed != 0;
+    delta.cause = static_cast<TileChangeCause>(cause);
     return true;
 }
 

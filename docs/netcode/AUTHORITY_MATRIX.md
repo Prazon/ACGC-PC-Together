@@ -10,14 +10,14 @@
 | Bank balance and debt | Client requests | Server transaction, ledger revision | Reliable result |
 | Mail and mailboxes | Client requests | Server transaction, mail revision | Account-targeted `Mail` delta |
 | Carried letters | Client requests | Server transaction, mail revision | Account-targeted `Mail` delta |
-| Tiles and ground items | Client requests | Server transaction | Reliable block delta |
+| Tiles and ground items | Client requests | Server transaction | Reliable `Tile` delta, carrying the acting account and `TileChangeCause` |
 | NPC transform/animation | Client (each client simulates its own villagers) | Not committed | Not replicated |
 | NPC schedule state | Server | Server, hourly job | Zone baseline only |
 | Conversation | Client requests | Server lease owner | Reliable lease/result |
 | Zone transition | Client requests | Coordinator | Reliable transfer token |
 | House/furniture | Client requests | Server transaction | Reliable revisioned delta |
 | Resident roster (who owns each of the four houses) | Server | Server, from the persistent account table | Baseline plus town-wide `Resident` delta |
-| Island tiles and ground items | Client requests | Server transaction, zone 300 | Reliable block delta |
+| Island tiles and ground items | Client requests | Server transaction, zone 300 | Reliable `Tile` delta, as above |
 | Island cabin furniture | Any client present in the cabin | Server transaction, shared house | Re-baseline to the cabin's occupants |
 | Island acre layout | First client that can read it | Server, once, then immutable | Baseline tiles |
 | Islander | Server | Server, conversation lease | Snapshot plus reliable results |

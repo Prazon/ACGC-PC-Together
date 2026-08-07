@@ -41,6 +41,13 @@ typedef void (*bIT_ITEM_TREE_FRUIT_DROP_PROC)(mActor_name_t item, int ut_x, int 
 typedef int (*bIT_PLAYER_DROP_ENTRY_PROC)(GAME* game, mActor_name_t fg_item, int ut_x, int ut_z, s16 layer);
 typedef int (*bIT_DROP_ENTRY_V1_PROC)(mActor_name_t fg_item, xyz_t* pos, xyz_t* target_pos);
 typedef int (*bIT_FADE_ENTRY_PROC)(mActor_name_t fg_name, xyz_t* pos);
+#ifdef NETCODE_ENABLED
+/* Arcs an item from `source_pos` onto a unit tile, for a drop another player
+ * made. Separate from bIT_DROP_ENTRY_V1_PROC because the caller has a tile
+ * address rather than a world position, and because the field cell must be left
+ * for the drop actor to write when it lands. */
+typedef int (*bIT_NET_REMOTE_DROP_ENTRY_PROC)(mActor_name_t fg_item, xyz_t* source_pos, int ut_x, int ut_z);
+#endif
 
 typedef struct background_item_clip_s {
     bg_item_common_c* bg_item_common_p;
@@ -64,6 +71,11 @@ typedef struct background_item_clip_s {
     void* _48;
     ACTOR* bg_item_actorx;
     bIT_FADE_ENTRY_PROC fade_entry_proc;
+#ifdef NETCODE_ENABLED
+    /* Appended, and only in a netcode build, so an offline build keeps the
+     * original clip layout. */
+    bIT_NET_REMOTE_DROP_ENTRY_PROC net_remote_drop_entry_proc;
+#endif
 } bIT_Clip_c;
 
 #ifdef __cplusplus
