@@ -677,6 +677,23 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
         case MessageType::HouseUpdateResult:
             if (!decode(packet.payload, house_update_result_.emplace())) return false;
             break;
+        case MessageType::NpcPoseUpdate: {
+            NpcPoseUpdate update;
+            if (!decode(packet.payload, update)) return false;
+            if (!has_baseline_) break;
+            for (const NpcPose& pose : update.poses) {
+                for (NpcState& npc : baseline_.npcs) {
+                    if (npc.entity != pose.entity) continue;
+                    npc.transform.position = pose.position;
+                    npc.transform.yaw = pose.yaw;
+                    npc.animation = pose.animation;
+                    npc.schedule_state = pose.schedule_state;
+                    break;
+                }
+            }
+            ++npc_pose_serial_;
+            break;
+        }
         case MessageType::VillagerResult:
             if (!decode(packet.payload, villager_result_.emplace())) return false;
             break;
@@ -976,6 +993,14 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+bool ClientRuntime::send_npc_poses(const NpcPoseUpdate& update, std::uint64_t now_ms, std::string& error) {
+    if (state_ != ClientConnectionState::Connected) return true;
+    NpcPoseUpdate sending = update;
+    sending.account = config_.account;
+    std::vector<std::uint8_t> payload;
+    if (!encode(sending, payload)) { error = "failed to encode villager poses"; return false; }
+    return send_payload(MessageType::NpcPoseUpdate, Channel::Snapshots, payload, now_ms, error);
 }
 std::optional<VillagerResult> ClientRuntime::take_villager_result() {
     auto result = std::move(villager_result_); villager_result_.reset(); return result;

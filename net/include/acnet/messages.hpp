@@ -154,6 +154,8 @@ bool encode(const VillagerRequest& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, VillagerRequest& value);
 bool encode(const VillagerResult& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, VillagerResult& value);
+bool encode(const NpcPoseUpdate& value, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, NpcPoseUpdate& value);
 bool encode(const EncounterRequest& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, EncounterRequest& value);
 bool encode(const EncounterResult& value, std::vector<std::uint8_t>& output);

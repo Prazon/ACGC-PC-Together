@@ -729,4 +729,11 @@ static void aNPC_actor_move(ACTOR* actorx, GAME* game) {
     } else {
         aNPC_actor_move_show(actorx, game);
     }
+
+    /* After the AI has moved them. On the client the server designated to
+     * simulate, this collects the result; on every other client it pulls the
+     * actor back toward the pose that client reported, so two players standing
+     * together see the same villager in the same place instead of each watching
+     * their own copy of the AI. */
+    Net_UpdateVillagerPose(actorx, Net_VillagerSlotOf(nactorx->npc_info.animal));
 }

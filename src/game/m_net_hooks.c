@@ -1967,6 +1967,84 @@ void Net_EndVillagerTalk(int slot) {
     (void)acnet_client_end_villager_conversation((uint8_t)slot);
 }
 
+static AcNetVillagerPose net_villager_poses[ACNET_VILLAGER_SLOTS];
+static int net_villager_pose_count = 0;
+static u32 net_villager_pose_timer = 0;
+
+int Net_IsVillagerSimulationHost(void) {
+    return Net_VillagersAuthoritative() && acnet_client_is_npc_simulation_host();
+}
+
+/* One villager, once a frame.
+ *
+ * On the host this collects what the local AI produced, to be sent in one
+ * bounded update at the end of the frame. Everywhere else it does the opposite:
+ * the actor is moved to the pose the host reported, so every client sees the
+ * villager in the same place.
+ *
+ * The follower path eases rather than snapping. The local AI is still running
+ * and still writing this actor's position -- suppressing it would mean reaching
+ * into the NPC state machine, which is exactly the surgery this avoids -- so
+ * each frame it pulls toward its own idea and this pulls back toward the
+ * authoritative one. Easing keeps that tug from reading as a stutter, and over
+ * a few frames the authoritative position wins. */
+void Net_UpdateVillagerPose(ACTOR* npc_actor, int slot) {
+    AcNetVillagerPose pose;
+
+    if (!Net_VillagersAuthoritative() || npc_actor == NULL || slot < 0 ||
+        slot >= ACNET_VILLAGER_SLOTS) return;
+
+    if (Net_IsVillagerSimulationHost()) {
+        if (net_villager_pose_count >= ACNET_VILLAGER_SLOTS) return;
+        net_villager_poses[net_villager_pose_count].slot = (uint8_t)slot;
+        net_villager_poses[net_villager_pose_count].x = npc_actor->world.position.x;
+        net_villager_poses[net_villager_pose_count].y = npc_actor->world.position.y;
+        net_villager_poses[net_villager_pose_count].z = npc_actor->world.position.z;
+        net_villager_poses[net_villager_pose_count].yaw = (int16_t)npc_actor->shape_info.rotation.y;
+        net_villager_poses[net_villager_pose_count].animation = 0;
+        net_villager_poses[net_villager_pose_count].schedule_state = 0;
+        ++net_villager_pose_count;
+        return;
+    }
+
+    if (!acnet_client_villager_pose((uint8_t)slot, &pose)) return;
+    {
+        const f32 dx = pose.x - npc_actor->world.position.x;
+        const f32 dz = pose.z - npc_actor->world.position.z;
+        const f32 distance_squared = dx * dx + dz * dz;
+        const s16 yaw_delta = (s16)((s16)pose.yaw - npc_actor->shape_info.rotation.y);
+
+        /* A large jump is a scene change or a villager the host only just
+         * started reporting, not a walk -- gliding across the town would look
+         * far worse than arriving. */
+        if (distance_squared > 320.0f * 320.0f) {
+            npc_actor->world.position.x = pose.x;
+            npc_actor->world.position.z = pose.z;
+            npc_actor->shape_info.rotation.y = (s16)pose.yaw;
+        } else {
+            npc_actor->world.position.x += dx * 0.35f;
+            npc_actor->world.position.z += dz * 0.35f;
+            npc_actor->shape_info.rotation.y = (s16)(npc_actor->shape_info.rotation.y + (s16)(yaw_delta * 0.35f));
+        }
+        npc_actor->world.angle.y = npc_actor->shape_info.rotation.y;
+    }
+}
+
+/* Sends the frame's collected poses. Rate-limited: villagers walk, so a
+ * position that is a few frames old is indistinguishable, and the whole roster
+ * is fifteen entries -- there is no reason to spend a packet per frame on it. */
+void Net_FlushVillagerPoses(void) {
+    if (net_villager_pose_count > 0 && Net_IsVillagerSimulationHost()) {
+        if (net_villager_pose_timer == 0) {
+            (void)acnet_client_send_villager_poses(net_villager_poses, (size_t)net_villager_pose_count);
+            net_villager_pose_timer = 6;
+        } else {
+            --net_villager_pose_timer;
+        }
+    }
+    net_villager_pose_count = 0;
+}
+
 int Net_VillagerMoveInPending(u8* slot, u32* seed) {
     uint8_t wire_slot = 0;
     uint32_t wire_seed = 0;

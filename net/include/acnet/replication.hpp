@@ -257,6 +257,9 @@ struct ZoneBaseline {
     TownTune town_tune;
     NoticeBoard notices;
     VillagerRoster villagers;
+    /* Which connection is simulating the villagers, or 0 for nobody. The server
+     * picks it and everyone is told, so exactly one client's AI drives them. */
+    AccountId npc_simulation_host = 0;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

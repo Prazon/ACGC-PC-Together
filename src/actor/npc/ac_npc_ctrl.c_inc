@@ -1066,6 +1066,11 @@ static void aNPC_actor_move_c(ACTOR* actorx, GAME* game) {
     NPC_CONTROL_ACTOR* ctrl = (NPC_CONTROL_ACTOR*)actorx;
     GAME_PLAY* play = (GAME_PLAY*)game;
 
+    /* The control actor runs once a frame, which is where the villager poses
+     * collected by the individual actors are sent as one bounded update rather
+     * than fifteen separate ones. */
+    Net_FlushVillagerPoses();
+
     aNPC_dma_cloth_data(actorx);
     if (mEv_IsNotTitleDemo()) {
         aNPC_greeting_area_check(play);

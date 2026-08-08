@@ -197,6 +197,14 @@ int Net_VillagerBusy(int slot);
  * is what happened before any of this existed. */
 void Net_BeginVillagerTalk(int slot);
 void Net_EndVillagerTalk(int slot);
+/* TRUE when this client's AI is the one driving the villagers. Exactly one
+ * connection is; the rest follow the poses it reports, so two players standing
+ * together see the same villager in the same place. */
+int Net_IsVillagerSimulationHost(void);
+/* Called once per frame with every live villager actor. The host reports where
+ * its AI put them; everyone else has the actor moved to the reported pose. */
+void Net_UpdateVillagerPose(ACTOR* npc_actor, int slot);
+void Net_FlushVillagerPoses(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -267,6 +275,9 @@ void Net_EndVillagerTalk(int slot);
 #define Net_VillagerBusy(slot) FALSE
 #define Net_BeginVillagerTalk(slot) ((void)0)
 #define Net_EndVillagerTalk(slot) ((void)0)
+#define Net_IsVillagerSimulationHost() FALSE
+#define Net_UpdateVillagerPose(npc_actor, slot) ((void)0)
+#define Net_FlushVillagerPoses() ((void)0)
 #endif
 
 #ifdef __cplusplus

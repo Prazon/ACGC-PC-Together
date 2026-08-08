@@ -1,4 +1,4 @@
-# Dedicated town protocol v27
+# Dedicated town protocol v28
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,37 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### Villager positions (v28)
+
+Villagers cannot be simulated server-side: their movement needs pathfinding,
+collision and the schedule tables, none of which the asset-free server has. But
+every client running the AI independently is worse than a wrong answer — it is
+fifteen different answers, so two players standing together watch the same
+villager walk in different directions.
+
+So the server **designates one connection to simulate** (the lowest connected
+account, so every client computes the same answer and a re-election is stable),
+publishes it in the `Baseline` as `npc_simulation_host`, and relays what that
+client reports. `NpcPoseUpdate` (46) carries up to fifteen poses — entity,
+position, yaw, animation, schedule state — on the **Snapshots** channel, since
+this is transient positional state where a dropped update is replaced by the
+next one rather than worth retransmitting. An update from anyone other than the
+current host is ignored rather than punished: a handover legitimately produces
+a few stale ones.
+
+This is the same trust already extended to a client for its own player
+movement, and it buys the only thing that matters here: everybody sees the same
+town. A host that disconnects hands over on the next tick, and villagers hold
+their last reported pose rather than jumping during the gap.
+
+Followers **ease** toward the reported pose rather than snapping. The local AI
+is still running and still writing the actor's position — suppressing it would
+mean reaching into the NPC state machine, which this deliberately avoids — so
+each frame it pulls toward its own idea and the follower pulls back. Easing
+keeps that tug from reading as a stutter, and the authoritative position wins
+over a few frames. A jump beyond a threshold is taken directly, since that is a
+scene change rather than a walk.
 
 ### Conversation leases (v27)
 

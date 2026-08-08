@@ -244,6 +244,33 @@ constexpr EntityId villager_entity(std::size_t slot) {
     return kVillagerEntityBase + static_cast<EntityId>(slot);
 }
 
+/* One villager's live pose, as the simulating client sees it.
+ *
+ * Villagers cannot be simulated server-side: their movement needs pathfinding,
+ * collision and the schedule tables, none of which the asset-free server has.
+ * But every client running the AI independently is worse than a wrong answer --
+ * it is fifteen different answers, so two players standing together watch the
+ * same villager walk in different directions and "meet me at Bob's" means
+ * nothing.
+ *
+ * So one connection is designated to simulate, exactly as the first resident is
+ * designated to generate the roster, and reports what its AI produced. This is
+ * the same trust already extended to a client for its own player movement, and
+ * it buys the only thing that matters here: everybody sees the same town. */
+struct NpcPose {
+    EntityId entity = 0;
+    Vec3 position;
+    std::int16_t yaw = 0;
+    std::uint16_t animation = 0;
+    std::uint8_t schedule_state = 0;
+};
+
+struct NpcPoseUpdate {
+    AccountId account = 0;
+    ZoneId zone = 0;
+    std::vector<NpcPose> poses;
+};
+
 enum class VillagerOpType : std::uint8_t {
     /* A client supplies the newcomer for the opening the server published. */
     MoveIn,

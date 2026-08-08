@@ -881,4 +881,34 @@ bool decode(const std::vector<std::uint8_t>& input, VillagerResult& value) {
     return true;
 }
 
+bool encode(const NpcPoseUpdate& value, std::vector<std::uint8_t>& output) {
+    if (value.account == 0 || value.zone == 0 || value.poses.size() > kVillagerSlots) return false;
+    ByteWriter writer(kMaximumTransferBytes);
+    if (!writer.u64(value.account) || !writer.u32(value.zone) ||
+        !writer.u8(static_cast<std::uint8_t>(value.poses.size()))) return false;
+    for (const NpcPose& pose : value.poses) {
+        if (pose.entity == 0 || !finite(pose.position) || !writer.u64(pose.entity) ||
+            !writer.f32(pose.position.x) || !writer.f32(pose.position.y) || !writer.f32(pose.position.z) ||
+            !writer.i16(pose.yaw) || !writer.u16(pose.animation) ||
+            !writer.u8(pose.schedule_state)) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, NpcPoseUpdate& value) {
+    ByteReader reader(input);
+    std::uint8_t count = 0;
+    if (!reader.u64(value.account) || !reader.u32(value.zone) || !reader.u8(count) ||
+        value.account == 0 || value.zone == 0 || count > kVillagerSlots) return false;
+    value.poses.clear();
+    value.poses.resize(count);
+    for (NpcPose& pose : value.poses) {
+        if (!reader.u64(pose.entity) || !reader.f32(pose.position.x) || !reader.f32(pose.position.y) ||
+            !reader.f32(pose.position.z) || !reader.i16(pose.yaw) || !reader.u16(pose.animation) ||
+            !reader.u8(pose.schedule_state) || pose.entity == 0 || !finite(pose.position)) return false;
+    }
+    return reader.finished();
+}
+
 } // namespace acnet

@@ -714,6 +714,56 @@ extern "C" void acnet_client_pump_conversations(void) {
     } catch (...) { capture_exception(); }
 }
 
+extern "C" int acnet_client_is_npc_simulation_host(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const acnet::AccountId host = client->baseline()->npc_simulation_host;
+        return host != 0 && host == client_account ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_send_villager_poses(const AcNetVillagerPose* poses, size_t count) {
+    try {
+        if (!client || poses == nullptr || count == 0 || count > acnet::kVillagerSlots) return 0;
+        if (!acnet_client_is_npc_simulation_host()) return 0;
+        acnet::NpcPoseUpdate update;
+        update.zone = acnet::kTownFieldZone;
+        update.poses.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            if (poses[i].slot >= acnet::kVillagerSlots) continue;
+            acnet::NpcPose pose;
+            pose.entity = acnet::villager_entity(poses[i].slot);
+            pose.position = {poses[i].x, poses[i].y, poses[i].z};
+            pose.yaw = poses[i].yaw;
+            pose.animation = poses[i].animation;
+            pose.schedule_state = poses[i].schedule_state;
+            update.poses.push_back(pose);
+        }
+        if (update.poses.empty()) return 0;
+        return client->send_npc_poses(update, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_villager_pose(uint8_t slot, AcNetVillagerPose* output) {
+    try {
+        if (!client || output == nullptr || client->baseline() == nullptr ||
+            slot >= acnet::kVillagerSlots) return 0;
+        const acnet::EntityId entity = acnet::villager_entity(slot);
+        for (const acnet::NpcState& npc : client->baseline()->npcs) {
+            if (npc.entity != entity) continue;
+            output->slot = slot;
+            output->x = npc.transform.position.x;
+            output->y = npc.transform.position.y;
+            output->z = npc.transform.position.z;
+            output->yaw = npc.transform.yaw;
+            output->animation = npc.animation;
+            output->schedule_state = static_cast<uint8_t>(npc.schedule_state);
+            return 1;
+        }
+        return 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint64_t acnet_client_villager_conversation_owner(uint8_t slot) {
     try {
         if (!client || client->baseline() == nullptr || slot >= acnet::kVillagerSlots) return 0;

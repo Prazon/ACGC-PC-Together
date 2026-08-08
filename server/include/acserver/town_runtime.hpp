@@ -300,6 +300,10 @@ private:
     /* The noticeboard. The server owns the FIFO eviction, which is the part two
      * simultaneous posters contend over. */
     std::vector<acnet::NpcState> pending_npc_republish_;
+    /* The connection whose AI drives the villagers. Chosen by the server so
+     * exactly one client simulates; everyone else is told and follows. */
+    acnet::AccountId npc_simulation_host_ = 0;
+    bool refresh_npc_simulation_host(std::string& error);
     acnet::VillagerRoster villagers_;
     /* Registers one NpcState per occupied roster slot so villagers are real
      * server entities -- which is what conversation leases address. */

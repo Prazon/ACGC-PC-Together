@@ -167,6 +167,8 @@ public:
     std::optional<TownTuneResult> take_town_tune_result();
     std::optional<NoticePostResult> take_notice_result();
     std::optional<VillagerResult> take_villager_result();
+    bool send_npc_poses(const NpcPoseUpdate& update, std::uint64_t now_ms, std::string& error);
+    std::uint32_t npc_pose_serial() const { return npc_pose_serial_; }
     bool request_villager(const VillagerRequest& request, std::uint64_t now_ms, std::string& error);
     bool request_notice_post(const NoticePost& post, std::uint64_t now_ms, std::string& error);
     bool request_town_tune(std::uint64_t notes, std::uint64_t now_ms, std::string& error);
@@ -264,6 +266,7 @@ private:
     std::optional<TownTuneResult> town_tune_result_;
     std::optional<NoticePostResult> notice_result_;
     std::optional<VillagerResult> villager_result_;
+    std::uint32_t npc_pose_serial_ = 0;
     std::optional<EncounterResult> encounter_result_;
     std::optional<GyroidResult> gyroid_result_;
     std::optional<TownBootstrapResult> town_bootstrap_result_;

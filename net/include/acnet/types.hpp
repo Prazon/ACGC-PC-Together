@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 27;
+constexpr std::uint16_t kProtocolVersion = 28;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -93,6 +93,7 @@ enum class MessageType : std::uint16_t {
     ZoneReady = 42,
     VillagerRequest = 44,
     VillagerResult = 45,
+    NpcPoseUpdate = 46,
     AdminCommand = 50,
     AdminResult = 51,
 };

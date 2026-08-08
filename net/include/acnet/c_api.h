@@ -433,6 +433,16 @@ int acnet_client_take_notice_result(uint16_t* result_code);
 #define ACNET_VILLAGER_NAME_BYTES 8
 #define ACNET_VILLAGER_CATCHPHRASE_BYTES 10
 
+typedef struct AcNetVillagerPose {
+    uint8_t slot;
+    float x;
+    float y;
+    float z;
+    int16_t yaw;
+    uint16_t animation;
+    uint8_t schedule_state;
+} AcNetVillagerPose;
+
 typedef struct AcNetVillager {
     uint8_t occupied;
     uint16_t npc_id;
@@ -487,6 +497,15 @@ int acnet_client_take_villager_result(uint16_t* result_code);
 /* Drains conversation results so a release knows which lease it holds. Pump
  * once a frame. */
 void acnet_client_pump_conversations(void);
+/* TRUE when this client is the one whose AI drives the villagers. Exactly one
+ * connection is, chosen by the server; everyone else follows the poses it
+ * reports rather than running the AI's results. */
+int acnet_client_is_npc_simulation_host(void);
+/* Report where this client's AI has put the villagers. Host only. */
+int acnet_client_send_villager_poses(const AcNetVillagerPose* poses, size_t count);
+/* Where villager `slot` is according to the host, for a client that is not it.
+ * Returns 0 when there is no pose yet. */
+int acnet_client_villager_pose(uint8_t slot, AcNetVillagerPose* output);
 uint64_t acnet_client_villager_conversation_owner(uint8_t slot);
 /* Take and release the conversation lease on villager `slot`. */
 int acnet_client_begin_villager_conversation(uint8_t slot);

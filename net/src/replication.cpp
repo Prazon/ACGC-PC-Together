@@ -529,6 +529,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (!writer.u64(baseline.town_tune.notes) || !writer.u32(baseline.town_tune.revision)) return false;
     if (!encode_notices(writer, baseline.notices)) return false;
     if (!encode_villagers(writer, baseline.villagers)) return false;
+    if (!writer.u64(baseline.npc_simulation_host)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -629,6 +630,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         baseline.town_tune.revision == 0) return false;
     if (!decode_notices(reader, baseline.notices)) return false;
     if (!decode_villagers(reader, baseline.villagers)) return false;
+    if (!reader.u64(baseline.npc_simulation_host)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;

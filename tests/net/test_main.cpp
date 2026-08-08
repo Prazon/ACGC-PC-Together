@@ -1756,6 +1756,47 @@ void villager_roster_is_town_state() {
     CHECK(decoded_bootstrap.villagers == roster);
 }
 
+void villager_poses_come_from_one_client() {
+    /* Villagers cannot be simulated server-side -- no pathfinding, no
+     * collision, no schedule tables -- so one client is designated and reports
+     * what its AI produced. */
+    acnet::NpcPoseUpdate update;
+    update.account = 77;
+    update.zone = acnet::kTownFieldZone;
+    acnet::NpcPose pose;
+    pose.entity = acnet::villager_entity(3);
+    pose.position = {120.0F, 0.0F, 240.0F};
+    pose.yaw = -8192;
+    pose.animation = 5;
+    pose.schedule_state = 2;
+    update.poses.push_back(pose);
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode(update, payload));
+    acnet::NpcPoseUpdate decoded;
+    CHECK(acnet::decode(payload, decoded));
+    CHECK(decoded.account == 77);
+    CHECK(decoded.poses.size() == 1);
+    CHECK(decoded.poses[0].entity == acnet::villager_entity(3));
+    CHECK(decoded.poses[0].yaw == -8192);
+    CHECK(decoded.poses[0].schedule_state == 2);
+
+    /* Bounded at the roster size, and a non-finite position is refused --
+     * a viewer moves a real actor to these coordinates. */
+    acnet::NpcPoseUpdate oversized = update;
+    oversized.poses.resize(acnet::kVillagerSlots + 1);
+    for (acnet::NpcPose& entry : oversized.poses) entry.entity = 1;
+    CHECK(!acnet::encode(oversized, payload));
+
+    acnet::NpcPoseUpdate infinite = update;
+    infinite.poses[0].position.x = std::numeric_limits<float>::infinity();
+    CHECK(!acnet::encode(infinite, payload));
+
+    acnet::NpcPoseUpdate hostless = update;
+    hostless.account = 0;
+    CHECK(!acnet::encode(hostless, payload));
+}
+
 void villager_move_in_and_out_are_server_decisions() {
     /* The opening round-trips with the roster: the server publishes which slot
      * and what seed, and every client rolls the same newcomer from it. */
@@ -5456,6 +5497,7 @@ int main() {
         {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
         {"villager roster is town state", villager_roster_is_town_state},
         {"villager move in and out", villager_move_in_and_out_are_server_decisions},
+        {"villager poses come from one client", villager_poses_come_from_one_client},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

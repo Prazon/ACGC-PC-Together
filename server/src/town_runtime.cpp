@@ -1210,6 +1210,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.town_tune = town_tune_;
     baseline.notices = notices_;
     baseline.villagers = villagers_;
+    baseline.npc_simulation_host = npc_simulation_host_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1843,6 +1844,36 @@ bool TownRuntime::dispatch(Connection& connection,
             }
             return true;
         }
+        case acnet::MessageType::NpcPoseUpdate: {
+            acnet::NpcPoseUpdate update;
+            if (!acnet::decode(packet.payload, update)) { ++metrics_.malformed_packets; return true; }
+            /* Only the designated host may move villagers. Anyone else is
+             * either racing a handover or lying; both are ignored rather than
+             * disconnected, since a handover legitimately produces a few
+             * stale updates. */
+            if (connection.account != npc_simulation_host_) return true;
+            for (const acnet::NpcPose& pose : update.poses) {
+                acnet::NpcState* npc = npcs_.npc(pose.entity);
+                /* Villagers only. The service NPCs are the server's own and
+                 * have no client AI behind them. */
+                if (npc == nullptr || pose.entity < acnet::kVillagerEntityBase) continue;
+                npc->transform.position = pose.position;
+                npc->transform.yaw = pose.yaw;
+                npc->animation = pose.animation;
+                npc->schedule_state = pose.schedule_state;
+            }
+            /* Relayed on the snapshot channel: this is transient positional
+             * state, so a dropped update is replaced by the next one rather
+             * than worth retransmitting. */
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(update, payload)) return true;
+            for (auto& item : connections_) {
+                if (item.second.account == connection.account || item.second.account == 0) continue;
+                if (!send_payload(item.second, acnet::MessageType::NpcPoseUpdate, acnet::Channel::Snapshots,
+                                  payload, monotonic_ms, error)) return false;
+            }
+            return true;
+        }
         case acnet::MessageType::VillagerRequest: {
             acnet::VillagerRequest request;
             if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
@@ -2243,6 +2274,10 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
         }
     }
     zones_.update_sleep_states(movement_.current_tick());
+    /* Re-elected from the tick rather than from join and leave separately: it
+     * is a comparison over the connection map, and doing it in one place means
+     * a handover cannot be missed by a path that forgot to call it. */
+    if (!refresh_npc_simulation_host(error)) return false;
     /* Same for a lease that simply timed out: the viewer's copy would otherwise
      * stay busy until something else touched that villager. */
     for (const acnet::EntityId held : npcs_.expiring_leases(movement_.current_tick())) {
@@ -2409,6 +2444,34 @@ bool TownRuntime::run_villager_turnover(std::string& error) {
     villagers_.revision = advance_revision(villagers_.revision);
     if (!sync_villager_npcs(error) || !commit_state(126, error)) return false;
     publish_villagers();
+    return true;
+}
+
+/* Pick the client whose AI drives the villagers.
+ *
+ * The lowest connected account, so every client computes the same answer from
+ * the same roster and a re-election is stable rather than oscillating. It has
+ * to be *some* client: villager movement needs pathfinding, collision and the
+ * schedule tables, and the server has none of them.
+ *
+ * A host that disconnects hands over on the next tick; the villagers freeze for
+ * that moment rather than jumping, because the last reported pose stays until a
+ * new one arrives. */
+bool TownRuntime::refresh_npc_simulation_host(std::string& error) {
+    error.clear();
+    acnet::AccountId chosen = 0;
+    for (const auto& entry : connections_) {
+        const acnet::AccountId account = entry.second.account;
+        if (account == 0) continue;
+        if (chosen == 0 || account < chosen) chosen = account;
+    }
+    if (chosen == npc_simulation_host_) return true;
+    npc_simulation_host_ = chosen;
+    record_event(chosen == 0 ? std::string("Nobody is simulating the villagers")
+                             : "Villager simulation handed to account " + std::to_string(chosen));
+    /* Everyone needs to know, because it decides which of them stops running
+     * the AI and starts following. A baseline is the only carrier for it. */
+    for (auto& item : connections_) item.second.has_exterior_chunk = false;
     return true;
 }
 
