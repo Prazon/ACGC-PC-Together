@@ -105,10 +105,16 @@ connection gating, so every machine accumulates a private divergent save.
 
 ### Tier 3 — presentation and interaction
 
-**10. Remote players are nearly inert.** `ac_net_remote_player.c` has no
-collision and two animations (wait/walk). No running, digging, fishing, tool
-use, sitting, emotes, or held items — `equipped_item` is replicated but nothing
-renders it. There is therefore no pushing, no net-hitting, and no hand-over-item.
+**10. Remote players present fully but remain contactless.** *(Rewritten
+2026-08-07 — the original entry predated the animation and held-item work.)*
+`ac_net_remote_player.c` now plays the replicated body animation at
+velocity-derived walk speed, animates the face (blink, per-animation eye/mouth
+tracks, per-state constants), and renders the held tool as the real
+model/skeleton under the hand matrix, including the umbrella `TOOLS_ACTOR`
+child and the held balloon — `docs/netcode/REMOTE_PRESENTATION_PLAN.md` is the
+delivery record, and none of it has been visually verified on a disc yet.
+Deliberately still absent: collision — so no pushing or net-hitting — plus the
+fishing float/line, net catch label, net bag lean, and any remote audio.
 Player-to-player trading has full server escrow with zero game-side callers.
 
 **11. Furniture uses a whole-room submit rather than the transaction API.**
