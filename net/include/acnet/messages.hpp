@@ -53,6 +53,46 @@ struct TownBootstrapResult {
     bool initialized = false;
 };
 
+/* One asset a town needs the client to have. Identified by the hash of its
+ * bytes, not by name: that gives cross-town dedup for free (a second town using
+ * the same model downloads nothing), makes verification the same operation as
+ * identification, and means a manifest never supplies a filename -- so path
+ * traversal is structurally impossible rather than something to sanitise. */
+struct AssetManifestEntry {
+    std::array<std::uint8_t, 32> hash{};
+    std::uint32_t size = 0;
+    std::uint16_t kind = 0;         /* 0 model, 1 icon, 2 texture, 3 audio */
+    std::uint16_t item_handle = 0;  /* which mod item this dresses; 0 = none */
+};
+
+struct AssetManifest {
+    Revision revision = 0;
+    std::array<std::uint8_t, 32> manifest_digest{};
+    std::vector<AssetManifestEntry> entries;
+};
+
+/* Client-paced pull. The client asks for a bounded window and only asks again
+ * once those land, so the server never pushes unrequested chunk data. */
+struct AssetChunkRequest {
+    std::array<std::uint8_t, 32> hash{};
+    std::uint32_t first_chunk = 0;
+    std::uint16_t chunk_count = 0;
+};
+
+struct AssetChunk {
+    std::array<std::uint8_t, 32> hash{};
+    std::uint32_t index = 0;
+    std::uint32_t total_chunks = 0;
+    std::vector<std::uint8_t> bytes;
+};
+
+bool encode(const AssetManifest& message, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, AssetManifest& message);
+bool encode(const AssetChunkRequest& message, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, AssetChunkRequest& message);
+bool encode(const AssetChunk& message, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, AssetChunk& message);
+
 struct AppearanceUpdate {
     PlayerAppearance appearance;
     CustomPattern pattern;

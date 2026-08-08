@@ -1,4 +1,4 @@
-# Dedicated town protocol v23
+# Dedicated town protocol v24
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -368,6 +368,36 @@ The owner may bootstrap a house once. Later full-room updates atomically consume
 added items from authoritative inventory and return removed items; moves and
 rotations conserve the item multiset. Free size changes and invented furniture
 are rejected. Every client in the house receives the accepted baseline.
+
+### Asset delivery (v24)
+
+Three messages carry server-provided content to a client that does not have it:
+`AssetManifest` (60, S→C), `AssetChunkRequest` (61, C→S), `AssetChunk` (62, S→C).
+
+Assets are identified by the **hash of their bytes**, never by name. That buys
+cross-town dedup (a second town using the same model downloads nothing), makes
+verification and identification the same operation, and means a manifest never
+supplies a filename — so path traversal is structurally impossible rather than
+something to sanitise.
+
+Delivery is a **client-paced pull**: the client asks for a bounded window
+(`kAssetWindowChunks`, 16) and only asks again once those land. The server never
+sends unrequested chunk data. Resume is therefore free — on reconnect the client
+simply asks for what it is missing — the client can throttle itself in a busy
+scene, and a slow or hostile client cannot make the server buffer on its behalf.
+
+One chunk is one packet (`kAssetChunkBytes`), so delivery never involves
+fragmentation. The manifest may exceed a packet and travels on Bulk.
+
+Bounds, all enforced before allocating: `kMaxAssetEntries` (4096) per manifest,
+`kMaxAssetBlobBytes` (4 MB) per blob, and `kMaxManifestBytes` (64 MB) summed
+across a manifest — the last checked *while* summing, so a manifest cannot
+describe a download larger than the client will store before parsing finishes.
+
+A pack carries **data, never code**. Lua stays server-side, and the `.pcasset`
+container skips unknown chunks rather than executing them, which is what bounds
+the worst case to a parser bug. That parser is fuzzed separately
+(`make fuzz` runs `pcasset_fuzz`).
 
 ### `ModCalendar` (v23)
 

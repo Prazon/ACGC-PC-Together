@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 23;
+constexpr std::uint16_t kProtocolVersion = 24;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -39,6 +39,22 @@ constexpr std::size_t kMaxModStringBytes = 128;
  * through fragmentation.cpp like any other oversized payload. The cap exists so
  * a decoder can reject an absurd claim before allocating for it. */
 constexpr std::size_t kMaxModCalendarBytes = 12288;
+
+/* Server-delivered content (P7/P8).
+ *
+ * Delivery is a client-paced pull: the client asks for a bounded window of
+ * chunks and the server never sends unrequested data. That gives resume for
+ * free, lets the client throttle itself in a busy scene, and means a slow or
+ * hostile client cannot make the server buffer anything on its behalf. */
+constexpr std::size_t kMaxAssetEntries = 4096;
+/* One chunk is one packet, so delivery never involves fragmentation. 64 bytes
+ * of headroom under the plaintext limit covers the chunk header and the packet
+ * framing around it. */
+constexpr std::size_t kAssetChunkBytes = kMaxPlaintextPayloadBytes - 64;
+constexpr std::size_t kAssetWindowChunks = 16;
+/* Per blob and per manifest. Enforced before allocating, not after. */
+constexpr std::size_t kMaxAssetBlobBytes = 4u * 1024u * 1024u;
+constexpr std::uint64_t kMaxManifestBytes = 64ull * 1024ull * 1024ull;
 
 /* Bounds of the original player state machines, mirrored here so the portable
  * core can reject a presentation field without including a game header:
@@ -101,6 +117,9 @@ enum class MessageType : std::uint16_t {
     ZoneTransferRequest = 40,
     ZoneTransferOffer = 41,
     ZoneReady = 42,
+    AssetManifest = 60,
+    AssetChunkRequest = 61,
+    AssetChunk = 62,
     AdminCommand = 50,
     AdminResult = 51,
 };

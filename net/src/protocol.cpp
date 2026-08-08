@@ -64,6 +64,9 @@ bool valid_message(std::uint16_t value) {
         case MessageType::ZoneTransferRequest:
         case MessageType::ZoneTransferOffer:
         case MessageType::ZoneReady:
+        case MessageType::AssetManifest:
+        case MessageType::AssetChunkRequest:
+        case MessageType::AssetChunk:
         case MessageType::AdminCommand:
         case MessageType::AdminResult:
             return true;

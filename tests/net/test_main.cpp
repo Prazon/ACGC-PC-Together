@@ -1774,6 +1774,129 @@ void mod_calendar_replicates() {
     CHECK(!acnet::decode_mod_calendar(encoded, decoded));
 }
 
+/* Delivery wire format. Every bound here is one a hostile or buggy peer could
+ * try to exceed, and the client stores what arrives on disk, so each is checked
+ * on the way in as well as out. */
+void asset_delivery_messages_round_trip() {
+    std::vector<std::uint8_t> encoded;
+
+    /* --- Manifest --- */
+    acnet::AssetManifest manifest;
+    manifest.revision = 3;
+    manifest.manifest_digest.fill(0x5A);
+    for (int i = 0; i < 4; ++i) {
+        acnet::AssetManifestEntry entry;
+        entry.hash.fill(static_cast<std::uint8_t>(i + 1));
+        entry.size = 1024u * static_cast<std::uint32_t>(i + 1);
+        entry.kind = static_cast<std::uint16_t>(i);
+        entry.item_handle = static_cast<std::uint16_t>(0x3000 + i);
+        manifest.entries.push_back(entry);
+    }
+    CHECK(acnet::encode(manifest, encoded));
+    acnet::AssetManifest decoded_manifest;
+    CHECK(acnet::decode(encoded, decoded_manifest));
+    CHECK(decoded_manifest.revision == 3);
+    CHECK(decoded_manifest.entries.size() == 4);
+    CHECK(decoded_manifest.entries[2].size == 3072);
+    CHECK(decoded_manifest.entries[3].item_handle == 0x3003);
+    CHECK(decoded_manifest.manifest_digest == manifest.manifest_digest);
+
+    /* Zero revision, a zero-sized blob, an oversized blob and an unknown kind
+     * are each refused. */
+    acnet::AssetManifest bad = manifest;
+    bad.revision = 0;
+    CHECK(!acnet::encode(bad, encoded));
+    bad = manifest;
+    bad.entries[0].size = 0;
+    CHECK(!acnet::encode(bad, encoded));
+    bad = manifest;
+    bad.entries[0].size = static_cast<std::uint32_t>(acnet::kMaxAssetBlobBytes) + 1;
+    CHECK(!acnet::encode(bad, encoded));
+    bad = manifest;
+    bad.entries[0].kind = 9;
+    CHECK(!acnet::encode(bad, encoded));
+
+    /* A manifest describing more total bytes than the client will store is
+     * refused while summing, not after parsing the whole thing. */
+    acnet::AssetManifest huge;
+    huge.revision = 1;
+    const std::size_t entries_to_overflow =
+        static_cast<std::size_t>(acnet::kMaxManifestBytes / acnet::kMaxAssetBlobBytes) + 2;
+    for (std::size_t i = 0; i < entries_to_overflow && i < acnet::kMaxAssetEntries; ++i) {
+        acnet::AssetManifestEntry entry;
+        entry.hash.fill(static_cast<std::uint8_t>(i));
+        entry.size = static_cast<std::uint32_t>(acnet::kMaxAssetBlobBytes);
+        huge.entries.push_back(entry);
+    }
+    CHECK(acnet::encode(huge, encoded));
+    acnet::AssetManifest refused;
+    CHECK(!acnet::decode(encoded, refused));
+
+    /* --- Chunk request --- */
+    acnet::AssetChunkRequest request;
+    request.hash.fill(0x11);
+    request.first_chunk = 7;
+    request.chunk_count = static_cast<std::uint16_t>(acnet::kAssetWindowChunks);
+    CHECK(acnet::encode(request, encoded));
+    acnet::AssetChunkRequest decoded_request;
+    CHECK(acnet::decode(encoded, decoded_request));
+    CHECK(decoded_request.first_chunk == 7);
+    CHECK(decoded_request.chunk_count == acnet::kAssetWindowChunks);
+
+    /* A zero window can never complete; an oversized one is a client trying to
+     * outrun its own pacing. */
+    acnet::AssetChunkRequest bad_request = request;
+    bad_request.chunk_count = 0;
+    CHECK(!acnet::encode(bad_request, encoded));
+    bad_request.chunk_count = static_cast<std::uint16_t>(acnet::kAssetWindowChunks + 1);
+    CHECK(!acnet::encode(bad_request, encoded));
+
+    /* ...and the decoder refuses them even if a peer hand-rolls the bytes. */
+    CHECK(acnet::encode(request, encoded));
+    encoded[encoded.size() - 2] = 0;
+    encoded[encoded.size() - 1] = 0;
+    CHECK(!acnet::decode(encoded, decoded_request));
+
+    /* --- Chunk --- */
+    acnet::AssetChunk chunk;
+    chunk.hash.fill(0x22);
+    chunk.index = 2;
+    chunk.total_chunks = 5;
+    chunk.bytes.assign(acnet::kAssetChunkBytes, 0xEE);
+    CHECK(acnet::encode(chunk, encoded));
+    /* One chunk must fit one packet, so delivery never involves fragmentation. */
+    CHECK(encoded.size() <= acnet::kMaxPlaintextPayloadBytes);
+    acnet::AssetChunk decoded_chunk;
+    CHECK(acnet::decode(encoded, decoded_chunk));
+    CHECK(decoded_chunk.index == 2);
+    CHECK(decoded_chunk.total_chunks == 5);
+    CHECK(decoded_chunk.bytes.size() == acnet::kAssetChunkBytes);
+    CHECK(decoded_chunk.bytes[0] == 0xEE);
+
+    /* An index outside the transfer, and a zero-length transfer, are refused --
+     * both would have the client writing outside the blob it is assembling. */
+    acnet::AssetChunk bad_chunk = chunk;
+    bad_chunk.index = 5;
+    CHECK(!acnet::encode(bad_chunk, encoded));
+    bad_chunk = chunk;
+    bad_chunk.total_chunks = 0;
+    CHECK(!acnet::encode(bad_chunk, encoded));
+    bad_chunk = chunk;
+    bad_chunk.bytes.assign(acnet::kAssetChunkBytes + 1, 0);
+    CHECK(!acnet::encode(bad_chunk, encoded));
+
+    /* Truncation at every length, and trailing junk, are both refused. */
+    CHECK(acnet::encode(chunk, encoded));
+    for (std::size_t cut = 0; cut < encoded.size(); cut += 7) {
+        std::vector<std::uint8_t> truncated(encoded.begin(), encoded.begin() + static_cast<long>(cut));
+        acnet::AssetChunk ignored;
+        CHECK(!acnet::decode(truncated, ignored));
+    }
+    CHECK(acnet::encode(chunk, encoded));
+    encoded.push_back(0);
+    CHECK(!acnet::decode(encoded, decoded_chunk));
+}
+
 void town_configuration_is_loaded_and_validated() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -6287,6 +6410,7 @@ int main() {
         {"mod registration is load time only", mod_registration_is_load_time_only},
         {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
         {"mod calendar replicates", mod_calendar_replicates},
+        {"asset delivery messages round trip", asset_delivery_messages_round_trip},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},

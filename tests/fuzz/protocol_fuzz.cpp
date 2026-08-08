@@ -48,6 +48,16 @@ int main(int argc, char** argv) {
                 acnet::ModCalendarState mod_calendar;
                 (void)acnet::decode_mod_calendar(packet.payload, mod_calendar);
             }
+            /* Delivery messages. The chunk decoder in particular feeds bytes
+             * the client writes to disk, so it gets the same treatment. */
+            {
+                acnet::AssetManifest asset_manifest;
+                acnet::AssetChunkRequest asset_request;
+                acnet::AssetChunk asset_chunk;
+                (void)acnet::decode(packet.payload, asset_manifest);
+                (void)acnet::decode(packet.payload, asset_request);
+                (void)acnet::decode(packet.payload, asset_chunk);
+            }
         }
         if ((iteration % 1000) == 0) {
             acnet::ClientHello hello;

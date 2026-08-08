@@ -161,6 +161,102 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrapResult& value) 
     return true;
 }
 
+bool encode(const AssetManifest& value, std::vector<std::uint8_t>& output) {
+    if (value.revision == 0 || value.entries.size() > kMaxAssetEntries) return false;
+    /* A full manifest is far over the packet limit; it travels on Bulk through
+     * fragmentation, so the writer is sized for the resource rather than a
+     * packet. 4096 entries * 40 bytes plus the header. */
+    ByteWriter writer(kMaxAssetEntries * 48 + 64);
+    if (!writer.u32(value.revision) ||
+        !writer.bytes(value.manifest_digest.data(), value.manifest_digest.size()) ||
+        !writer.u16(static_cast<std::uint16_t>(value.entries.size())))
+        return false;
+    for (const AssetManifestEntry& entry : value.entries) {
+        if (entry.size == 0 || entry.size > kMaxAssetBlobBytes) return false;
+        if (entry.kind > 3) return false;
+        if (!writer.bytes(entry.hash.data(), entry.hash.size()) || !writer.u32(entry.size) ||
+            !writer.u16(entry.kind) || !writer.u16(entry.item_handle))
+            return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, AssetManifest& value) {
+    value = AssetManifest{};
+    ByteReader reader(input);
+    std::uint16_t count = 0;
+    if (!reader.u32(value.revision) || value.revision == 0 ||
+        !reader.bytes(value.manifest_digest.data(), value.manifest_digest.size()) ||
+        !reader.u16(count) || count > kMaxAssetEntries)
+        return false;
+
+    std::uint64_t total = 0;
+    value.entries.resize(count);
+    for (AssetManifestEntry& entry : value.entries) {
+        if (!reader.bytes(entry.hash.data(), entry.hash.size()) || !reader.u32(entry.size) ||
+            !reader.u16(entry.kind) || !reader.u16(entry.item_handle))
+            return false;
+        if (entry.size == 0 || entry.size > kMaxAssetBlobBytes) return false;
+        if (entry.kind > 3) return false;
+        /* The per-manifest ceiling is checked while summing rather than after,
+         * so a manifest cannot describe a download larger than the client is
+         * willing to store before it has finished parsing. */
+        total += entry.size;
+        if (total > kMaxManifestBytes) return false;
+    }
+    return reader.finished();
+}
+
+bool encode(const AssetChunkRequest& value, std::vector<std::uint8_t>& output) {
+    if (value.chunk_count == 0 || value.chunk_count > kAssetWindowChunks) return false;
+    ByteWriter writer;
+    if (!writer.bytes(value.hash.data(), value.hash.size()) || !writer.u32(value.first_chunk) ||
+        !writer.u16(value.chunk_count))
+        return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, AssetChunkRequest& value) {
+    value = AssetChunkRequest{};
+    ByteReader reader(input);
+    if (!reader.bytes(value.hash.data(), value.hash.size()) || !reader.u32(value.first_chunk) ||
+        !reader.u16(value.chunk_count))
+        return false;
+    /* A window of zero would be a request that can never complete, and one over
+     * the cap is a client trying to make the server do more work per message
+     * than the pacing allows. */
+    if (value.chunk_count == 0 || value.chunk_count > kAssetWindowChunks) return false;
+    return reader.finished();
+}
+
+bool encode(const AssetChunk& value, std::vector<std::uint8_t>& output) {
+    if (value.bytes.size() > kAssetChunkBytes) return false;
+    if (value.total_chunks == 0 || value.index >= value.total_chunks) return false;
+    ByteWriter writer;
+    if (!writer.bytes(value.hash.data(), value.hash.size()) || !writer.u32(value.index) ||
+        !writer.u32(value.total_chunks) || !writer.u16(static_cast<std::uint16_t>(value.bytes.size())))
+        return false;
+    if (!value.bytes.empty() && !writer.bytes(value.bytes.data(), value.bytes.size())) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, AssetChunk& value) {
+    value = AssetChunk{};
+    ByteReader reader(input);
+    std::uint16_t length = 0;
+    if (!reader.bytes(value.hash.data(), value.hash.size()) || !reader.u32(value.index) ||
+        !reader.u32(value.total_chunks) || !reader.u16(length))
+        return false;
+    if (length > kAssetChunkBytes) return false;
+    if (value.total_chunks == 0 || value.index >= value.total_chunks) return false;
+    value.bytes.resize(length);
+    if (length != 0 && !reader.bytes(value.bytes.data(), value.bytes.size())) return false;
+    return reader.finished();
+}
+
 bool encode(const AppearanceUpdate& value, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
     if (!appearance(writer, value.appearance, value.pattern)) return false;
