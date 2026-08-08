@@ -1784,18 +1784,35 @@ Worth recording: the first version of the release passed lease id 0, which
 `release_conversation` matches exactly and would never have accepted -- the
 villager would have stayed busy until timeout. Reading the authority caught it;
 no test would have.
-### Still open on villagers
+### Phase four: villager positions (protocol v28)
 
-- **Positions and schedules.** This is now the largest villager gap and it is
-  visible: each client runs the NPC AI itself, so two players standing together
-  see the same villager in different places. The server cannot simulate it --
-  no pathfinding, no collision, no schedule tables -- so it needs the shape the
-  roster and move-ins already use, with a designated client simulating and the
-  server relaying. `ResourceKind::Npc` deltas are produced and decoded, and
-  villagers are registered entities, so the transport for it exists; what is
-  missing is choosing a host, a bounded position update, and making non-host
-  clients drive their NPC actors from replicated transforms instead of local AI.
-  That last part is deep in the NPC actor code and is the risky half.
+The last visible villager gap. Every client ran the NPC AI itself, so two
+players standing together watched the same villager walk in different
+directions.
+
+Villagers cannot be simulated server-side -- pathfinding, collision and the
+schedule tables are all missing there -- so the server **designates one
+connection to simulate** and relays what it reports, the same shape the roster
+bootstrap and move-ins already use. The host is the lowest connected account, so
+every client computes the same answer and a re-election is stable; it is
+re-elected from the tick rather than from join and leave separately, so no path
+can forget.
+
+Poses ride the Snapshots channel, bounded at the roster size and rate-limited --
+a walking villager a few frames stale is indistinguishable. Followers **ease**
+toward the reported pose rather than snapping: the local AI is still running and
+still writing the actor's position, because suppressing it would mean reaching
+into the NPC state machine, so each frame it pulls one way and the follower
+pulls back. Easing keeps that from reading as a stutter and the authoritative
+position wins over a few frames. A jump past a threshold is taken directly,
+since that is a scene change rather than a walk.
+
+**This is the piece most likely to need tuning on screen.** The ease factor and
+the send rate were chosen by reasoning about the tug between local AI and
+authoritative pose, not by watching it. If villagers look jittery or rubber-band
+on a follower, those two numbers are the first thing to try.
+
+### Still open on villagers
 - **Per-player memories.** Account-scoped and currently local, which is
   *correct* behaviour for a player who always plays from the same machine --
   each player having their own friendship with each villager is what the
