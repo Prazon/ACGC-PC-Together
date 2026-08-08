@@ -5863,6 +5863,21 @@ static int Player_actor_Check_LeftFootMark_AnimeFrame_fromAnimeIndex(f32 cur_fra
                                                                        data_p_table, size_table);
 }
 
+/* Which frames of an animation a foot lands on, for the remote presentation
+ * actor.
+ *
+ * The two checks above are static and their tables are enormous -- one frame
+ * list per animation, 157 of them -- so a viewer that needed the same answer
+ * for somebody else's replicated animation gets it through here rather than
+ * carrying a second copy that would rot the moment an animation changed.
+ * `right` selects the foot. */
+extern int mPlayer_CheckFootMarkFrame(f32 cur_frame, f32 speed, f32 end_frame, int anime_index, int right) {
+    if (right) {
+        return Player_actor_Check_RightFootMark_AnimeFrame_fromAnimeIndex(cur_frame, speed, end_frame, anime_index);
+    }
+    return Player_actor_Check_LeftFootMark_AnimeFrame_fromAnimeIndex(cur_frame, speed, end_frame, anime_index);
+}
+
 static int Player_actor_Set_FootMark_MarkOnly(ACTOR* actorx, GAME* game, int disable_footprint) {
     PLAYER_ACTOR* player = (PLAYER_ACTOR*)actorx;
     cKF_SkeletonInfo_R_c* kf0_p = &player->keyframe0;

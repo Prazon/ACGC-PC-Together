@@ -8,6 +8,8 @@
 #include "ac_tools.h"
 #include "bg_item_h.h"
 #include "c_keyframe.h"
+#include "ef_effect_control.h"
+#include "m_collision_bg.h"
 #include "m_actor_shadow.h"
 #include "m_common_data.h"
 #include "m_field_info.h"
@@ -126,6 +128,15 @@ typedef struct net_remote_render_data_s {
     xyz_t hand_pos;
     xyz_t hand_move;
     u8 hand_pos_valid;
+    /* Where each foot was when the skeleton was last walked, and which way it
+     * pointed. Captured in the draw callback exactly as the local player does
+     * at the same joints -- the matrix is only available while the skeleton is
+     * being walked, so a footprint cannot be placed from move(). */
+    xyz_t right_foot_pos;
+    xyz_t left_foot_pos;
+    s_xyz right_foot_angle;
+    s_xyz left_foot_angle;
+    u8 foot_pos_valid;
     /* Blink phase plus the resolved eye/mouth tile. See mPlib_Face_Step. */
     mPlib_face_state_c face;
     /* PLAYER_ACTOR::shadow_pos. The shadow keeps a pointer to it rather than a
@@ -1033,6 +1044,47 @@ static void Net_Remote_Player_update_item_scale(AC_NET_REMOTE_PLAYER* remote, NE
     }
 }
 
+/* Player_actor_Set_FootMark_MarkOnly, for somebody else's player.
+ *
+ * The original emits a print when the walk animation reaches the frame a foot
+ * lands on, reading the ground attribute out of the actor's own collision
+ * result. A remote runs no collision -- it is a presentation actor -- so the
+ * attribute is looked up at the foot's position instead, which is the same
+ * question asked a different way.
+ *
+ * Everything else is already here: the viewer walks the remote's keyframe
+ * itself, so the frame test is the game's own (exported rather than copied --
+ * the tables are one frame list per animation), and the foot positions come
+ * from the draw callback at the same joints the local player uses.
+ *
+ * Deliberately marks only. The original also plays a footstep sound, which is
+ * remote audio and stays out for the same reason the rest of it does. */
+static void Net_Remote_Player_update_footprints(AC_NET_REMOTE_PLAYER* remote, NET_REMOTE_RENDER_DATA* render,
+                                                GAME* game) {
+    const cKF_FrameControl_c* frame_control = &render->keyframe0.frame_control;
+    const f32 cur_frame = frame_control->current_frame;
+    const f32 speed = frame_control->speed;
+    const f32 end_frame = frame_control->end_frame;
+    const int anime_index = (int)render->loaded_body;
+    s8 cant_dig;
+
+    /* Nothing to stand on before the first draw has placed the feet, and
+     * nothing to print on indoors -- the original gates the same way through
+     * the ground attribute. */
+    if (!render->foot_pos_valid || eEC_CLIP == NULL) return;
+
+    if (mPlayer_CheckFootMarkFrame(cur_frame, speed, end_frame, anime_index, TRUE)) {
+        const u32 attribute = mCoBG_Wpos2Attribute(render->right_foot_pos, &cant_dig);
+        eEC_CLIP->effect_make_proc(eEC_EFFECT_FOOTPRINT, render->right_foot_pos, 2,
+                                   render->right_foot_angle.y, game, RSV_NO, attribute, 0);
+    }
+    if (mPlayer_CheckFootMarkFrame(cur_frame, speed, end_frame, anime_index, FALSE)) {
+        const u32 attribute = mCoBG_Wpos2Attribute(render->left_foot_pos, &cant_dig);
+        eEC_CLIP->effect_make_proc(eEC_EFFECT_FOOTPRINT, render->left_foot_pos, 2,
+                                   render->left_foot_angle.y, game, RSV_NO, attribute, 0);
+    }
+}
+
 static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
     AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)actor;
     AcNetRemotePlayer states[16];
@@ -1126,6 +1178,7 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
                  * speed that was just applied, and the door shadow reads the
                  * animation translation of the frame about to be drawn. */
                 Net_Remote_Player_update_lean(remote, render);
+                Net_Remote_Player_update_footprints(remote, render, game);
                 Net_Remote_Player_update_shadow(remote, render);
                 Net_Remote_Player_refresh_item(remote, game);
                 if (render->item_visible && render->item_skeleton_loaded) {
@@ -1160,9 +1213,24 @@ static int Net_Remote_Player_draw_after(GAME* game, cKF_SkeletonInfo_R_c* kf, in
     (void)work_flag;
     (void)rot;
     (void)pos;
-    if (remote == NULL || joint_no != mPlayer_JOINT_HAND) return TRUE;
+    if (remote == NULL) return TRUE;
     render = (NET_REMOTE_RENDER_DATA*)remote->render_data;
     if (render == NULL) return TRUE;
+    /* Player_actor_draw_After_Rfoot3 / _Lfoot3: the joint's world position and
+     * the direction it faces, which is where a footprint goes. */
+    if (joint_no == mPlayer_JOINT_RFOOT3) {
+        Matrix_Position_Zero(&render->right_foot_pos);
+        Matrix_to_rotate_new(get_Matrix_now(), &render->right_foot_angle, MTX_LOAD);
+        render->foot_pos_valid = TRUE;
+        return TRUE;
+    }
+    if (joint_no == mPlayer_JOINT_LFOOT3) {
+        Matrix_Position_Zero(&render->left_foot_pos);
+        Matrix_to_rotate_new(get_Matrix_now(), &render->left_foot_angle, MTX_LOAD);
+        render->foot_pos_valid = TRUE;
+        return TRUE;
+    }
+    if (joint_no != mPlayer_JOINT_HAND) return TRUE;
     last_hand_pos = render->hand_pos;
     Matrix_Position_Zero(&render->hand_pos);
     if (render->hand_pos_valid) {

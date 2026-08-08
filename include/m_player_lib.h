@@ -47,6 +47,10 @@ extern void mPlib_change_player_cloth_info(mPr_cloth_c* cloth_p, mActor_name_t i
 extern void mPlib_change_player_cloth_info_lv2(Private_c* priv, mActor_name_t item);
 extern void mPlib_Load_PlayerTexAndPallet(void* tex_p, void* pal_p, int idx);
 extern int mPlib_Load_PlayerFaceTexAndPallet(void* tex_p, void* pal_p, int gender, int face);
+/* Whether a foot lands on this frame of `anime_index`, so the remote
+ * presentation actor can leave footprints from a replicated animation without
+ * copying the per-animation frame tables. `right` selects the foot. */
+extern int mPlayer_CheckFootMarkFrame(f32 cur_frame, f32 speed, f32 end_frame, int anime_index, int right);
 /* The same load with the three inputs the local-player version reads out of
  * Now_Private and the town-common block, so a viewer can draw a remote player's
  * stung, decoyed or tanned face. `sunburn_rank` is mPr_sunburn_c::rank. */
