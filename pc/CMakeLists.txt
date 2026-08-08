@@ -462,6 +462,7 @@ if(NETCODE_ENABLED)
         ${DECOMP_ROOT}/net/src/npc.cpp
         ${DECOMP_ROOT}/net/src/zone.cpp
         ${DECOMP_ROOT}/net/src/housing.cpp
+        ${DECOMP_ROOT}/net/src/turnip.cpp
         ${DECOMP_ROOT}/net/src/player_query.cpp
         ${DECOMP_ROOT}/net/src/replication.cpp
         ${DECOMP_ROOT}/net/src/client.cpp
@@ -490,6 +491,7 @@ if(NETCODE_ENABLED)
         ${DECOMP_ROOT}/net/src/npc.cpp
         ${DECOMP_ROOT}/net/src/zone.cpp
         ${DECOMP_ROOT}/net/src/housing.cpp
+        ${DECOMP_ROOT}/net/src/turnip.cpp
         ${DECOMP_ROOT}/net/src/player_query.cpp
         ${DECOMP_ROOT}/net/src/replication.cpp
         ${DECOMP_ROOT}/server/src/persistence.cpp

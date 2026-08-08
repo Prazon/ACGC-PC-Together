@@ -478,6 +478,50 @@ void print_accounts(const acserver::TownRuntime& runtime) {
     std::cout << std::flush;
 }
 
+/* Kabu_TRADE_MARKET_TYPE_*, in the original's order. */
+const char* turnip_trend_name(std::uint8_t trend) {
+    switch (trend) {
+        case 0: return "spike";
+        case 1: return "random";
+        case 2: return "falling";
+        default: return "unknown";
+    }
+}
+
+/* The stalk market as an operator wants to read it: what Nook pays today, and
+ * on a Sunday what Joan is charging instead -- day 0 of the schedule is the buy
+ * price, not a sell price, so labelling them the same would be wrong. */
+std::string turnip_summary(const acserver::TownRuntime& runtime) {
+    const acnet::TurnipMarket& market = runtime.turnip_market();
+    const int weekday = runtime.town_weekday();
+    if (market.daily_price[0] == 0 || weekday < 0 ||
+        static_cast<std::size_t>(weekday) >= acnet::kTurnipWeekdays) return "not rolled";
+    std::ostringstream out;
+    if (weekday == 0) out << "Joan sells at " << market.daily_price[0];
+    else out << "Nook pays " << market.daily_price[weekday];
+    out << " (" << turnip_trend_name(market.trend) << " week)";
+    return out.str();
+}
+
+/* The whole week at a glance, with today marked. Printed once at startup rather
+ * than in the refreshing line, where seven numbers would crowd out everything
+ * else. Sunday is the buy price and is labelled so. */
+std::string turnip_week(const acserver::TownRuntime& runtime) {
+    static const char* const kDays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    const acnet::TurnipMarket& market = runtime.turnip_market();
+    const int weekday = runtime.town_weekday();
+    if (market.daily_price[0] == 0) return "not rolled";
+    std::ostringstream out;
+    for (std::size_t i = 0; i < acnet::kTurnipWeekdays; ++i) {
+        if (i != 0) out << "  ";
+        if (static_cast<int>(i) == weekday) out << '[';
+        out << kDays[i] << ' ' << market.daily_price[i];
+        if (static_cast<int>(i) == weekday) out << ']';
+    }
+    out << "   (Sun = buy)";
+    return out.str();
+}
+
 void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownRuntimeConfig& config) {
     const acserver::RuntimeMetrics& metrics = runtime.metrics();
     const acserver::ClockState& clock = runtime.clock_state();
@@ -487,6 +531,7 @@ void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownR
               << runtime.connected_visitors() << ", villagers " << runtime.villager_count() << ')'
               << " | Time " << format_town_time(clock.town_unix_seconds)
               << " | Weather " << weather_name(clock.weather)
+              << " | Turnips " << turnip_summary(runtime)
               << " | World " << (runtime.town_initialized() ? "ready" : "awaiting first resident")
               << " | Tick " << metrics.ticks
               << " | RX/TX " << metrics.packets_received << '/' << metrics.packets_sent
@@ -507,6 +552,8 @@ void print_startup_banner(const acserver::TownRuntime& runtime, const acserver::
               << " Residents    : " << runtime.registered_residents() << "/4 registered\n"
               << " Town time    : " << format_town_time(clock.town_unix_seconds) << "\n"
               << " Weather      : " << weather_name(clock.weather) << "\n"
+              << " Turnips      : " << turnip_summary(runtime) << "\n"
+              << " Turnip week  : " << turnip_week(runtime) << "\n"
               << " World        : " << (runtime.town_initialized() ? "ready" : "awaiting first resident") << "\n"
               << " Data         : " << config.data_directory.string() << "\n"
               << " Security     : " << (config.invite_key.empty() ? "unauthenticated" : "invite key enabled") << "\n"

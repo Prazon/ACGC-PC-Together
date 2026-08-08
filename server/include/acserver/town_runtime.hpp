@@ -123,6 +123,12 @@ public:
      * the runtime registers only the placeholder shopkeeper, so this reports 1
      * rather than a full town's roster. */
     std::size_t villager_count() const { return npcs_.all_npcs().size(); }
+    /* The town's weekly stalk market, for the operator console. */
+    const acnet::TurnipMarket& turnip_market() const { return turnips_; }
+    /* 0 = Sunday, matching the schedule's own indexing. */
+    int town_weekday() const {
+        return acnet::town_date_from_seconds(clock_.state().town_unix_seconds).weekday;
+    }
     std::vector<RuntimePlayerStatus> player_statuses() const;
     std::vector<RuntimeEvent> recent_events() const;
     bool town_initialized() const { return town_bootstrapped_; }
