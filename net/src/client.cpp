@@ -749,8 +749,15 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
         case MessageType::Pong:
             break;
         case MessageType::Disconnect:
+            /* The server closed us deliberately -- it shut down, or banned this
+             * account. That is terminal, not a blip: reconnecting was the old
+             * behaviour and it left the client retrying a server that had gone
+             * away, with the game none the wiser. Rejected is the state the
+             * game watches to return to the title. */
             session_ = 0;
-            state_ = ClientConnectionState::Reconnecting;
+            state_ = ClientConnectionState::Rejected;
+            last_error_ = "the server closed the connection";
+            remotes_.clear();
             break;
         default:
             break;

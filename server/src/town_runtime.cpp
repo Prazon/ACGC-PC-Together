@@ -2397,6 +2397,21 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
 bool TownRuntime::shutdown(std::string& error) {
     error.clear();
     if (!initialized_) return true;
+    /* Tell everyone before the socket closes. UDP has no close handshake, so a
+     * client whose server simply stopped answering cannot tell that apart from
+     * a network blip and sits reconnecting until it times out -- which is what
+     * used to happen, because Disconnect was only ever sent on a ban. A short
+     * best-effort burst is enough: the client treats it as terminal, and the
+     * timeout remains the fallback for anyone who missed it. */
+    {
+        std::string ignored;
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            for (auto& item : connections_) {
+                send_payload(item.second, acnet::MessageType::Disconnect, acnet::Channel::Control, {},
+                             monotonic_milliseconds(), ignored);
+            }
+        }
+    }
     const std::vector<std::uint8_t> state = encode_state();
     if (state.empty() || !database_.audit(0, "server_stopped", "orderly shutdown",
                                           wall_unix_seconds(), error) ||

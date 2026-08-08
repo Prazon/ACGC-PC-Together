@@ -22,6 +22,7 @@
 #include "m_player.h"
 #include "m_player_lib.h"
 #include "m_scene_table.h"
+#include "m_trademark.h"
 #include "m_submenu.h"
 #include "m_submenu_ovl.h"
 #include "m_hand_ovl.h"
@@ -2021,6 +2022,41 @@ static void Net_UnpackEventPayload(const u8* payload) {
     memcpy(&save->flags, payload + NET_EVENT_FLAGS_OFFSET, sizeof(save->flags));
 }
 
+/* The session ending under the player's feet.
+ *
+ * REJECTED and FAILED are terminal: the server shut down, closed us, or the
+ * connection could not be recovered. Everything in this town is server-owned,
+ * so carrying on offline would leave the player wandering a copy of a town
+ * whose every subsequent change is invisible and unsaved -- worse than
+ * stopping, because it looks like it is still working.
+ *
+ * So the game goes back to the title the same way it does at a normal game
+ * end. The client is stopped first, because Save_t is a projection of the
+ * server's state and nothing local should keep writing to it.
+ *
+ * RECONNECTING is deliberately not terminal: that is a blip, and the transport
+ * recovers from it on its own. */
+static void Net_CheckSessionEnded(GAME_PLAY* play) {
+    static int session_ended = FALSE;
+    const AcNetClientStatus status = acnet_client_status();
+
+    if (play == NULL || session_ended) return;
+    if (status != ACNET_REJECTED && status != ACNET_FAILED) return;
+
+    session_ended = TRUE;
+    {
+        extern int g_pc_verbose;
+        printf("[NET] session ended (status=%d%s%s) -- returning to the title\n",
+               (int)status,
+               acnet_client_last_error()[0] != '\0' ? ": " : "",
+               acnet_client_last_error());
+        fflush(stdout);
+        (void)g_pc_verbose;
+    }
+    acnet_client_stop();
+    GAME_GOTO_NEXT(&play->game, trademark, TRADEMARK);
+}
+
 int Net_RequestNpcGift(mActor_name_t item, int condition) {
     if (!Net_EconomyAuthoritative() || item == EMPTY_NO) return FALSE;
     /* The projection settles where it lands, so nothing is written here. A
@@ -2892,6 +2928,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
         }
         last_status = status;
     }
+    Net_CheckSessionEnded(play);
     Net_UpdateEncounters();
     Net_UpdateHoldResults();
     Net_ApplyAuthoritativeClock();
