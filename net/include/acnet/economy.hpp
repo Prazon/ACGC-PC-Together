@@ -77,6 +77,14 @@ struct ShopState {
      * alone -- nothing there marks which row was the rare draw -- so it is
      * replicated beside it. Zero at the tiers that stock no rare item. */
     std::uint16_t rare_item = 0;
+    /* Which store this is (mSP_SHOP_TYPE_*) and the lifetime sales that earned
+     * it. Both are server-owned: the original derives the level from the total
+     * in mSP_GetRealShopLevel, and a client that accumulated its own would
+     * upgrade Nook's for itself alone. The level drives the shelf size, the
+     * closing time and the building, so a viewer needs it, and the total drives
+     * which tools Nook's Cranny stocks. */
+    std::uint8_t tier = 0;
+    std::uint32_t sales_sum = 0;
 };
 
 struct AccountLedger {
@@ -158,6 +166,11 @@ struct EconomyResult {
     std::uint8_t inventory_slot = 0;
     std::uint64_t mail_id = 0;
     bool replayed = false;
+    /* What the transaction was worth: the purchase price for Buy, the total
+     * paid out for Sell. Server-local and deliberately not encoded -- no client
+     * reads it. It exists so the town runtime can accumulate lifetime sales
+     * without re-deriving a price the authority already computed. */
+    std::uint32_t transaction_value = 0;
 };
 
 struct TradeOffer {

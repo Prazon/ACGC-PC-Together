@@ -437,6 +437,20 @@ extern "C" uint16_t acnet_client_shop_rare_item(void) {
     return client && client->baseline() != nullptr ? client->baseline()->shop.rare_item : 0;
 }
 
+extern "C" uint8_t acnet_client_shop_tier(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->shop.tier;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_shop_sales_sum(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->shop.sales_sum;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint16_t acnet_client_equipped_item(void) {
     return client && client->baseline() != nullptr ? client->baseline()->inventory.equipped.item : 0;
 }

@@ -1801,6 +1801,17 @@ void Net_ApplyAuthoritativeShopStock(void) {
         items[i] = i < count ? (mActor_name_t)stock[i].item : EMPTY_NO;
     }
     Save_Set(shop.rare_item, (mActor_name_t)acnet_client_shop_rare_item());
+    /* The store's level and the lifetime total that earned it. Both are
+     * projections online: mSP_PlusSales is refused locally (see below), so
+     * without this the level would never move and Nook's Cranny would never
+     * upgrade -- and the level drives the shelf size, the closing time, and
+     * which building the scene loads.
+     *
+     * mSP_RenewShopLevel is not called: it recomputes the level from the local
+     * total through mSP_GetRealShopLevel, which is exactly the derivation the
+     * server now owns. Writing shop_level directly is the projection. */
+    Save_Set(shop.sales_sum, acnet_client_shop_sales_sum());
+    Save_Set(shop.shop_info.shop_level, (u8)acnet_client_shop_tier());
 }
 
 /* Whether a server tile may be written into the local field.

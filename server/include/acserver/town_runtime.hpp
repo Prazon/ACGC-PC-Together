@@ -38,7 +38,11 @@ struct TownRuntimeConfig {
     std::uint32_t town_seed = 1;
     std::uint16_t port = 24680;
     std::filesystem::path data_directory = "towns/default";
-    std::size_t capacity = 16;
+    /* 1.0 ships a four-player town. The wire format and the runtime still
+     * support up to kMaxPlayersPerZone (16) and config.cpp still accepts it,
+     * so raising this is a server.ini edit rather than a rebuild -- but four
+     * is what is tested and supported. */
+    std::size_t capacity = 4;
     std::uint32_t tick_rate = 60;
     std::uint32_t snapshot_rate = 15;
     std::uint64_t connection_timeout_ms = 30000;

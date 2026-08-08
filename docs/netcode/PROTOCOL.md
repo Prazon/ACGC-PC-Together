@@ -1,4 +1,4 @@
-# Dedicated town protocol v20
+# Dedicated town protocol v21
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -105,6 +105,29 @@ shape for a face that swells and subsides.
 
 The animation *phase* is deliberately still absent — see
 `docs/netcode/VISUAL_REPLICATION_AUDIT.md`.
+
+## Nook's upgrade level
+
+The shelf carries the store's tier (u8, `mSP_SHOP_TYPE_*`) and the lifetime
+sales that earned it (u32), added in v21, in both the `Baseline` and the `Shop`
+delta. A tier above Nookington's is a decode failure.
+
+Both are server-owned because the original *derives* the level from the total
+(`mSP_GetRealShopLevel`), so a client accumulating its own would upgrade Nook's
+for itself alone. The server adds to the total on every accepted `Buy` and
+`Sell` -- a purchase counts its full price, a sale half of what Nook paid, the
+two `mSP_PlusSales` call sites -- and clamps at the next tier's threshold, which
+is what stops one large transaction skipping a tier. Nookington's additionally
+requires `visitor_shopped`, the town's equivalent of the original's
+`visitor_flag`: an account holding no original resident slot has shopped here.
+
+A `Sell` now republishes the shelf too, but only when the tier actually moved,
+since an upgrade changes the shelf size, the closing time and the building
+everyone walks into. A `Buy` always republishes, because it took a row off the
+shelf.
+
+Client-side `mSP_PlusSales` returns early while connected, and the level and
+total are projected into `Save_t` alongside the shelf.
 
 ## The stalk market
 

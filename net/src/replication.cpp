@@ -377,7 +377,9 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     for (const MailRecord& letter : baseline.mail) {
         if (!encode_mail(writer, letter)) return false;
     }
+    if (baseline.shop.tier > static_cast<std::uint8_t>(ShopTier::DepartmentStore)) return false;
     if (!writer.u32(baseline.shop.revision) || !writer.u16(baseline.shop.rare_item) ||
+        !writer.u8(baseline.shop.tier) || !writer.u32(baseline.shop.sales_sum) ||
         !writer.u16(static_cast<std::uint16_t>(baseline.shop.stock.size()))) return false;
     for (const ShopEntry& entry : baseline.shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
@@ -463,8 +465,11 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     }
     if (baseline.mailbox.mail.size() > kMailboxCapacity ||
         baseline.mailbox.carried.size() > kCarriedMailCapacity) return false;
-    if (!reader.u32(baseline.shop.revision) || !reader.u16(baseline.shop.rare_item) || !reader.u16(shop_count) ||
-        baseline.shop.revision == 0 || shop_count > kMaximumShopEntries) return false;
+    if (!reader.u32(baseline.shop.revision) || !reader.u16(baseline.shop.rare_item) ||
+        !reader.u8(baseline.shop.tier) || !reader.u32(baseline.shop.sales_sum) || !reader.u16(shop_count) ||
+        baseline.shop.revision == 0 ||
+        baseline.shop.tier > static_cast<std::uint8_t>(ShopTier::DepartmentStore) ||
+        shop_count > kMaximumShopEntries) return false;
     baseline.shop.stock.clear();
     baseline.shop.stock.resize(shop_count);
     for (ShopEntry& entry : baseline.shop.stock) {
@@ -555,7 +560,9 @@ TileChangeCause tile_change_cause(WorldOpType type) {
 bool encode_shop_delta(const ShopState& shop, std::vector<std::uint8_t>& output) {
     if (shop.revision == 0 || shop.stock.size() > kMaximumShopEntries) return false;
     ByteWriter writer(8 + kMaximumShopEntries * 8);
-    if (!writer.u32(shop.revision) || !writer.u16(shop.rare_item) ||
+    if (shop.tier > static_cast<std::uint8_t>(ShopTier::DepartmentStore)) return false;
+    if (!writer.u32(shop.revision) || !writer.u16(shop.rare_item) || !writer.u8(shop.tier) ||
+        !writer.u32(shop.sales_sum) ||
         !writer.u16(static_cast<std::uint16_t>(shop.stock.size()))) return false;
     for (const ShopEntry& entry : shop.stock) {
         if (!writer.u16(entry.item) || !writer.u32(entry.price) || !writer.u16(entry.quantity)) return false;
@@ -567,7 +574,9 @@ bool encode_shop_delta(const ShopState& shop, std::vector<std::uint8_t>& output)
 bool decode_shop_delta(const std::vector<std::uint8_t>& input, ShopState& shop) {
     ByteReader reader(input);
     std::uint16_t count;
-    if (!reader.u32(shop.revision) || !reader.u16(shop.rare_item) || !reader.u16(count) || shop.revision == 0 ||
+    if (!reader.u32(shop.revision) || !reader.u16(shop.rare_item) || !reader.u8(shop.tier) ||
+        !reader.u32(shop.sales_sum) || !reader.u16(count) || shop.revision == 0 ||
+        shop.tier > static_cast<std::uint8_t>(ShopTier::DepartmentStore) ||
         count > kMaximumShopEntries) return false;
     shop.stock.clear();
     shop.stock.resize(count);

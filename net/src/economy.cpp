@@ -247,6 +247,7 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
             --entry.quantity;
             result.item = entry.item;
             result.inventory_slot = *slot;
+            result.transaction_value = entry.price;
             inventory_changed = true;
             shop_changed = true;
             break;
@@ -292,6 +293,7 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
             for (std::size_t i = 0; i < inventory.slots.size(); ++i) {
                 if ((mask & (1U << i)) != 0) inventory.slots[i] = {};
             }
+            result.transaction_value = total;
             inventory.bells += total;
             /* The wallet cannot hold the whole sale, so the overflow comes back
              * as money bags -- starting in the slot the sold item just vacated,

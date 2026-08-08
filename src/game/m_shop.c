@@ -1276,6 +1276,15 @@ extern void mSP_ExchangeLineUp_InGame(GAME* game) {
 }
 
 extern void mSP_PlusSales(u32 sum) {
+    /* One town, one store. Online the server accumulates lifetime sales from
+     * the transactions it commits and derives the level from them, and
+     * Net_ApplyAuthoritativeShopStock projects both back. Adding to the local
+     * total as well would upgrade Nook's for this player alone, and the next
+     * projection would undo it anyway. */
+    if (Net_ShopStockAuthoritative()) {
+        return;
+    }
+
     Save_Get(shop).sales_sum += sum;
 
     if (mSP_GetShopLevel() == mSP_SHOP_TYPE_ZAKKA) {

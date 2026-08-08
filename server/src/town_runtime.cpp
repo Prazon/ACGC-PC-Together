@@ -466,6 +466,8 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
         acnet::shop_randomise_priorities(shop_stock_, draw);
         shop.stock = acnet::roll_shop_stock(shop_stock_, draw);
         shop.rare_item = shop_stock_.rare_item;
+        shop.tier = static_cast<std::uint8_t>(shop_stock_.tier);
+        shop.sales_sum = shop_stock_.sales_sum;
         /* The stalk market gets its opening week from the same seed, for the
          * same reason: a brand-new town is reproducible until its first
          * checkpoint, after which the stored schedule wins. */
@@ -609,6 +611,8 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
             shop.stock = acnet::roll_shop_stock(shop_stock_,
                                                 [&shop_random]() -> std::uint64_t { return shop_random(); });
             shop.rare_item = shop_stock_.rare_item;
+            shop.tier = static_cast<std::uint8_t>(shop_stock_.tier);
+            shop.sales_sum = shop_stock_.sales_sum;
             economy_.set_shop(shop);
             /* Yesterday's shelf is gone, so tell everyone before they next walk
              * into the shop rather than waiting for their next baseline. */
@@ -1535,16 +1539,51 @@ bool TownRuntime::dispatch(Connection& connection,
                  * InventoryResult sent below, and broadcasting that result --
                  * which carries the player's wallet, bank balance, and debt --
                  * would hand every peer another player's finances. */
-                if (request.type == acnet::EconomyOpType::Buy) {
-                    acnet::ReplicationDelta delta;
-                    delta.kind = acnet::ResourceKind::Shop;
-                    delta.zone = 0;
-                    delta.target_account = 0;
-                    if (!acnet::encode_shop_delta(economy_.shop(), delta.payload)) {
-                        error = "failed to serialize shop delta";
-                        return false;
+                if (request.type == acnet::EconomyOpType::Buy ||
+                    request.type == acnet::EconomyOpType::Sell) {
+                    /* mSP_PlusSales: a purchase counts for its full price, a
+                     * sale for half of what Nook paid out -- the two call sites
+                     * in ac_npc_shop_common.c. Lifetime sales are what upgrade
+                     * the store, so they cannot stay client-local: each client
+                     * would upgrade Nook's for itself alone. */
+                    const std::uint32_t counted = request.type == acnet::EconomyOpType::Buy
+                                                      ? result.transaction_value
+                                                      : result.transaction_value / 2;
+                    acnet::shop_add_sales(shop_stock_, counted);
+                    /* Nookington's additionally wants somebody from outside the
+                     * town to have shopped, which is what visitor_flag means in
+                     * the original. A visitor here is an account holding no
+                     * original resident slot. */
+                    const auto account_it = accounts_.find(connection.account);
+                    if (account_it != accounts_.end() &&
+                        account_it->second.resident_slot >= acnet::kOriginalResidentSlots) {
+                        shop_stock_.visitor_shopped = true;
                     }
-                    deltas_.append(std::move(delta));
+                    shop_stock_.tier = acnet::shop_earned_tier(shop_stock_);
+
+                    acnet::ShopState shop = economy_.shop();
+                    const std::uint8_t tier = static_cast<std::uint8_t>(shop_stock_.tier);
+                    /* An upgrade changes the shelf size, the closing time and
+                     * the building itself, so it has to reach everyone -- which
+                     * is also why a Sell now republishes the shelf at all. A
+                     * purchase always does, because it took a row off it. */
+                    const bool upgraded = shop.tier != tier;
+                    shop.tier = tier;
+                    shop.sales_sum = shop_stock_.sales_sum;
+                    if (upgraded) shop.revision = advance_revision(shop.revision);
+                    economy_.set_shop(shop);
+
+                    if (request.type == acnet::EconomyOpType::Buy || upgraded) {
+                        acnet::ReplicationDelta delta;
+                        delta.kind = acnet::ResourceKind::Shop;
+                        delta.zone = 0;
+                        delta.target_account = 0;
+                        if (!acnet::encode_shop_delta(economy_.shop(), delta.payload)) {
+                            error = "failed to serialize shop delta";
+                            return false;
+                        }
+                        deltas_.append(std::move(delta));
+                    }
                 }
                 /* One town, one collection: a donation changes what everyone
                  * else will be offered the chance to donate. */

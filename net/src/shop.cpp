@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 
 namespace acnet {
 
@@ -163,6 +164,41 @@ void select_plants(const ShopStockState& state,
 }
 
 } // namespace
+
+void shop_add_sales(ShopStockState& state, std::uint32_t amount) {
+    /* Saturate before clamping so a huge sale cannot wrap the total back to
+     * nothing -- the original runs on a console where that could not happen at
+     * these magnitudes, but nothing here bounds what a transaction is worth. */
+    if (state.sales_sum > std::numeric_limits<std::uint32_t>::max() - amount)
+        state.sales_sum = std::numeric_limits<std::uint32_t>::max();
+    else
+        state.sales_sum += amount;
+
+    /* mSP_PlusSales clamps at the next tier's threshold, so the store climbs
+     * one step at a time however much is spent at once. */
+    switch (state.tier) {
+        case ShopTier::Zakka:
+            if (state.sales_sum > kShopCombiniSalesSum) state.sales_sum = kShopCombiniSalesSum;
+            break;
+        case ShopTier::Conbini:
+            if (state.sales_sum > kShopSuperSalesSum) state.sales_sum = kShopSuperSalesSum;
+            break;
+        case ShopTier::Super:
+            if (state.sales_sum > kShopDepartmentSalesSum) state.sales_sum = kShopDepartmentSalesSum;
+            break;
+        case ShopTier::DepartmentStore:
+            /* The top tier has nothing above it to clamp against, exactly as
+             * the original's if/else chain falls through. */
+            break;
+    }
+}
+
+ShopTier shop_earned_tier(const ShopStockState& state) {
+    if (state.sales_sum >= kShopDepartmentSalesSum && state.visitor_shopped) return ShopTier::DepartmentStore;
+    if (state.sales_sum >= kShopSuperSalesSum) return ShopTier::Super;
+    if (state.sales_sum >= kShopCombiniSalesSum) return ShopTier::Conbini;
+    return ShopTier::Zakka;
+}
 
 std::uint32_t shop_item_price(std::uint16_t item, std::uint16_t native_fruit, std::uint16_t year) {
     if (item == 0) return 0;

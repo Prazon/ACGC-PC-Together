@@ -51,7 +51,26 @@ struct ShopStockState {
     /* Which paint colour is next on the shelf; rotates once per roll at
      * Nookway and above. Persisted, like the original's Shop_c field. */
     std::uint16_t paint_color = 0;
+    /* Save_Get(shop).visitor_flag: Nookington's additionally requires that
+     * somebody from outside the town has shopped here. A visitor account --
+     * one holding no original resident slot -- is this town's equivalent. */
+    bool visitor_shopped = false;
 };
+
+/* mSP_{COMBINI,SUPER,DSUPER}_SUM: the lifetime sales each upgrade needs. */
+constexpr std::uint32_t kShopCombiniSalesSum = 25000;
+constexpr std::uint32_t kShopSuperSalesSum = 90000;
+constexpr std::uint32_t kShopDepartmentSalesSum = 240000;
+
+/* mSP_PlusSales: accumulate lifetime sales, clamped at the threshold of the
+ * tier above the current one. The clamp is the original's, and it is what stops
+ * a single large transaction skipping a tier -- the store upgrades one step at
+ * a time no matter how much is spent at once. */
+void shop_add_sales(ShopStockState& state, std::uint32_t amount);
+
+/* mSP_GetRealShopLevel: the tier the lifetime total has earned. Nookington's
+ * also needs `visitor_shopped`, matching the original's visitor_flag gate. */
+ShopTier shop_earned_tier(const ShopStockState& state);
 
 constexpr std::uint32_t kShopSellBuyRatio = 4; // SELL_BUY_RATIO
 

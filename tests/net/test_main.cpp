@@ -1632,6 +1632,58 @@ void selling_pays_the_generated_price() {
 
 /* The shelf is town-wide state: a purchase has to reach everyone, and the index
  * a Buy names has to mean the same row on both sides. */
+void shop_tier_is_earned_and_server_owned() {
+    acnet::ShopStockState state;
+    CHECK(state.tier == acnet::ShopTier::Zakka);
+
+    /* mSP_PlusSales clamps at the next tier's threshold, so one enormous
+     * purchase cannot skip a tier -- the store climbs one step at a time. */
+    acnet::shop_add_sales(state, 1000000);
+    CHECK(state.sales_sum == acnet::kShopCombiniSalesSum);
+    CHECK(acnet::shop_earned_tier(state) == acnet::ShopTier::Conbini);
+
+    state.tier = acnet::ShopTier::Conbini;
+    acnet::shop_add_sales(state, 1000000);
+    CHECK(state.sales_sum == acnet::kShopSuperSalesSum);
+    CHECK(acnet::shop_earned_tier(state) == acnet::ShopTier::Super);
+
+    state.tier = acnet::ShopTier::Super;
+    acnet::shop_add_sales(state, 1000000);
+    CHECK(state.sales_sum == acnet::kShopDepartmentSalesSum);
+    /* Nookington's also needs somebody from outside the town to have shopped,
+     * so the total alone is not enough. */
+    CHECK(acnet::shop_earned_tier(state) == acnet::ShopTier::Super);
+    state.visitor_shopped = true;
+    CHECK(acnet::shop_earned_tier(state) == acnet::ShopTier::DepartmentStore);
+
+    /* The top tier has nothing above it to clamp against, and the total must
+     * saturate rather than wrap -- nothing bounds what a transaction is worth. */
+    state.tier = acnet::ShopTier::DepartmentStore;
+    acnet::shop_add_sales(state, 0xFFFFFFFFu);
+    CHECK(state.sales_sum == 0xFFFFFFFFu);
+    acnet::shop_add_sales(state, 5000);
+    CHECK(state.sales_sum == 0xFFFFFFFFu);
+
+    /* Both fields ride the shelf, so a viewer learns about an upgrade. */
+    acnet::ShopState shop;
+    shop.revision = 4;
+    shop.tier = static_cast<std::uint8_t>(acnet::ShopTier::Super);
+    shop.sales_sum = 91000;
+    shop.stock = {{4104, 1200, 1}};
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_shop_delta(shop, payload));
+    acnet::ShopState decoded;
+    CHECK(acnet::decode_shop_delta(payload, decoded));
+    CHECK(decoded.tier == shop.tier);
+    CHECK(decoded.sales_sum == 91000);
+
+    /* A tier the game does not define is a decode failure, not a value the
+     * client has to range-check before indexing its shelf-size table. */
+    acnet::ShopState bad = shop;
+    bad.tier = 4;
+    CHECK(!acnet::encode_shop_delta(bad, payload));
+}
+
 void turnip_market_is_town_state() {
     /* Every trend, many weeks, from a deterministic stream: the schedule must
      * always be usable, because a zero price is what the economy reads as
@@ -5139,6 +5191,7 @@ int main() {
         {"selling pays the generated price", selling_pays_the_generated_price},
         {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
+        {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
         {"turnip market is town state", turnip_market_is_town_state},
         {"shop shelf replicates town-wide", shop_shelf_replicates_town_wide},
         {"museum collection replicates", museum_collection_replicates_and_refuses_duplicates},

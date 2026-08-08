@@ -487,6 +487,11 @@ uint32_t acnet_client_shop_revision(void);
 /* The spotlight rare furniture, which also appears in the stock list. Zero at
  * the tiers that stock no rare item. */
 uint16_t acnet_client_shop_rare_item(void);
+/* Which store the town has earned (mSP_SHOP_TYPE_*) and the lifetime sales that
+ * earned it. Server-owned: the original derives the level from the total, and a
+ * client accumulating its own would upgrade Nook's for itself alone. */
+uint8_t acnet_client_shop_tier(void);
+uint32_t acnet_client_shop_sales_sum(void);
 /* An NPC the server owns, in the zone being viewed. Distinct from a remote
  * player: villagers are still simulated client-side and do not appear here. */
 typedef struct AcNetNpcState {
