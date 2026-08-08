@@ -76,7 +76,13 @@ void usage() {
                  "    --grant-bells ACCOUNT=AMOUNT    deposit bells straight into a bank account\n"
                  "    --send-mail ACCOUNT             post a letter, with --mail-item and --mail-text\n"
                  "    --mail-item ITEM                attach item ITEM (decimal or 0x hex) to the letter\n"
-                 "    --mail-text TEXT                letter body, up to 192 bytes\n";
+                 "    --mail-text TEXT                letter body, up to 192 bytes\n"
+                 "    --set-shop-sales AMOUNT         set lifetime shop sales and re-derive Nook's level\n"
+                 "                                    (25000 Nook 'n' Go, 90000 Nookway, 240000 Nookington's;\n"
+                 "                                     the last also needs --shop-visitor). Granting bells\n"
+                 "                                     cannot do this -- sales only accrue from transactions.\n"
+                 "    --shop-visitor                  mark that an outsider has shopped, for Nookington's\n"
+                 "    --grant-song SLOT=SONG          put K.K. song SONG (0-63) in house SLOT's (0-3) stereo\n";
 }
 
 /* ACCOUNT=AMOUNT, also accepting ACCOUNT:AMOUNT so a shell that eats '=' still
@@ -478,6 +484,17 @@ void print_accounts(const acserver::TownRuntime& runtime) {
     std::cout << std::flush;
 }
 
+/* mSP_SHOP_TYPE_*, in the original's order. */
+const char* shop_tier_name(std::uint8_t tier) {
+    switch (tier) {
+        case 0: return "Nook's Cranny";
+        case 1: return "Nook 'n' Go";
+        case 2: return "Nookway";
+        case 3: return "Nookington's";
+        default: return "unknown";
+    }
+}
+
 /* Kabu_TRADE_MARKET_TYPE_*, in the original's order. */
 const char* turnip_trend_name(std::uint8_t trend) {
     switch (trend) {
@@ -531,6 +548,7 @@ void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownR
               << runtime.connected_visitors() << ", villagers " << runtime.villager_count() << ')'
               << " | Time " << format_town_time(clock.town_unix_seconds)
               << " | Weather " << weather_name(clock.weather)
+              << " | Shop " << shop_tier_name(runtime.shop_tier())
               << " | Turnips " << turnip_summary(runtime)
               << " | World " << (runtime.town_initialized() ? "ready" : "awaiting first resident")
               << " | Tick " << metrics.ticks
@@ -552,6 +570,8 @@ void print_startup_banner(const acserver::TownRuntime& runtime, const acserver::
               << " Residents    : " << runtime.registered_residents() << "/4 registered\n"
               << " Town time    : " << format_town_time(clock.town_unix_seconds) << "\n"
               << " Weather      : " << weather_name(clock.weather) << "\n"
+              << " Shop         : " << shop_tier_name(runtime.shop_tier()) << " (lifetime sales "
+              << runtime.shop_sales_sum() << ")\n"
               << " Turnips      : " << turnip_summary(runtime) << "\n"
               << " Turnip week  : " << turnip_week(runtime) << "\n"
               << " World        : " << (runtime.town_initialized() ? "ready" : "awaiting first resident") << "\n"
@@ -625,6 +645,12 @@ int run_server(int argc, char** argv) {
     std::uint64_t unban_account = 0;
     std::uint64_t grant_account = 0;
     std::uint64_t grant_amount = 0;
+    std::uint64_t shop_sales = 0;
+    bool have_shop_sales = false;
+    bool shop_visitor = false;
+    std::uint64_t song_slot = 0;
+    std::uint64_t song_index = 0;
+    bool have_song = false;
     std::uint64_t mail_account = 0;
     std::uint64_t mail_item = 0;
     std::string mail_text;
@@ -657,6 +683,10 @@ int run_server(int argc, char** argv) {
              * runs the town open, so there is nothing left to unlock. */
             continue;
         }
+        if (argument == "--shop-visitor") {
+            shop_visitor = true;
+            continue;
+        }
         if (argument == "--checkpoint-now") {
             checkpoint_now = true;
             continue;
@@ -684,6 +714,12 @@ int run_server(int argc, char** argv) {
                 std::cerr << "Expected --grant-bells ACCOUNT=AMOUNT with non-zero decimal values\n";
                 return 2;
             }
+        } else if (argument == "--grant-song") {
+            if (!parse_pair(value, song_slot, song_index)) {
+                std::cerr << "Expected --grant-song SLOT=SONG with decimal values\n";
+                return 2;
+            }
+            have_song = true;
         } else if (argument == "--mail-item") {
             if (!parse_item(value, mail_item)) {
                 std::cerr << "Expected --mail-item ITEM as a decimal or 0x-prefixed 16-bit value\n";
@@ -698,6 +734,13 @@ int run_server(int argc, char** argv) {
             config.town_id = number;
         } else if (argument == "--ticks") {
             maximum_ticks = number;
+        } else if (argument == "--set-shop-sales") {
+            if (number > 0xFFFFFFFFull) {
+                std::cerr << "--set-shop-sales must fit in 32 bits\n";
+                return 2;
+            }
+            shop_sales = number;
+            have_shop_sales = true;
         } else if (argument == "--ban" && number != 0) {
             ban_account = number;
         } else if (argument == "--unban" && number != 0) {
@@ -723,7 +766,7 @@ int run_server(int argc, char** argv) {
         return 2;
     }
     const bool one_shot_admin = checkpoint_now || list_accounts || ban_account != 0 || unban_account != 0 ||
-                                grant_account != 0 || mail_account != 0 ||
+                                grant_account != 0 || mail_account != 0 || have_shop_sales || have_song ||
                                 !import_gci.empty() || !export_gci.empty();
     /* Say it once, before the town listens, and only for a run that will take
      * connections: an open town is a choice, not something to discover later. */
@@ -760,6 +803,20 @@ int run_server(int argc, char** argv) {
             if (ok) {
                 std::cout << "Granted " << grant_amount << " bells to the bank account of " << grant_account
                           << ".\n";
+            }
+        }
+        if (ok && have_shop_sales) {
+            ok = runtime.set_shop_sales(static_cast<std::uint32_t>(shop_sales), shop_visitor, error);
+            if (ok) {
+                std::cout << "Shop lifetime sales set to " << shop_sales << "; Nook's is now tier "
+                          << static_cast<unsigned>(runtime.shop_tier()) << ".\n";
+            }
+        }
+        if (ok && have_song) {
+            ok = runtime.grant_house_song(static_cast<std::uint8_t>(song_slot),
+                                          static_cast<std::uint8_t>(song_index), error);
+            if (ok) {
+                std::cout << "Put song " << song_index << " in the stereo of house " << song_slot << ".\n";
             }
         }
         if (ok && mail_account != 0) {

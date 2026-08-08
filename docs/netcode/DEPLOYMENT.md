@@ -127,6 +127,31 @@ safe whether or not the player is mid-session:
 AnimalCrossingServer --data towns/default --grant-bells 4242=50000
 ```
 
+Nook's upgrade level is derived from the town's lifetime sales, which accrue
+only from committed `Buy` and `Sell` transactions -- granting bells does not
+move it, because bells sitting in a bank have not been spent. To reach a tier
+without shopping through it, set the total directly. Nookington's additionally
+needs an outside shopper, which `--shop-visitor` records:
+
+```text
+AnimalCrossingServer --data towns/default --set-shop-sales 25000    # Nook 'n' Go
+AnimalCrossingServer --data towns/default --set-shop-sales 90000    # Nookway
+AnimalCrossingServer --data towns/default --set-shop-sales 240000 --shop-visitor
+```
+
+The shelf is rerolled at the same time, because its size is a function of the
+tier and leaving Nookington's showing a five-row Cranny shelf would be a worse
+lie than not upgrading. The current level is on the console and in the startup
+banner.
+
+A K.K. song goes into one house's stereo. `SLOT` is the original resident slot
+0-3 and `SONG` is a bit index 0-63 into `mHm_hs_c::music_box`. The house must
+already have been claimed by a player:
+
+```text
+AnimalCrossingServer --data towns/default --grant-song 0=5
+```
+
 A letter carries an optional item and an optional body of up to 192 bytes. The
 item may be decimal or `0x`-prefixed; at least one of the two is required:
 

@@ -208,7 +208,13 @@ bool DatabaseStore::record_session(acnet::SessionId session, acnet::AccountId ac
 bool DatabaseStore::record_transaction(std::uint64_t sequence, acnet::AccountId account,
                                        std::uint16_t type, acnet::ResultCode result,
                                        std::int64_t now, std::string& error) {
-    if (sequence == 0 || account == 0) return false;
+    /* Say why. This returned a bare false, so an operator command that reached
+     * it with no account -- a town-wide change has none -- failed with an empty
+     * message and no indication of what was wrong. */
+    if (sequence == 0 || account == 0) {
+        error = "a transaction row needs a journal sequence and an account";
+        return false;
+    }
     return impl_->execute("INSERT OR REPLACE INTO transactions(journal_sequence,account_id,operation_type,result_code,committed_at) VALUES(" +
                           std::to_string(sequence) + "," + std::to_string(account) + "," + std::to_string(type) +
                           "," + std::to_string(static_cast<std::uint16_t>(result)) + "," + std::to_string(now) + ");", error);

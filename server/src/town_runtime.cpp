@@ -21,6 +21,7 @@ namespace {
  * MessageType values the player-driven rows use so the two cannot be confused
  * when auditing town.db. */
 constexpr std::uint16_t kAdminGrantBellsOperation = 0xA001;
+constexpr std::uint16_t kAdminHouseSongOperation = 0xA003;
 constexpr std::uint16_t kAdminSendMailOperation = 0xA002;
 
 acnet::Revision advance_revision(acnet::Revision revision) {
@@ -2132,6 +2133,79 @@ bool TownRuntime::grant_bank_bells(acnet::AccountId account, std::uint64_t amoun
                              " balance=" + std::to_string(result.balance),
                          wall_unix_seconds(), error)) return false;
     record_event("operator granted " + std::to_string(amount) + " bells to account " + std::to_string(account));
+    return true;
+}
+
+bool TownRuntime::set_shop_sales(std::uint32_t sales, bool visitor, std::string& error) {
+    error.clear();
+    if (!initialized_) { error = "runtime is not initialized"; return false; }
+
+    shop_stock_.sales_sum = sales;
+    if (visitor) shop_stock_.visitor_shopped = true;
+    shop_stock_.tier = acnet::shop_earned_tier(shop_stock_);
+
+    /* The shelf size is a function of the tier, so a level change has to reroll
+     * the stock as well -- leaving Nookington's showing a five-row Cranny shelf
+     * would be a worse lie than not upgrading at all. */
+    acnet::ShopState shop = economy_.shop();
+    std::uint64_t entropy = 0;
+    if (!acnet::secure_random(reinterpret_cast<std::uint8_t*>(&entropy), sizeof(entropy)))
+        entropy = static_cast<std::uint64_t>(shop.revision) * 6364136223846793005ULL;
+    std::mt19937_64 shop_random(entropy);
+    shop.stock = acnet::roll_shop_stock(shop_stock_,
+                                        [&shop_random]() -> std::uint64_t { return shop_random(); });
+    shop.rare_item = shop_stock_.rare_item;
+    shop.tier = static_cast<std::uint8_t>(shop_stock_.tier);
+    shop.sales_sum = shop_stock_.sales_sum;
+    shop.revision = advance_revision(shop.revision);
+    economy_.set_shop(shop);
+
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Shop;
+    delta.zone = 0;
+    delta.target_account = 0;
+    if (acnet::encode_shop_delta(shop, delta.payload)) deltas_.append(std::move(delta));
+
+    /* No commit_transaction here: a transactions row is keyed by account and
+     * this operation has no account -- one town has one store. The journal
+     * write and the audit row are the durable record instead. */
+    if (!commit_state(123, error) ||
+        !database_.audit(0, "set-shop-sales",
+                         "sales=" + std::to_string(sales) + " visitor=" + (visitor ? "1" : "0") +
+                             " tier=" + std::to_string(static_cast<unsigned>(shop.tier)),
+                         wall_unix_seconds(), error)) return false;
+    record_event("operator set shop sales to " + std::to_string(sales) + " (tier " +
+                 std::to_string(static_cast<unsigned>(shop.tier)) + ")");
+    return true;
+}
+
+bool TownRuntime::grant_house_song(std::uint8_t slot, std::uint8_t song, std::string& error) {
+    error.clear();
+    if (!initialized_) { error = "runtime is not initialized"; return false; }
+    if (slot >= acnet::kOriginalResidentSlots) {
+        error = "resident slot must be 0-" + std::to_string(acnet::kOriginalResidentSlots - 1);
+        return false;
+    }
+    if (song >= 64) { error = "song index must be 0-63"; return false; }
+
+    const acnet::HouseState* current = housing_.house(10000ULL + slot);
+    if (current == nullptr) {
+        error = "house slot " + std::to_string(static_cast<unsigned>(slot)) +
+                " has no registered resident (a player must connect and claim it first)";
+        return false;
+    }
+    acnet::HouseState house = *current;
+    house.music_box[song / 32] |= (1U << (song % 32));
+    house.revision = advance_revision(house.revision);
+    if (!housing_.restore_house(house)) { error = "failed to update the house"; return false; }
+
+    if (!commit_transaction(house.owner, kAdminHouseSongOperation, acnet::ResultCode::Ok, error) ||
+        !database_.audit(0, "grant-song",
+                         "slot=" + std::to_string(static_cast<unsigned>(slot)) +
+                             " song=" + std::to_string(static_cast<unsigned>(song)),
+                         wall_unix_seconds(), error)) return false;
+    record_event("operator put song " + std::to_string(static_cast<unsigned>(song)) +
+                 " in the stereo of house " + std::to_string(static_cast<unsigned>(slot)));
     return true;
 }
 
