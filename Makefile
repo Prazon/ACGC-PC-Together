@@ -57,6 +57,10 @@ TEST_OBJECT := $(BUILD_DIR)/tests/net/test_main.o
 NETWORK_CONFIG_OBJECT := $(BUILD_DIR)/pc/src/pc_network_config.o
 SERVER_OBJECTS := $(BUILD_DIR)/server/src/main.o
 FUZZ_OBJECT := $(BUILD_DIR)/tests/fuzz/protocol_fuzz.o
+# The .pcasset parser is the client's attack surface for server-delivered
+# content, so it gets the same bounded-garbage treatment as the protocol
+# parsers. Built from pc/ sources but free of SDL and GL by design.
+PCASSET_FUZZ_OBJECTS := $(BUILD_DIR)/tests/fuzz/pcasset_fuzz.o $(BUILD_DIR)/pc/src/pc_mod_assets.o
 LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
@@ -73,8 +77,9 @@ server: $(BUILD_DIR)/AnimalCrossingServer
 smoke: $(BUILD_DIR)/AnimalCrossingServer
 	$(BUILD_DIR)/AnimalCrossingServer --smoke --ticks 120 --config packaging/server.ini --data $(BUILD_DIR)/smoke-town
 
-fuzz: $(BUILD_DIR)/protocol_fuzz
+fuzz: $(BUILD_DIR)/protocol_fuzz $(BUILD_DIR)/pcasset_fuzz
 	$(BUILD_DIR)/protocol_fuzz 50000
+	$(BUILD_DIR)/pcasset_fuzz 50000
 
 load: $(BUILD_DIR)/town_load
 	$(BUILD_DIR)/town_load 8 600
@@ -118,6 +123,10 @@ $(BUILD_DIR)/protocol_fuzz: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(FUZZ_
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
+$(BUILD_DIR)/pcasset_fuzz: $(PCASSET_FUZZ_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CXX) $^ $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/town_load: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(LOAD_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
@@ -150,4 +159,4 @@ $(BUILD_DIR)/third_party/lua/%.o: third_party/lua/%.c
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
+-include $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
