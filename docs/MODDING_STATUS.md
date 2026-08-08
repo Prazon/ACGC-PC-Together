@@ -10,14 +10,16 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P2** calendar API, holidays, runtime wiring, persistence | **done** |
 | **P3** `ModCalendar` replication | **done** (server, wire and client) |
 | **P4** T1 asset override | **done** |
-| **P5** arena, `.pcasset`, model compiler | **container, parser and arena done**; model compiler outstanding |
+| **P5** arena, `.pcasset`, model compiler | **done** |
 | **P6** table growth, registry, placeholder | **done** |
 | **P7** delivery, server side | **done** (wire format, pack store, chunk service) |
 | **P8** client cache, fetch, loading UI | **done** (cache, fetch loop, loading screen) |
-| **P9** custom songs and discs | **registry and grant done**; audio playback outstanding |
+| **P9** custom songs and discs | **done** |
 
-Gate: `make check` exits 0 — 82/82 tests, `client_link` pass at 20 objects, protocol fuzz 50k,
-`.pcasset` fuzz 50k, and the cache, fetch-loop and registry checks.
+Gate: `make check` exits 0 — 82/82 tests, `client_link` pass at 20 objects, two fuzzers
+(protocol and `.pcasset`, 50k each), and five standalone checks: cache, fetch, registry,
+model and music. The model, music, registry and `.pcasset` checks are also clean under
+ASan + UBSan.
 
 ---
 
@@ -164,6 +166,21 @@ command uses, so it is journaled and bumps the same house revision a player acti
 
 **Audio playback is not implemented.** Mixing decoded PCM into `pc_audio.c`'s ring buffer needs
 SDL, unavailable here. The registry and grant path work; the sound does not yet.
+
+## All ten phases are implemented
+
+Every phase in `docs/MODDING_IMPLEMENTATION.md` §1 now has code and a check behind it. What
+remains is **verification that anything renders or plays** — see the limits section below.
+
+The last two pieces:
+
+- **Model compiler (P5)** — `.pcasset` → `Vtx` + `Gfx` in the arena. The hard part is batching:
+  a `gSPVertex` load fills a 32-entry cache and triangle commands index it with 5 bits, so all
+  three of a triangle's vertices must sit in one batch. Vertices are duplicated across batches
+  because splitting a triangle is not possible. The check decodes the emitted display list and
+  asserts every index is inside its batch — the failure mode is wrong triangles, not a crash.
+- **Song mixer (P9)** — decoded PCM mixed into `pc_audio.c`'s callback output. Saturating rather
+  than wrapping, looping to the declared point, and fading rather than cutting dead.
 
 ## Corrections made while building
 
