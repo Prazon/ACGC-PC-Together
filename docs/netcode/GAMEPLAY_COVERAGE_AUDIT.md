@@ -28,7 +28,11 @@ Local wallet writes remain in `ac_npc_shop_common.c:2211-2247`,
 every inventory-revision bump, a purchase is refunded at the next server delta
 and two players can sell the same goods for bells the server never sees.
 
-**2. Inventory grants outside the hooked verbs are erased.** 137
+**2. Inventory grants outside the hooked verbs are erased.** *(NPC gifts
+resolved 2026-08-08 as a client-trusted, journalled `Grant` transaction — see
+CURRENT_STATUS.md. The remaining `mPr_Set*PossessionItem` sites are paths that
+either already have their own transaction or are not reachable online.)*
+Original text: 137
 `mPr_SetPossessionItem`/`mPr_SetFreePossessionItem` call sites across 40 files;
 only the pickup path is hooked. `Net_ApplyAuthoritativeState` overwrites all 15
 pocket slots whenever the server's inventory revision changes, so villager
@@ -76,9 +80,10 @@ daily job only refilled quantities. See below.
 
 ### Tier 2 — silent per-client divergence
 
-**6. Villagers.** *(Roster, turnover, leases, positions, memories and the
-special visitor all resolved 2026-08-08 — see CURRENT_STATUS.md. What remains
-is per-hour schedules and the event NPCs that bypass mEv_special_c.)*
+**6. Villagers.** *(Resolved 2026-08-08 — see CURRENT_STATUS.md. Roster,
+turnover, conversation leases, positions, per-player memories, the special
+visitor, the event flags and NPC gifts are all server-owned; schedules derive
+from state that already is. Nothing outstanding but bug-testing.)*
 *(Original note: roster and turnover resolved 2026-08-08 — see
 CURRENT_STATUS.md. The roster is server-owned, villagers are registered
 entities, `mNpc_Grow` no longer runs per client, and move-ins and move-outs are
