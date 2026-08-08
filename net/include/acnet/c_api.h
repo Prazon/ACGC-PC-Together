@@ -510,7 +510,7 @@ int acnet_client_take_villager_memory_result(uint16_t* result_code);
  * the artist, the sale -- as mEv_special_c. `kind` is validated because the
  * game indexes a table with it; the rest is the game's own POD, carried
  * opaquely. Town-wide: one town has one visitor. */
-#define ACNET_SPECIAL_EVENT_PAYLOAD_BYTES 128
+#define ACNET_SPECIAL_EVENT_PAYLOAD_BYTES 256
 #define ACNET_SPECIAL_EVENT_TIME_BYTES 8
 #define ACNET_NO_SPECIAL_EVENT 0xFFFFFFFFu
 

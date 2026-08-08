@@ -1994,8 +1994,32 @@ static int Net_VillagerMemoryIndex(Animal_c* animal) {
  * change to any event struct would otherwise silently truncate the visitor. */
 _Static_assert(sizeof(lbRTC_time_c) == ACNET_SPECIAL_EVENT_TIME_BYTES,
                "special event schedule size changed");
-_Static_assert(sizeof(mEv_special_u) <= ACNET_SPECIAL_EVENT_PAYLOAD_BYTES,
-               "special event payload no longer fits the wire field");
+_Static_assert(sizeof(mEv_special_u) + sizeof(mEv_weekly_u) + sizeof(u32) <=
+                   ACNET_SPECIAL_EVENT_PAYLOAD_BYTES,
+               "event payload no longer fits the wire field");
+
+/* The payload is the whole of mEv_event_save_c beyond kind and scheduled: the
+ * per-event union, the weekly block, and the flags. Packed and unpacked in one
+ * place so the two orders cannot drift apart. */
+#define NET_EVENT_WEEKLY_OFFSET (sizeof(mEv_special_u))
+#define NET_EVENT_FLAGS_OFFSET (sizeof(mEv_special_u) + sizeof(mEv_weekly_u))
+
+static void Net_PackEventPayload(u8* payload) {
+    mEv_event_save_c* save = &Save_Get(event_save_data);
+
+    memset(payload, 0, ACNET_SPECIAL_EVENT_PAYLOAD_BYTES);
+    memcpy(payload, &save->special.event, sizeof(save->special.event));
+    memcpy(payload + NET_EVENT_WEEKLY_OFFSET, &save->weekly, sizeof(save->weekly));
+    memcpy(payload + NET_EVENT_FLAGS_OFFSET, &save->flags, sizeof(save->flags));
+}
+
+static void Net_UnpackEventPayload(const u8* payload) {
+    mEv_event_save_c* save = &Save_Get(event_save_data);
+
+    memcpy(&save->special.event, payload, sizeof(save->special.event));
+    memcpy(&save->weekly, payload + NET_EVENT_WEEKLY_OFFSET, sizeof(save->weekly));
+    memcpy(&save->flags, payload + NET_EVENT_FLAGS_OFFSET, sizeof(save->flags));
+}
 
 int Net_RequestNpcGift(mActor_name_t item, int condition) {
     if (!Net_EconomyAuthoritative() || item == EMPTY_NO) return FALSE;
@@ -2025,7 +2049,7 @@ void Net_ApplyAuthoritativeSpecialEvent(void) {
         mEv_special_c* special = &Save_Get(event_save_data).special;
         special->kind = kind;
         memcpy(&special->scheduled, scheduled, sizeof(special->scheduled));
-        memcpy(&special->event, payload, sizeof(special->event));
+        Net_UnpackEventPayload(payload);
     }
     last_event_revision = revision;
 }
@@ -2052,8 +2076,7 @@ void Net_SubmitSpecialEventIfChanged(void) {
     /* A kind the game does not define would be refused by the encoder and take
      * the whole submit with it. */
     if (special->kind != ACNET_NO_SPECIAL_EVENT && special->kind > mEv_SPNPC_END) return;
-    memset(payload, 0, sizeof(payload));
-    memcpy(payload, &special->event, sizeof(special->event));
+    Net_PackEventPayload(payload);
     hash = Net_HashBytes(hash, &special->kind, sizeof(special->kind));
     hash = Net_HashBytes(hash, &special->scheduled, sizeof(special->scheduled));
     hash = Net_HashBytes(hash, payload, sizeof(payload));

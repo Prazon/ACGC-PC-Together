@@ -27,15 +27,23 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 18 adds each account's villager memories -- their history with each
  * neighbour, which is the only record that a player and a villager have one.
  * 19 adds the town's scheduled special visitor.
+ * 20 widens that block to carry the event flags and the weekly data too.
  *
- * The roster is stored through the *wire* codec so the checkpoint and the
- * baseline cannot disagree about its shape -- which is worth having, but means
- * a wire change invalidates what version 16 wrote. The blob is length-prefixed
- * precisely so that case is recoverable: a version-16 roster is skipped rather
- * than rejected, leaving it uninitialized for the next bootstrap to re-adopt.
- * A checkpoint is not worth failing to load over a roster that one login
- * restores. */
-constexpr std::uint16_t kTownStateVersion = 19;
+ * This is the second time a wire change has invalidated a stored blob, so the
+ * rule is worth stating: anything persisted through a wire codec needs a
+ * version bump *and* a tolerant read on the old version. Both are recoverable
+ * because the blobs are length-prefixed -- the bytes can always be stepped
+ * over -- and a checkpoint is not worth failing to load over state that one
+ * login restores. `make check`'s smoke step is what catches it, by starting on
+ * a checkpoint the previous build wrote.
+ *
+ * The roster and the event block are both stored through the *wire* codec so
+ * the checkpoint and the baseline cannot disagree about their shape -- worth
+ * having, but it is exactly why a wire change invalidates what an older
+ * version wrote. A version-16 roster and a version-19 event block are each
+ * skipped rather than rejected, and re-established by the next bootstrap or
+ * the next client to roll a visitor. */
+constexpr std::uint16_t kTownStateVersion = 20;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -506,9 +514,15 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
             error = "invalid special event"; return false;
         }
         std::vector<std::uint8_t> event(event_size);
-        if ((event_size != 0 && !reader.bytes(event.data(), event.size())) ||
-            !acnet::decode_special_event_delta(event, special_event_)) {
+        if (event_size != 0 && !reader.bytes(event.data(), event.size())) {
             error = "invalid special event"; return false;
+        }
+        if (!acnet::decode_special_event_delta(event, special_event_)) {
+            if (version >= 20) { error = "invalid special event"; return false; }
+            /* A version-19 block in the narrower encoding. Skipped, not
+             * rejected: the bytes were consumed by the length prefix, and the
+             * next client to roll a visitor re-establishes it. */
+            special_event_ = {};
         }
     }
     if (version >= 18) {

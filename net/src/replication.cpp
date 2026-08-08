@@ -457,7 +457,11 @@ static bool decode_special_event(ByteReader& reader, SpecialEvent& event) {
 }
 
 bool encode_special_event_delta(const SpecialEvent& event, std::vector<std::uint8_t>& output) {
-    ByteWriter writer(256);
+    /* kind, revision, the schedule time and the payload -- comfortably clear of
+     * the payload size so widening it again cannot silently fail the encode,
+     * which is how this last broke: the checkpoint writes through this same
+     * codec, so a short writer took the whole server tick down with it. */
+    ByteWriter writer(kSpecialEventPayloadBytes + 64);
     if (!encode_special_event(writer, event)) return false;
     output = writer.data();
     return true;

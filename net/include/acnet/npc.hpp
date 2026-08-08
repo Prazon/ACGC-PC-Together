@@ -296,8 +296,15 @@ constexpr std::size_t kVillagerMemoryBytes = 312; // sizeof(Anmmem_c)
  *
  * `kind` is validated because the game indexes a table with it; the rest is
  * carried opaquely, like mail text -- it is the game's own POD and the server
- * has no reason to understand which painting is a forgery. */
-constexpr std::size_t kSpecialEventPayloadBytes = 128; // >= sizeof(mEv_special_u)
+ * has no reason to understand which painting is a forgery.
+ *
+ * The payload covers the whole of mEv_event_save_c beyond those two fields: the
+ * per-event union, the weekly block, and the event flags. The flags matter as
+ * much as the visitor does -- mEv_CheckFirstJob and the Halloween status are
+ * read from them, and they gate what villagers do and which dialogue runs, so
+ * leaving them local would have kept the towns diverging in a way the visitor
+ * alone did not explain. */
+constexpr std::size_t kSpecialEventPayloadBytes = 256; // >= mEv_special_u + mEv_weekly_u + flags
 constexpr std::size_t kSpecialEventTimeBytes = 8;      // sizeof(lbRTC_time_c)
 /* mEv_SPNPC_END: the last special-NPC event. 0xFFFFFFFF means none scheduled. */
 constexpr std::uint32_t kMaximumSpecialEventKind = 6;

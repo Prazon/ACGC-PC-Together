@@ -1,4 +1,4 @@
-# Dedicated town protocol v31
+# Dedicated town protocol v32
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -186,9 +186,18 @@ offline.
 The town's scheduled special NPC — Redd, Saharah, Katrina, the designer, the
 artist, the sale — is `mEv_special_c`, town state as of v30. `kind` is validated
 (the game indexes `special_events[]` with it, and `0xFFFFFFFF` means none
-scheduled); the schedule time and the per-event union ride as opaque bytes, the
+scheduled); the schedule time and the rest of `mEv_event_save_c` ride as opaque bytes, the
 game's own POD, sized with `_Static_assert` on the client so a decomp change to
-any event struct cannot silently truncate the visitor.
+any event struct cannot silently truncate it.
+
+The payload covers the per-event union, the weekly block **and the event
+flags** (v32). The flags matter as much as the visitor: `mEv_CheckFirstJob` and
+the Halloween status are read from them, and they gate what villagers do and
+which dialogue runs, so leaving them local would have kept towns diverging in a
+way the visitor alone did not explain. Villager *schedules* need no separate
+replication — they are derived from the roster, the town clock and these flags,
+all of which are now shared, and positions come from the simulation host
+regardless.
 
 Every client used to roll its own, so the *contents* diverged even where the
 date did not: two players walked into Redd's tent and were offered different
