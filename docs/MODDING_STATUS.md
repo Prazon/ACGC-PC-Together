@@ -11,13 +11,13 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P3** `ModCalendar` replication | **done** (server, wire and client) |
 | **P4** T1 asset override | **done** |
 | **P5** arena, `.pcasset`, model compiler | **container, parser and arena done**; model compiler outstanding |
-| **P6** table growth, registry, placeholder | **blocked** — attempted and reverted, see below |
+| **P6** table growth, registry, placeholder | **done** |
 | **P7** delivery, server side | **done** (wire format, pack store, chunk service) |
 | **P8** client cache, fetch, loading UI | **done** (cache, fetch loop, loading screen) |
 | **P9** custom songs and discs | **registry and grant done**; audio playback outstanding |
 
 Gate: `make check` exits 0 — 82/82 tests, `client_link` pass at 20 objects, protocol fuzz 50k,
-`.pcasset` fuzz 50k, the content-cache check with its SHA-256 vectors, and the fetch-loop check.
+`.pcasset` fuzz 50k, and the cache, fetch-loop and registry checks.
 
 ---
 
@@ -122,25 +122,25 @@ separately survived 200k iterations under ASan + UBSan.
 **Still missing for a player to see content:** the client fetch loop that drives the cache from a
 manifest, the mod arena and model compiler (P5), and the registry and table growth (P6).
 
-## P6 is blocked, and why it matters
+## Runtime-added furniture (P6)
 
-Growing the furniture tables at load (`MODLOADER_PLAN.md` §7.5 Option A) was attempted and
-reverted. `ac_furniture_profile_data.c_inc` is included into **two** translation units, so each
-currently gets a private `static` copy. Making the symbol a non-static pointer — the whole
-mechanism Option A depends on — produces two definitions of one global, which is a
-**duplicate-symbol link error**.
+The blocker is resolved. `ac_furniture_profile_data.c_inc` was `#include`d into two translation
+units, so each held a private `static` copy — which made the symbol impossible to repoint. It now
+has **one definition** in `src/data/furniture/ftr_profile_table.c`, and `furniture_quality` is a
+pointer the modloader can swap for a larger table.
 
-It nearly slipped through: `-fsyntax-only` passes, and both read sites compile unchanged, which is
-exactly what Option A promises. The failure is only visible at link, and there is no linkable
-client build in this environment.
+**Verified by linking real objects**, not a syntax check — that distinction is exactly how the
+problem was missed the first time. `mod_registry_check` links the actual 1266-entry table and
+asserts that growth leaves every stock entry where it was.
 
-**Consequence:** P6 needs each table made single-definition first (extern in a header, defined in
-one TU). That is a larger decomp change than the plan assumed, and everything downstream —
-runtime-added items, and therefore the model compiler and the client fetch loop having anything to
-bind to — sits behind it.
+An item moves placeholder → resident through a single pointer store, queued and applied at a safe
+point. Three defences, because the catalogue caches profile pointers: atomic publish, safe-point
+application, and never freeing a base profile so a stale cached pointer stays valid.
 
-**Verify with a link, not a syntax check**, and count the parent TUs of every other `.c_inc` table
-before growing it.
+**A dangling pointer the test caught:** a grown table lives in the mod arena, so tearing the arena
+down left `furniture_quality` pointing at unmapped memory — and the next read of *any* entry,
+stock ones included, was a segfault. `ftr_profile_table_restore_base()` fixes it and
+`pc_modloader_shutdown` calls it first.
 
 ## Custom songs (P9)
 
