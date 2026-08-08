@@ -1997,6 +1997,14 @@ _Static_assert(sizeof(lbRTC_time_c) == ACNET_SPECIAL_EVENT_TIME_BYTES,
 _Static_assert(sizeof(mEv_special_u) <= ACNET_SPECIAL_EVENT_PAYLOAD_BYTES,
                "special event payload no longer fits the wire field");
 
+int Net_RequestNpcGift(mActor_name_t item, int condition) {
+    if (!Net_EconomyAuthoritative() || item == EMPTY_NO) return FALSE;
+    /* The projection settles where it lands, so nothing is written here. A
+     * refusal -- no free pocket -- leaves the pockets as they are, which is the
+     * same outcome the original produces when there is no room. */
+    return acnet_client_request_grant((uint16_t)item, (uint8_t)condition);
+}
+
 int Net_SpecialEventAuthoritative(void) {
     return Net_IsConnected() && acnet_client_special_event_revision() != 0;
 }

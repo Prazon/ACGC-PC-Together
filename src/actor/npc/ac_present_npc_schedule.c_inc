@@ -91,7 +91,12 @@ static void aPST_present_send_start_wait_talk_proc(PRESENT_NPC_ACTOR* actor) {
         }
 
         aNPC_DEMO_GIVE_ITEM(item, aHOI_REQUEST_PUTAWAY, present);
-        mPr_SetFreePossessionItem(Now_Private, item, item_cond);
+        /* An NPC gift. Online the server commits it and the projection
+         * places it; writing the pocket here as well would grant it twice,
+         * and writing it here *instead* loses it at the next revision. */
+        if (!Net_RequestNpcGift(item, item_cond)) {
+            mPr_SetFreePossessionItem(Now_Private, item, item_cond);
+        }
         mMsg_SET_LOCKCONTINUE();
         aPST_change_talk_proc(actor, aPST_TALK_PRESENT_SEND_START_WAIT);
     }

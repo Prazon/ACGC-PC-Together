@@ -1,4 +1,4 @@
-# Dedicated town protocol v30
+# Dedicated town protocol v31
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,32 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### NPC gifts (v31)
+
+`EconomyOpType::Grant` is an NPC handing the player something — a quest reward,
+a K.K. song, the golden axe, a present, the carpet peddler's trade.
+
+**It is deliberately client-trusted, and the only one here.** The reasoning
+matters: the alternative was leaving it alone, and leaving it alone was actively
+losing items. Pockets are rewritten from the server whenever the inventory
+revision moves, so a gift written locally sat there working until the player's
+next pickup or purchase and then silently vanished — works-until-it-doesn't,
+the worst shape a bug can have.
+
+The server cannot validate what it does not model: it has no quest tables, no
+dialogue, and the NPCs handing these out are not all villagers. So it checks
+what it can — a real item, and a pocket to put it in — and everything else is
+bounded by the per-message rate limit, the journal, and an `audit_log` row, so
+abuse is visible after the fact even though it cannot be prevented in front.
+That is the same trust already extended to a client for its own movement, and
+the town is invite-keyed.
+
+Only genuine NPC gift sites call it. Paths that already have their own
+transaction — the gyroid proceeds most notably, which peels bells into money
+bags through the same `mPr_SetFreePossessionItem` — must not, or the item is
+granted twice. Each call site falls back to the original local write when
+offline.
 
 ### The special visitor (v30)
 

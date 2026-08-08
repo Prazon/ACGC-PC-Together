@@ -218,6 +218,18 @@ void Net_SubmitVillagerMemoriesIfChanged(void);
 int Net_SpecialEventAuthoritative(void);
 void Net_ApplyAuthoritativeSpecialEvent(void);
 void Net_SubmitSpecialEventIfChanged(void);
+/* An NPC is handing the player an item -- a quest reward, a K.K. song, the
+ * golden axe, a present, the carpet peddler's trade. Returns TRUE when the
+ * request was sent and the caller must NOT write the pocket itself: the
+ * authoritative projection places the item when the server commits it.
+ *
+ * Writing it locally is what loses it. The pockets are rewritten from the
+ * server whenever the inventory revision moves, so a gift written locally sits
+ * there working until the player's next pickup or purchase and then silently
+ * vanishes. Call this only from a genuine NPC gift -- paths that already have
+ * their own transaction, like the gyroid proceeds, must not, or the item is
+ * granted twice. */
+int Net_RequestNpcGift(mActor_name_t item, int condition);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -297,6 +309,7 @@ void Net_SubmitSpecialEventIfChanged(void);
 #define Net_SpecialEventAuthoritative() FALSE
 #define Net_ApplyAuthoritativeSpecialEvent() ((void)0)
 #define Net_SubmitSpecialEventIfChanged() ((void)0)
+#define Net_RequestNpcGift(item, condition) FALSE
 #endif
 
 #ifdef __cplusplus

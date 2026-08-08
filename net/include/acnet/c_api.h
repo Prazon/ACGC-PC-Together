@@ -666,6 +666,10 @@ int acnet_client_museum_has(uint16_t item);
  * which per-slot requests cannot express: they would each have to quote the
  * revision the previous one produced. */
 int acnet_client_request_sell(uint16_t slot_mask);
+/* An NPC handing the player something -- a quest reward, a K.K. song, the
+ * golden axe, a present. Client-trusted and the only one; see the note on
+ * EconomyOpType::Grant for why that is still better than the alternative. */
+int acnet_client_request_grant(uint16_t item, uint8_t condition);
 int acnet_client_request_economy_auto(uint8_t operation_type,
                                       uint32_t expected_inventory_revision,
                                       uint32_t expected_aux_revision,

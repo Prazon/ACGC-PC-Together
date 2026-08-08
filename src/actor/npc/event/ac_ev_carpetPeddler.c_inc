@@ -162,7 +162,12 @@ void aECPD_refuse_trade_in(EV_CARPETPEDDLER_ACTOR* peddler, GAME_PLAY* play) {
         mDemo_Set_OrderValue(mDemo_ORDER_NPC1, 0x0, peddler->trade_in_item);
         mDemo_Set_OrderValue(mDemo_ORDER_NPC1, 0x1, 0x7);
         mDemo_Set_OrderValue(mDemo_ORDER_NPC1, 0x2, 0x0);
-        mPr_SetFreePossessionItem(Now_Private, peddler->trade_in_item, mPr_ITEM_COND_NORMAL);
+        /* An NPC gift. Online the server commits it and the projection
+         * places it; writing the pocket here as well would grant it twice,
+         * and writing it here *instead* loses it at the next revision. */
+        if (!Net_RequestNpcGift(peddler->trade_in_item, mPr_ITEM_COND_NORMAL)) {
+            mPr_SetFreePossessionItem(Now_Private, peddler->trade_in_item, mPr_ITEM_COND_NORMAL);
+        }
         peddler->setup_action(peddler, play, eECPD_ACTION_REFUSE_TRADE_IN_END_WAIT);
     }
 }

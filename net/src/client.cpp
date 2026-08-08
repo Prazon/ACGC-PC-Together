@@ -637,12 +637,13 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                         baseline_.mailbox.revision = economy_result_->auxiliary_revision;
                         break;
                     case EconomyOpType::HoldItem:
+                    case EconomyOpType::Grant:
                     case EconomyOpType::Donate:
                     case EconomyOpType::AdminGrantBells:
                     case EconomyOpType::AdminSendMail:
-                        /* Holding touches only the inventory, the museum is not
-                         * mirrored, and the operator operations never reach a
-                         * client. */
+                        /* Holding and a grant touch only the inventory, the
+                         * museum is not mirrored, and the operator operations
+                         * never reach a client. */
                         break;
                 }
                 if (economy_result_->type == EconomyOpType::HoldItem) {

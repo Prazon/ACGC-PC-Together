@@ -1,3 +1,4 @@
+#include "m_net_hooks.h"
 #include "ac_npc_rcn_guide2.h"
 
 #include "m_common_data.h"

@@ -1,3 +1,4 @@
+#include "m_net_hooks.h"
 #include "ac_npc_hem.h"
 #include "m_name_table.h"
 #include "ac_npc.h"

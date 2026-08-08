@@ -496,6 +496,26 @@ EconomyResult EconomyAuthority::apply(const EconomyRequest& request) {
             inventory_changed = true;
             break;
         }
+        case EconomyOpType::Grant: {
+            /* Client-trusted, and the only one -- see the note on the enum. The
+             * server checks the two things it actually can: that this is a real
+             * item, and that there is somewhere to put it. */
+            if (request.expected_item == 0) {
+                result.code = ResultCode::Malformed;
+                break;
+            }
+            const auto slot = empty_slot(inventory);
+            if (!slot.has_value()) {
+                result.code = ResultCode::Capacity;
+                break;
+            }
+            inventory.slots[*slot].item = request.expected_item;
+            inventory.slots[*slot].condition = static_cast<std::uint8_t>(request.amount & 0xFFU);
+            result.item = request.expected_item;
+            result.inventory_slot = *slot;
+            inventory_changed = true;
+            break;
+        }
         case EconomyOpType::AdminGrantBells:
         case EconomyOpType::AdminSendMail:
             result.code = ResultCode::Unauthorized;
@@ -642,6 +662,9 @@ bool EconomyAuthority::validate_context(const EconomyRequest& request) const {
         case EconomyOpType::DiscardMail:
             required_zone = config_.mailbox_zone;
             break;
+        case EconomyOpType::Grant:
+            /* An NPC can hand something over anywhere they stand, so this is
+             * not tied to a zone the way a counter transaction is. */
         case EconomyOpType::HoldItem:
             /* Reaching into your own pocket works anywhere the original lets
              * the submenu open, which is everywhere. */

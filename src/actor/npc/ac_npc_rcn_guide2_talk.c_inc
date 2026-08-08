@@ -82,33 +82,57 @@ static void aNRG2_set_possession(void) {
         for (i = 0; i < 7; i++) {
             mActor_name_t item = ITM_WHITE_PANSY_BAG + RANDOM(9);
 
-            mPr_SetFreePossessionItem(Now_Private, item, mPr_ITEM_COND_NORMAL);
+            /* A quest reward. Online the server commits it and the projection
+
+             * places it; writing the pocket here as well would grant it twice. */
+
+            if (!Net_RequestNpcGift(item, mPr_ITEM_COND_NORMAL)) {
+
+                mPr_SetFreePossessionItem(Now_Private, item, mPr_ITEM_COND_NORMAL);
+
+            }
         }
 
         /* Give player 3 saplings */
         for (i = 0; i < 3; i++) {
-            mPr_SetFreePossessionItem(Now_Private, ITM_SAPLING, mPr_ITEM_COND_NORMAL);
+            /* A quest reward. Online the server commits it and the projection
+             * places it; writing the pocket here as well would grant it twice. */
+            if (!Net_RequestNpcGift(ITM_SAPLING, mPr_ITEM_COND_NORMAL)) {
+                mPr_SetFreePossessionItem(Now_Private, ITM_SAPLING, mPr_ITEM_COND_NORMAL);
+            }
         }
     } else {
         switch (job_kind) {
             case aNRG2_JOB3:
             case aNRG2_JOB5:
                 /* Set the random errand item with quest condition */
-                mPr_SetFreePossessionItem(Now_Private, errand_p->item, mPr_ITEM_COND_QUEST);
+                /* A quest reward. Online the server commits it and the projection
+                 * places it; writing the pocket here as well would grant it twice. */
+                if (!Net_RequestNpcGift(errand_p->item, mPr_ITEM_COND_QUEST)) {
+                    mPr_SetFreePossessionItem(Now_Private, errand_p->item, mPr_ITEM_COND_QUEST);
+                }
                 break;
             case aNRG2_JOB1:
             case aNRG2_JOB4:
             case aNRG2_JOB7:
             case aNRG2_JOB8:
                 /* Set the static job item with normal condition */
-                mPr_SetFreePossessionItem(Now_Private, set_itemNo[job_kind], mPr_ITEM_COND_NORMAL);
+                /* A quest reward. Online the server commits it and the projection
+                 * places it; writing the pocket here as well would grant it twice. */
+                if (!Net_RequestNpcGift(set_itemNo[job_kind], mPr_ITEM_COND_NORMAL)) {
+                    mPr_SetFreePossessionItem(Now_Private, set_itemNo[job_kind], mPr_ITEM_COND_NORMAL);
+                }
                 break;
             case aNRG2_JOB2:
             case aNRG2_JOB6:
             case aNRG2_JOB9:
             default:
                 /* Set the static job item with quest condition */
-                mPr_SetFreePossessionItem(Now_Private, set_itemNo[job_kind], mPr_ITEM_COND_QUEST);
+                /* A quest reward. Online the server commits it and the projection
+                 * places it; writing the pocket here as well would grant it twice. */
+                if (!Net_RequestNpcGift(set_itemNo[job_kind], mPr_ITEM_COND_QUEST)) {
+                    mPr_SetFreePossessionItem(Now_Private, set_itemNo[job_kind], mPr_ITEM_COND_QUEST);
+                }
                 break;
             case aNRG2_JOB10:
             case aNRG2_JOB11:

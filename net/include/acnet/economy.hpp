@@ -33,11 +33,31 @@ enum class EconomyOpType : std::uint8_t {
      * pocket-menu drag onto the player are all the same move, exactly as
      * mHD_drop_item performs it locally. */
     HoldItem,
+    /* An NPC handing the player something: a quest reward, a K.K. song, the
+     * golden axe, a present, the carpet peddler's trade.
+     *
+     * This is deliberately a *client-trusted* grant and the only one here, so
+     * the reasoning is worth stating. The alternative was leaving it alone, and
+     * leaving it alone was actively losing items: the pockets are rewritten
+     * from the server whenever the inventory revision moves, so a gift written
+     * locally sat in the pocket working until the player's next pickup or
+     * purchase and then silently vanished. Works-until-it-doesn't is the worst
+     * shape a bug can have.
+     *
+     * The server cannot validate what it does not model -- it has no quest
+     * tables, no dialogue, and the NPCs that hand these out are not all
+     * villagers -- so it checks what it can: a real item, a pocket to put it
+     * in, and the per-message rate limit that bounds how fast a client could
+     * abuse it. Every accepted grant is journalled and written to the audit
+     * log, so abuse is visible after the fact even though it cannot be
+     * prevented in front. That is the same trust already extended to a client
+     * for its own movement, and it is bounded by the town being invite-keyed. */
+    Grant,
     AdminGrantBells,
     AdminSendMail,
 };
 
-constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::HoldItem);
+constexpr std::uint8_t kMaximumClientEconomyOp = static_cast<std::uint8_t>(EconomyOpType::Grant);
 
 /* The original game moves a letter in two steps: the house mailbox holds ten,
  * the player then carries up to ten in their pockets, and only a carried letter

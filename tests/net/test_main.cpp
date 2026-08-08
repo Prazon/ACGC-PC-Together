@@ -1756,6 +1756,69 @@ void villager_roster_is_town_state() {
     CHECK(decoded_bootstrap.villagers == roster);
 }
 
+void npc_gift_is_committed_by_the_server() {
+    /* An NPC gift used to be written straight into the pocket, where the next
+     * authoritative projection erased it. It is a transaction now -- deliberately
+     * a client-trusted one, since the server models no quests to validate it
+     * against, but a journalled and rate-limited one rather than a silent loss. */
+    acnet::PlayerDirectory players;
+    acnet::WorldAuthority world(&players);
+    acnet::EconomyAuthority economy(&world);
+    acnet::InventoryState inventory;
+    inventory.revision = 1;
+    CHECK(world.set_inventory(41, inventory));
+    CHECK(economy.register_account(41));
+
+    acnet::EconomyRequest gift;
+    gift.type = acnet::EconomyOpType::Grant;
+    gift.account = 41;
+    gift.idempotency = {21, 22};
+    gift.expected_inventory_revision = 1;
+    gift.expected_item = 0x2401; /* a K.K. song */
+    const acnet::EconomyResult granted = economy.apply(gift);
+    CHECK(granted.code == acnet::ResultCode::Ok);
+    CHECK(granted.item == 0x2401);
+    const acnet::InventoryState* after = world.inventory(41);
+    CHECK(after != nullptr);
+    CHECK(after->slots[granted.inventory_slot].item == 0x2401);
+
+    /* Replaying the key must not hand over a second copy. */
+    const acnet::EconomyResult replayed = economy.apply(gift);
+    CHECK(replayed.replayed);
+    CHECK(replayed.code == acnet::ResultCode::Ok);
+    std::size_t copies = 0;
+    for (const acnet::ItemSlot& slot : world.inventory(41)->slots) {
+        if (slot.item == 0x2401) ++copies;
+    }
+    CHECK(copies == 1);
+
+    /* Nothing is not an item. */
+    acnet::EconomyRequest empty = gift;
+    empty.idempotency = {23, 24};
+    empty.expected_inventory_revision = world.inventory(41)->revision;
+    empty.expected_item = 0;
+    CHECK(economy.apply(empty).code == acnet::ResultCode::Malformed);
+
+    /* Full pockets refuse rather than dropping the gift on the floor -- the
+     * same outcome the original produces when there is no room. */
+    acnet::InventoryState full;
+    full.revision = 1;
+    for (acnet::ItemSlot& slot : full.slots) slot.item = 0x1000;
+    CHECK(world.set_inventory(42, full));
+    CHECK(economy.register_account(42));
+    acnet::EconomyRequest crowded;
+    crowded.type = acnet::EconomyOpType::Grant;
+    crowded.account = 42;
+    crowded.idempotency = {25, 26};
+    crowded.expected_inventory_revision = 1;
+    crowded.expected_item = 0x2401;
+    CHECK(economy.apply(crowded).code == acnet::ResultCode::Capacity);
+
+    /* A grant is client-reachable; the operator gifts above it are not. */
+    CHECK(static_cast<std::uint8_t>(acnet::EconomyOpType::Grant) <= acnet::kMaximumClientEconomyOp);
+    CHECK(static_cast<std::uint8_t>(acnet::EconomyOpType::AdminGrantBells) > acnet::kMaximumClientEconomyOp);
+}
+
 void special_event_is_town_state() {
     acnet::SpecialEvent event;
     event.kind = 2; /* mEv_SPNPC_BROKER -- Redd */
@@ -5599,6 +5662,7 @@ int main() {
         {"villager poses come from one client", villager_poses_come_from_one_client},
         {"villager memories are account state", villager_memories_are_account_state},
         {"special event is town state", special_event_is_town_state},
+        {"npc gift is a server transaction", npc_gift_is_committed_by_the_server},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

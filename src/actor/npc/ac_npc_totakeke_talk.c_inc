@@ -32,7 +32,12 @@ static void aTTN_give_merody(NPC_TOTAKEKE_ACTOR* totakeke) {
         totakeke->post_roll_think = aNTT_THINK_POCKETS_FULL;
     } else {
         totakeke->post_roll_think = aNTT_THINK_GIVE_MERODY;
-        mPr_SetFreePossessionItem(Now_Private, ITM_MINIDISK_START + totakeke->song, mPr_ITEM_COND_NORMAL);
+        /* An NPC gift. Online the server commits it and the projection
+         * places it; writing the pocket here as well would grant it twice,
+         * and writing it here *instead* loses it at the next revision. */
+        if (!Net_RequestNpcGift(ITM_MINIDISK_START + totakeke->song, mPr_ITEM_COND_NORMAL)) {
+            mPr_SetFreePossessionItem(Now_Private, ITM_MINIDISK_START + totakeke->song, mPr_ITEM_COND_NORMAL);
+        }
         save->bitfield = aNTT_bitset_func(save->bitfield, aNTT_FLAG_AIRCHECK_RECEIVED);
         CLIP(mikanbox_clip)->check_merody_proc(totakeke->song);
     }

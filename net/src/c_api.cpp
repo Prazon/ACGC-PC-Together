@@ -1025,6 +1025,20 @@ extern "C" int acnet_client_request_sell(uint16_t slot_mask) {
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" int acnet_client_request_grant(uint16_t item, uint8_t condition) {
+    try {
+        if (!client || client->baseline() == nullptr || item == 0) return 0;
+        acnet::EconomyRequest request;
+        request.type = acnet::EconomyOpType::Grant;
+        request.idempotency = random_idempotency();
+        request.expected_inventory_revision = client->baseline()->inventory.revision;
+        request.expected_item = item;
+        request.amount = condition;
+        return request.idempotency.valid() &&
+               client->request(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" int acnet_client_request_economy_auto(uint8_t operation_type,
                                                    uint32_t expected_inventory_revision,
                                                    uint32_t expected_aux_revision,

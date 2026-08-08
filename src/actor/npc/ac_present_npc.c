@@ -1,3 +1,4 @@
+#include "m_net_hooks.h"
 #include "ac_present_npc.h"
 
 #include "m_common_data.h"
