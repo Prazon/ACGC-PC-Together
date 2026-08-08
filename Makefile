@@ -44,6 +44,7 @@ NET_SOURCES := \
 # exactly NET_OBJECTS to prove the shipped client needs nothing more.
 MOD_SOURCES := \
 	server/src/mod_registry.cpp \
+	server/src/mod_calendar.cpp \
 	server/src/mod_strings.cpp \
 	server/src/mod_host.cpp
 

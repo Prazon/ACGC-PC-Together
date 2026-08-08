@@ -20,6 +20,7 @@
 #include "acnet/zone.hpp"
 #include "acserver/persistence.hpp"
 #include "acserver/config.hpp"
+#include "acserver/mod_calendar.hpp"
 #include "acserver/mod_host.hpp"
 #include "acserver/mod_registry.hpp"
 #include "acserver/mod_strings.hpp"
@@ -992,6 +993,226 @@ void mod_strings_transcode_to_the_game_codepage() {
     CHECK(out.size() == 16);
     CHECK(out[15] == ' ');
     CHECK(!acserver::pad_to(out, 4, error));
+}
+
+/* Date maths a holiday depends on. Verified against real 2026 dates: getting
+ * these subtly wrong would put a town's holiday on the wrong day, and nothing
+ * downstream would notice. */
+void mod_calendar_date_helpers_are_correct() {
+    CHECK(acserver::weekday_of(2026, 8, 8) == 6);        /* Saturday */
+    CHECK(acserver::weekday_of(1970, 1, 1) == 4);        /* Thursday, the epoch */
+    CHECK(acserver::weekday_of(2000, 2, 29) == 2);       /* Tuesday, a leap day */
+
+    CHECK(acserver::days_in_month(2026, 2) == 28);
+    CHECK(acserver::days_in_month(2024, 2) == 29);       /* leap */
+    CHECK(acserver::days_in_month(1900, 2) == 28);       /* century, not leap */
+    CHECK(acserver::days_in_month(2000, 2) == 29);       /* 400-year, leap */
+    CHECK(acserver::days_in_month(2026, 11) == 30);
+
+    /* Equinoxes land on the 19th-21st and 21st-23rd respectively; the original
+     * game's sports fairs key off the same days. */
+    const int vernal = acserver::vernal_equinox_day(2026);
+    CHECK(vernal >= 19 && vernal <= 21);
+    const int autumn = acserver::autumn_equinox_day(2026);
+    CHECK(autumn >= 21 && autumn <= 23);
+}
+
+/* Every recurrence form a mod can declare, against known 2026 dates. */
+void mod_holidays_resolve_per_year() {
+    std::vector<acserver::ResolvedHoliday> out;
+    std::string error;
+
+    /* Fixed date. */
+    acserver::HolidaySpec fixed;
+    fixed.id = "lantern";
+    fixed.name_key = "n";
+    fixed.recurrence = acserver::Recurrence::FixedDate;
+    fixed.month = 10;
+    fixed.day = 7;
+    fixed.hour_from = 18;
+    fixed.hour_to = 22;
+    CHECK(acserver::resolve_holiday(fixed, 2026, out, error));
+    CHECK(out.size() == 1);
+    CHECK(out[0].month == 10 && out[0].day == 7);
+
+    /* Nth weekday: US Thanksgiving 2026 is Thursday 26 November. */
+    out.clear();
+    acserver::HolidaySpec nth;
+    nth.id = "harvest";
+    nth.name_key = "n";
+    nth.recurrence = acserver::Recurrence::NthWeekday;
+    nth.month = 11;
+    nth.week = 4;
+    nth.weekday = 4;                                     /* Thursday */
+    CHECK(acserver::resolve_holiday(nth, 2026, out, error));
+    CHECK(out.size() == 1);
+    CHECK(out[0].day == 26);
+
+    /* days_after is how the day-after-Thanksgiving sale is expressed. */
+    out.clear();
+    nth.days_after = 1;
+    CHECK(acserver::resolve_holiday(nth, 2026, out, error));
+    CHECK(out[0].day == 27);
+
+    /* Second Sunday in May 2026 is the 10th. */
+    out.clear();
+    acserver::HolidaySpec mothers;
+    mothers.id = "mothers";
+    mothers.name_key = "n";
+    mothers.recurrence = acserver::Recurrence::NthWeekday;
+    mothers.month = 5;
+    mothers.week = 2;
+    mothers.weekday = 0;                                 /* Sunday */
+    CHECK(acserver::resolve_holiday(mothers, 2026, out, error));
+    CHECK(out[0].day == 10);
+
+    /* Last Sunday in November 2026 is the 29th. */
+    out.clear();
+    acserver::HolidaySpec last;
+    last.id = "last";
+    last.name_key = "n";
+    last.recurrence = acserver::Recurrence::LastWeekday;
+    last.month = 11;
+    last.weekday = 0;
+    CHECK(acserver::resolve_holiday(last, 2026, out, error));
+    CHECK(out.size() == 1);
+    CHECK(out[0].day == 29);
+
+    /* Every Sunday in June 2026: the 7th, 14th, 21st and 28th. */
+    out.clear();
+    acserver::HolidaySpec weekly;
+    weekly.id = "tourney";
+    weekly.name_key = "n";
+    weekly.recurrence = acserver::Recurrence::EveryWeekday;
+    weekly.month = 6;
+    weekly.weekday = 0;
+    CHECK(acserver::resolve_holiday(weekly, 2026, out, error));
+    CHECK(out.size() == 4);
+    CHECK(out[0].day == 7 && out[1].day == 14 && out[2].day == 21 && out[3].day == 28);
+
+    /* A fifth Monday that does not exist yields no occurrence rather than a
+     * date wrapped into the next month. */
+    out.clear();
+    acserver::HolidaySpec fifth;
+    fifth.id = "fifth";
+    fifth.name_key = "n";
+    fifth.recurrence = acserver::Recurrence::NthWeekday;
+    fifth.month = 2;
+    fifth.week = 5;
+    fifth.weekday = 1;
+    CHECK(acserver::resolve_holiday(fifth, 2026, out, error));
+    CHECK(out.empty());
+
+    /* 29 February simply does not occur in a common year. */
+    out.clear();
+    acserver::HolidaySpec leap;
+    leap.id = "leap";
+    leap.name_key = "n";
+    leap.recurrence = acserver::Recurrence::FixedDate;
+    leap.month = 2;
+    leap.day = 29;
+    CHECK(acserver::resolve_holiday(leap, 2026, out, error));
+    CHECK(out.empty());
+    CHECK(acserver::resolve_holiday(leap, 2024, out, error));
+    CHECK(out.size() == 1 && out[0].day == 29);
+}
+
+/* Malformed specs are refused at registration, where the error can name the
+ * mod, rather than resolving to a nonsense date. */
+void mod_holiday_specs_are_validated() {
+    std::string error;
+    acserver::HolidaySpec spec;
+    spec.id = "x";
+    spec.name_key = "n";
+
+    spec.month = 13;
+    CHECK(!acserver::validate_holiday(spec, error));
+    spec.month = 10;
+
+    spec.day = 32;
+    CHECK(!acserver::validate_holiday(spec, error));
+    spec.day = 7;
+
+    spec.hour_from = 22;
+    spec.hour_to = 6;
+    CHECK(!acserver::validate_holiday(spec, error));
+    CHECK(error.find("hour_to") != std::string::npos);
+    spec.hour_from = 0;
+    spec.hour_to = 23;
+
+    spec.recurrence = acserver::Recurrence::NthWeekday;
+    spec.week = 6;
+    CHECK(!acserver::validate_holiday(spec, error));
+    spec.week = 2;
+    spec.weekday = 9;
+    CHECK(!acserver::validate_holiday(spec, error));
+    spec.weekday = 3;
+    CHECK(acserver::validate_holiday(spec, error));
+
+    spec.name_key.clear();
+    CHECK(!acserver::validate_holiday(spec, error));
+}
+
+/* Active and rumour windows, including the boundaries that decide whether a
+ * holiday fires at all. */
+void mod_holiday_windows_are_bounded() {
+    std::vector<acserver::ResolvedHoliday> out;
+    std::string error;
+    acserver::HolidaySpec spec;
+    spec.id = "lantern";
+    spec.name_key = "n";
+    spec.month = 10;
+    spec.day = 7;
+    spec.hour_from = 18;
+    spec.hour_to = 22;
+    spec.rumor_days_before = 6;
+    CHECK(acserver::resolve_holiday(spec, 2026, out, error));
+    const acserver::ResolvedHoliday& holiday = out[0];
+
+    acnet::TownDate date;
+    date.year = 2026;
+    date.month = 10;
+    date.day = 7;
+
+    date.hour = 17;
+    CHECK(!acserver::holiday_active_at(holiday, date));
+    date.hour = 18;                                       /* inclusive lower bound */
+    CHECK(acserver::holiday_active_at(holiday, date));
+    date.hour = 22;                                       /* inclusive upper bound */
+    CHECK(acserver::holiday_active_at(holiday, date));
+    date.hour = 23;
+    CHECK(!acserver::holiday_active_at(holiday, date));
+
+    date.day = 6;
+    date.hour = 20;
+    CHECK(!acserver::holiday_active_at(holiday, date));
+
+    /* Rumour runs the six days before, not the day itself. */
+    date.day = 7;
+    CHECK(!acserver::holiday_rumor_at(holiday, 2026, date));
+    date.day = 6;
+    CHECK(acserver::holiday_rumor_at(holiday, 2026, date));
+    date.day = 1;                                         /* six days before */
+    CHECK(acserver::holiday_rumor_at(holiday, 2026, date));
+    date.day = 30;                                        /* seven days before */
+    date.month = 9;
+    CHECK(!acserver::holiday_rumor_at(holiday, 2026, date));
+
+    /* A window that reaches back across a month boundary still works, because
+     * the comparison is in absolute days rather than day-of-month. */
+    std::vector<acserver::ResolvedHoliday> newyear;
+    acserver::HolidaySpec january;
+    january.id = "ny";
+    january.name_key = "n";
+    january.month = 1;
+    january.day = 3;
+    january.rumor_days_before = 5;
+    CHECK(acserver::resolve_holiday(january, 2026, newyear, error));
+    acnet::TownDate december;
+    december.year = 2025;
+    december.month = 12;
+    december.day = 30;
+    CHECK(acserver::holiday_rumor_at(newyear[0], 2026, december));
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -5492,6 +5713,10 @@ int main() {
         {"mod randomness is deterministic", mod_randomness_is_deterministic},
         {"one bad mod does not block the rest", mod_one_bad_mod_does_not_block_the_rest},
         {"mod strings transcode", mod_strings_transcode_to_the_game_codepage},
+        {"mod calendar date helpers", mod_calendar_date_helpers_are_correct},
+        {"mod holidays resolve per year", mod_holidays_resolve_per_year},
+        {"mod holiday specs are validated", mod_holiday_specs_are_validated},
+        {"mod holiday windows are bounded", mod_holiday_windows_are_bounded},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
