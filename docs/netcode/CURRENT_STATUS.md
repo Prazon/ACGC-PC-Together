@@ -1757,18 +1757,49 @@ refused to start on a checkpoint the *previous build* had written, which is
 exactly the failure that step exists to catch. The blob is length-prefixed so
 the case is recoverable: a version-16 roster is skipped rather than rejected and
 the next bootstrap re-adopts one. Checkpoints are at 17.
-### Still open
+### Phase three: conversation leases (protocol v27), and a bug from phase one
 
-- **Conversation leases remain unreachable, and deliberately so.** They are now
-  addressable -- villagers are registered entities and the roster gives the slot
-  -- but taking one properly means blocking `aNPC_act_talk_init_proc` until the
-  lease is granted, which is a wait state inside the NPC talk state machine.
-  Wiring it fire-and-forget would journal who holds each villager while still
-  letting both players talk, which is plumbing without the payoff; wiring it
-  blocking, unverified, risks breaking villager conversation outright. This
-  wants a disc in front of it.
-- **Per-player memories, schedules and positions.** Villagers stand at their
-  front doors server-side because the roster is the only position it has.
+**A refilled slot inherited the previous villager's memories.** The roster
+projection cleared only the identity when a slot changed hands, so a player's
+relationship with whoever moved out -- along with their contest quest and stored
+mail -- was silently reattributed to whoever moved in. The original calls
+`mNpc_ClearAnimalInfo` for exactly this and the projection now does too, but
+only when the character actually changes: doing it every projection would wipe
+every player's relationships whenever any villager anywhere altered the roster.
+
+**Leases are wired.** The earlier entry here said this needed a wait state
+inside the talk machine and wanted a disc first. That judgement was based on
+`aNPC_act_talk_init_proc` being the only hook; the actual gate is
+`aNPC_normal_talk_request`, which already returns a boolean its callers treat as
+"not now" and which runs *before* anything is started. Refusing there needs no
+wait state and has nothing to unwind, which is what made it safe to do.
+
+`NpcState::conversation_owner` is replicated so the check costs no round trip --
+it happens the instant a player presses A. Taking and releasing stay optimistic:
+two players who press within one round trip both still get a conversation, which
+is what happened before any of this existed. What the gate removes is the common
+case of walking up to somebody already mid-conversation.
+
+Worth recording: the first version of the release passed lease id 0, which
+`release_conversation` matches exactly and would never have accepted -- the
+villager would have stayed busy until timeout. Reading the authority caught it;
+no test would have.
+### Still open on villagers
+
+- **Positions and schedules.** This is now the largest villager gap and it is
+  visible: each client runs the NPC AI itself, so two players standing together
+  see the same villager in different places. The server cannot simulate it --
+  no pathfinding, no collision, no schedule tables -- so it needs the shape the
+  roster and move-ins already use, with a designated client simulating and the
+  server relaying. `ResourceKind::Npc` deltas are produced and decoded, and
+  villagers are registered entities, so the transport for it exists; what is
+  missing is choosing a host, a bounded position update, and making non-host
+  clients drive their NPC actors from replicated transforms instead of local AI.
+  That last part is deep in the NPC actor code and is the risky half.
+- **Per-player memories.** Account-scoped and currently local, which is
+  *correct* behaviour for a player who always plays from the same machine --
+  each player having their own friendship with each villager is what the
+  original does. The gap is portability between machines, not divergence.
 
 ## Compatibility note for the protocol version
 
