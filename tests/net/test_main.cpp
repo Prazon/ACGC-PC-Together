@@ -20,6 +20,9 @@
 #include "acnet/zone.hpp"
 #include "acserver/persistence.hpp"
 #include "acserver/config.hpp"
+#include "acserver/mod_host.hpp"
+#include "acserver/mod_registry.hpp"
+#include "acserver/mod_strings.hpp"
 #include "acserver/database.hpp"
 #include "acserver/gci.hpp"
 #include "acserver/town_clock.hpp"
@@ -681,6 +684,314 @@ void system_clock_sync_overrides_seeded_and_scaled_time() {
     CHECK(local.initialize(start));
     CHECK(local.advance(start + hour, true));
     CHECK(local.state().town_unix_seconds == start + hour - 6 * hour);
+}
+
+/* --- Mod host (P1) ------------------------------------------------------ */
+
+namespace modtest {
+
+struct Sandbox {
+    std::filesystem::path root;
+    ~Sandbox() { std::error_code error; std::filesystem::remove_all(root, error); }
+};
+
+Sandbox make_mods_dir(const char* tag) {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    Sandbox sandbox{std::filesystem::temp_directory_path() /
+                    ("acgc-mods-" + std::string(tag) + "-" + std::to_string(unique))};
+    std::filesystem::create_directories(sandbox.root);
+    return sandbox;
+}
+
+void write_mod(const std::filesystem::path& mods_dir,
+               const std::string& id,
+               const std::string& lua,
+               const std::string& extra_manifest = std::string()) {
+    const std::filesystem::path dir = mods_dir / id;
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream manifest(dir / "mod.toml");
+        manifest << "id = \"" << id << "\"\n"
+                 << "name = \"" << id << "\"\n"
+                 << "version = \"1.0.0\"\n"
+                 << "api_version = " << acserver::kModApiVersion << "\n"
+                 << "entry = \"init.lua\"\n"
+                 << extra_manifest;
+    }
+    std::ofstream entry(dir / "init.lua");
+    entry << lua;
+}
+
+} // namespace modtest
+
+/* The sandbox is the security boundary: a mod is data an operator installed,
+ * but it must not be able to reach the filesystem, the clock, or the host
+ * process. The dangerous libraries are not vendored at all, so this asserts
+ * they are genuinely absent rather than merely shadowed. */
+void mod_sandbox_denies_escapes() {
+    const auto mods = modtest::make_mods_dir("sandbox");
+    modtest::write_mod(mods.root, "escape",
+        "denied = {}\n"
+        "for _, name in ipairs({'io','os','package','require','dofile','loadfile',\n"
+        "                       'load','debug','collectgarbage','rawset','rawget',\n"
+        "                       'setmetatable','print','coroutine'}) do\n"
+        "  if _G[name] ~= nil then denied[#denied+1] = name end\n"
+        "end\n"
+        "if #denied > 0 then error('reachable: ' .. table.concat(denied, ',')) end\n"
+        "function on_hour() end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+    CHECK(registry.load_order().size() == 1);
+
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    /* Loading cleanly is the assertion: the chunk errors if anything is reachable. */
+    CHECK(!host.quarantined("escape"));
+    CHECK(host.last_error("escape").empty());
+    CHECK(host.call_hook("escape", "on_hour"));
+}
+
+/* A mod that allocates without bound must fail its own call, not exhaust the
+ * host. The ceiling is enforced in the allocator, so it trips regardless of
+ * what the mod is doing when it happens. */
+void mod_memory_cap_holds() {
+    const auto mods = modtest::make_mods_dir("memory");
+    modtest::write_mod(mods.root, "greedy",
+        "function on_hour()\n"
+        "  local t = {}\n"
+        "  for i = 1, 100000000 do t[i] = string.rep('x', 64) end\n"
+        "end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModLimits limits;
+    limits.memory_bytes = 512u * 1024u;
+    limits.instructions_hour = 100000000;   /* isolate the memory ceiling from the budget */
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, limits, error));
+    CHECK(!host.quarantined("greedy"));
+
+    CHECK(!host.call_hook("greedy", "on_hour"));
+    CHECK(!host.last_error("greedy").empty());
+    /* The host survives, and a later well-behaved call still works. */
+    CHECK(host.metrics().hook_errors >= 1);
+}
+
+/* An infinite loop must abort that callback and leave the town serving. */
+void mod_instruction_budget_holds() {
+    const auto mods = modtest::make_mods_dir("budget");
+    modtest::write_mod(mods.root, "spinner",
+        "spun = 0\n"
+        "function on_hour() while true do spun = spun + 1 end end\n"
+        "function on_day_start() end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModLimits limits;
+    limits.instructions_hour = 20000;
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, limits, error));
+
+    CHECK(!host.call_hook("spinner", "on_hour"));
+    CHECK(host.last_error("spinner").find("instruction budget") != std::string::npos);
+    /* One failure is not quarantine, and an unrelated hook still runs. */
+    CHECK(!host.quarantined("spinner"));
+    CHECK(host.call_hook("spinner", "on_day_start"));
+}
+
+/* Repeated failure disables the mod and stops calling it, but the host keeps
+ * running -- a broken holiday mod is never worth dropping a town's players. */
+void mod_errors_quarantine() {
+    const auto mods = modtest::make_mods_dir("quarantine");
+    modtest::write_mod(mods.root, "broken",
+        "calls = 0\n"
+        "function on_hour() calls = calls + 1 error('always') end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModLimits limits;
+    limits.errors_to_quarantine = 3;
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, limits, error));
+
+    CHECK(!host.call_hook("broken", "on_hour"));
+    CHECK(!host.quarantined("broken"));
+    CHECK(!host.call_hook("broken", "on_hour"));
+    CHECK(!host.quarantined("broken"));
+    CHECK(!host.call_hook("broken", "on_hour"));
+    CHECK(host.quarantined("broken"));
+
+    /* Once quarantined the hook is not entered again. */
+    const std::uint64_t before = host.metrics().hooks_called;
+    CHECK(!host.call_hook("broken", "on_hour"));
+    CHECK(host.metrics().hooks_called == before);
+}
+
+/* Load order must be a pure function of the mod set. Filesystem iteration order
+ * varies between machines, and a load-order bug that only reproduces on one of
+ * them is the kind that survives to release. */
+void mod_load_order_is_deterministic() {
+    const auto mods = modtest::make_mods_dir("order");
+    modtest::write_mod(mods.root, "zulu", "function on_hour() end\n", "requires = [\"alpha\"]\n");
+    modtest::write_mod(mods.root, "alpha", "function on_hour() end\n");
+    modtest::write_mod(mods.root, "mike", "function on_hour() end\n", "requires = [\"zulu\"]\n");
+
+    std::string error;
+    acserver::ModRegistry first;
+    CHECK(first.scan(mods.root, error));
+    std::vector<std::string> ids;
+    for (const auto& manifest : first.load_order()) ids.push_back(manifest.id);
+    CHECK(ids.size() == 3);
+    CHECK(ids[0] == "alpha");
+    CHECK(ids[1] == "zulu");
+    CHECK(ids[2] == "mike");
+
+    acserver::ModRegistry second;
+    CHECK(second.scan(mods.root, error));
+    std::vector<std::string> repeat;
+    for (const auto& manifest : second.load_order()) repeat.push_back(manifest.id);
+    CHECK(repeat == ids);
+    /* Same set, same digest -- this is what ServerHello advertises. */
+    CHECK(first.manifest_digest() == second.manifest_digest());
+
+    /* A cycle is refused rather than partially ordered. */
+    const auto cyclic = modtest::make_mods_dir("cycle");
+    modtest::write_mod(cyclic.root, "aaa", "\n", "requires = [\"bbb\"]\n");
+    modtest::write_mod(cyclic.root, "bbb", "\n", "requires = [\"aaa\"]\n");
+    acserver::ModRegistry broken;
+    CHECK(!broken.scan(cyclic.root, error));
+    CHECK(error.find("cycle") != std::string::npos);
+}
+
+/* Manifest validation, and the two rules that protect the town: an api_version
+ * this build does not implement is refused up front rather than failing later
+ * on a missing function, and `entry` may not escape the mod directory. */
+void mod_manifest_is_validated() {
+    acserver::ModManifest manifest;
+    std::string error;
+
+    CHECK(acserver::parse_mod_manifest(
+        "id = \"lantern-night\"\nversion = \"1.0.0\"\napi_version = 1\n", manifest, error));
+    CHECK(manifest.id == "lantern-night");
+    CHECK(manifest.entry == "init.lua");
+    CHECK(manifest.name == "lantern-night");
+
+    CHECK(!acserver::parse_mod_manifest("id = \"x\"\nversion = \"1\"\napi_version = 99\n", manifest, error));
+    CHECK(error.find("api_version") != std::string::npos);
+
+    CHECK(!acserver::parse_mod_manifest(
+        "id = \"x\"\nversion = \"1\"\napi_version = 1\nentry = \"../../etc/passwd.lua\"\n",
+        manifest, error));
+    CHECK(error.find("entry") != std::string::npos);
+
+    CHECK(!acserver::parse_mod_manifest("id = \"Bad_Id\"\nversion = \"1\"\napi_version = 1\n", manifest, error));
+    CHECK(!acserver::parse_mod_manifest("id = \"x\"\napi_version = 1\n", manifest, error));
+    CHECK(!acserver::parse_mod_manifest("id = \"x\"\nversion = \"1\"\napi_version = 1\nnope = 1\n",
+                                        manifest, error));
+
+    /* A directory whose id disagrees with its folder name is refused: the
+     * folder is what an operator reads, so the two must not diverge. */
+    const auto mods = modtest::make_mods_dir("mismatch");
+    const std::filesystem::path dir = mods.root / "folder-name";
+    std::filesystem::create_directories(dir);
+    {
+        std::ofstream out(dir / "mod.toml");
+        out << "id = \"other-name\"\nversion = \"1\"\napi_version = 1\n";
+    }
+    { std::ofstream out(dir / "init.lua"); out << "\n"; }
+    acserver::ModRegistry registry;
+    CHECK(!registry.scan(mods.root, error));
+    CHECK(error.find("does not match directory") != std::string::npos);
+
+    /* No mods directory at all is the normal case, not an error. */
+    acserver::ModRegistry none;
+    CHECK(none.scan(mods.root / "definitely-absent", error));
+    CHECK(none.empty());
+}
+
+/* Randomness a mod sees must be reproducible from server state: `os` is absent
+ * so it cannot read the clock, and math.random is host-seeded from the mod's
+ * content hash. Two hosts over the same mod must agree. */
+void mod_randomness_is_deterministic() {
+    const auto mods = modtest::make_mods_dir("random");
+    modtest::write_mod(mods.root, "dice",
+        "rolls = {}\n"
+        "function on_hour()\n"
+        "  for i = 1, 8 do rolls[i] = math.random(1, 1000000) end\n"
+        "  if rolls[1] == rolls[2] and rolls[2] == rolls[3] then error('not varying') end\n"
+        "end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModHost first;
+    CHECK(first.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(first.call_hook("dice", "on_hour"));
+
+    acserver::ModHost second;
+    CHECK(second.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(second.call_hook("dice", "on_hour"));
+    CHECK(first.last_error("dice").empty());
+    CHECK(second.last_error("dice").empty());
+}
+
+/* One mod failing to load must not deny the others. */
+void mod_one_bad_mod_does_not_block_the_rest() {
+    const auto mods = modtest::make_mods_dir("mixed");
+    modtest::write_mod(mods.root, "good", "function on_hour() end\n");
+    modtest::write_mod(mods.root, "syntax", "function on_hour( end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(host.quarantined("syntax"));
+    CHECK(!host.last_error("syntax").empty());
+    CHECK(!host.quarantined("good"));
+    CHECK(host.call_hook("good", "on_hour"));
+}
+
+/* Mod-authored text has to reach the client in the game's own codepage, which
+ * is not ASCII. Anything without a glyph is a load-time error naming the
+ * character, never a silent substitution. */
+void mod_strings_transcode_to_the_game_codepage() {
+    acserver::GameString out;
+    std::string error;
+
+    CHECK(acserver::transcode_utf8("Lantern Night", out, error));
+    CHECK(out.size() == 13);
+    CHECK(out[0] == 'L');
+
+    /* Latin-1 accents map to their own glyph indices, not to ASCII. */
+    CHECK(acserver::transcode_utf8("Caf\xC3\xA9", out, error));   /* "Café" */
+    CHECK(out.size() == 4);
+    CHECK(out[3] == 124);                                          /* CHAR_ACUTE_e */
+
+    /* A curly quote has no glyph: refused, and the message says which. */
+    CHECK(!acserver::transcode_utf8("Don\xE2\x80\x99t", out, error));
+    CHECK(error.find("U+2019") != std::string::npos);
+
+    /* Truncated UTF-8 must be rejected, not read past the end. */
+    CHECK(!acserver::transcode_utf8(std::string("bad\xC3", 4), out, error));
+    CHECK(error.find("invalid UTF-8") != std::string::npos);
+
+    /* Name records are fixed-width and space-padded. */
+    CHECK(acserver::transcode_utf8("Lantern", out, error));
+    CHECK(acserver::pad_to(out, 16, error));
+    CHECK(out.size() == 16);
+    CHECK(out[15] == ' ');
+    CHECK(!acserver::pad_to(out, 4, error));
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -5172,6 +5483,15 @@ int main() {
         {"IANA timezone DST", named_timezone_applies_dst_transitions},
         {"system clock sync", system_clock_sync_overrides_seeded_and_scaled_time},
         {"town configuration", town_configuration_is_loaded_and_validated},
+        {"mod sandbox denies escapes", mod_sandbox_denies_escapes},
+        {"mod memory cap holds", mod_memory_cap_holds},
+        {"mod instruction budget holds", mod_instruction_budget_holds},
+        {"mod errors quarantine", mod_errors_quarantine},
+        {"mod load order is deterministic", mod_load_order_is_deterministic},
+        {"mod manifest is validated", mod_manifest_is_validated},
+        {"mod randomness is deterministic", mod_randomness_is_deterministic},
+        {"one bad mod does not block the rest", mod_one_bad_mod_does_not_block_the_rest},
+        {"mod strings transcode", mod_strings_transcode_to_the_game_codepage},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},

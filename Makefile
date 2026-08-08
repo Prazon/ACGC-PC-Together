@@ -2,7 +2,7 @@ CXX ?= g++
 CC ?= gcc
 BUILD_DIR ?= build/netcode
 
-CPPFLAGS := -Inet/include -Iserver/include -Ipc/include
+CPPFLAGS := -Inet/include -Iserver/include -Ipc/include -Ithird_party/lua
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wpedantic -Werror -MMD -MP
 CFLAGS ?= -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror -MMD -MP
 LDFLAGS ?=
@@ -39,7 +39,19 @@ NET_SOURCES := \
 	server/src/town_runtime.cpp \
 	server/src/town_state.cpp
 
+# Server-only: the Lua host and the vendored interpreter. Deliberately NOT part
+# of NET_SOURCES -- the client never runs mod code, and `client-link` links
+# exactly NET_OBJECTS to prove the shipped client needs nothing more.
+MOD_SOURCES := \
+	server/src/mod_registry.cpp \
+	server/src/mod_strings.cpp \
+	server/src/mod_host.cpp
+
+LUA_SOURCES := $(wildcard third_party/lua/*.c)
+
 NET_OBJECTS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(NET_SOURCES))
+MOD_OBJECTS := $(patsubst %.cpp,$(BUILD_DIR)/%.o,$(MOD_SOURCES))
+LUA_OBJECTS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(LUA_SOURCES))
 TEST_OBJECT := $(BUILD_DIR)/tests/net/test_main.o
 NETWORK_CONFIG_OBJECT := $(BUILD_DIR)/pc/src/pc_network_config.o
 SERVER_OBJECTS := $(BUILD_DIR)/server/src/main.o
@@ -93,11 +105,11 @@ sanitize:
 		CFLAGS="-std=c11 -O1 -g -Wall -Wextra -Wpedantic -Werror -MMD -MP -fno-omit-frame-pointer -fsanitize=address,undefined" \
 		LDFLAGS="-fsanitize=address,undefined"
 
-$(BUILD_DIR)/netcode_tests: $(NET_OBJECTS) $(NETWORK_CONFIG_OBJECT) $(TEST_OBJECT)
+$(BUILD_DIR)/netcode_tests: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(NETWORK_CONFIG_OBJECT) $(TEST_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-$(BUILD_DIR)/AnimalCrossingServer: $(NET_OBJECTS) $(SERVER_OBJECTS)
+$(BUILD_DIR)/AnimalCrossingServer: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(SERVER_OBJECTS)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -125,7 +137,16 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
+# Vendored Lua gets its own flags: upstream is not clean under -Wpedantic
+# -Werror, and patching it would create a merge burden on every update.
+# See third_party/lua/VENDORING.md.
+LUA_CFLAGS := -std=c99 -O2 -g -DLUA_USE_POSIX -MMD -MP
+
+$(BUILD_DIR)/third_party/lua/%.o: third_party/lua/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(LUA_CFLAGS) -Ithird_party/lua -c $< -o $@
+
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
+-include $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
