@@ -569,6 +569,11 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
                                  return true;
                              }, replay, error)) return false;
     if (!latest_state.empty() && !decode_state(latest_state, error)) return false;
+    /* A restart restores the roster from the checkpoint but not the NPC
+     * entities derived from it, and a lease can only be taken on a registered
+     * entity -- so without this, villagers would be unaddressable until the
+     * next bootstrap. */
+    if (!sync_villager_npcs(error)) return false;
     if (!configure_zone_topology(error)) return false;
     constexpr std::int64_t hour_seconds = 60 * 60;
     constexpr std::int64_t day_seconds = 24 * hour_seconds;
@@ -1397,6 +1402,7 @@ bool TownRuntime::dispatch(Connection& connection,
                                      std::to_string(connection.account));
                 }
                 if (villagers_adopted) {
+                    if (!sync_villager_npcs(error)) return false;
                     record_event("Villager roster adopted from resident account " +
                                  std::to_string(connection.account));
                     acnet::ReplicationDelta delta;
@@ -2236,6 +2242,43 @@ bool TownRuntime::grant_bank_bells(acnet::AccountId account, std::uint64_t amoun
                              " balance=" + std::to_string(result.balance),
                          wall_unix_seconds(), error)) return false;
     record_event("operator granted " + std::to_string(amount) + " bells to account " + std::to_string(account));
+    return true;
+}
+
+bool TownRuntime::sync_villager_npcs(std::string& error) {
+    error.clear();
+    for (std::size_t slot = 0; slot < acnet::kVillagerSlots; ++slot) {
+        const acnet::EntityId entity = acnet::villager_entity(slot);
+        const acnet::VillagerSlot& source = villagers_.slots[slot];
+        if (!source.occupied) {
+            /* remove_npc on an absent entity is a no-op, so a slot that was
+             * always empty costs nothing and one that just emptied is cleaned
+             * up -- along with any lease held on it. */
+            npcs_.remove_npc(entity);
+            continue;
+        }
+        if (acnet::NpcState* existing = npcs_.npc(entity)) {
+            /* The villager is already registered; only their house may have
+             * moved. Position is otherwise schedule state, which the server
+             * does not simulate yet. */
+            existing->zone = acnet::kTownFieldZone;
+            continue;
+        }
+        acnet::NpcState npc;
+        npc.entity = entity;
+        npc.zone = acnet::kTownFieldZone;
+        /* Placed at their front door until the server simulates schedules. The
+         * house acre and unit are the only position the roster carries. */
+        npc.transform.position = {static_cast<float>(source.villager.home_block_x * 16 +
+                                                     source.villager.home_ut_x) * 40.0F,
+                                  0.0F,
+                                  static_cast<float>(source.villager.home_block_z * 16 +
+                                                     source.villager.home_ut_z) * 40.0F};
+        if (!npcs_.add_npc(npc)) {
+            error = "failed to register villager " + std::to_string(slot);
+            return false;
+        }
+    }
     return true;
 }
 

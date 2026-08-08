@@ -300,6 +300,9 @@ private:
     /* The noticeboard. The server owns the FIFO eviction, which is the part two
      * simultaneous posters contend over. */
     acnet::VillagerRoster villagers_;
+    /* Registers one NpcState per occupied roster slot so villagers are real
+     * server entities -- which is what conversation leases address. */
+    bool sync_villager_npcs(std::string& error);
     acnet::NoticeBoard notices_;
     std::unordered_map<std::uint64_t, acnet::NoticePostResult> notice_idempotency_;
     /* The fruit this town grows, reported once by the bootstrapping client.

@@ -204,4 +204,13 @@ struct VillagerRoster {
  * The same rule the resident roster follows. */
 bool valid_villager_slot(const VillagerSlot& slot);
 
+/* A villager's server entity is derived from its roster slot rather than looked
+ * up, so both ends compute the same identity from the same roster with no table
+ * to keep in step. The base is clear of the service NPCs the runtime registers
+ * (1000 shopkeeper, 1001 islander). */
+constexpr EntityId kVillagerEntityBase = 2000;
+constexpr EntityId villager_entity(std::size_t slot) {
+    return kVillagerEntityBase + static_cast<EntityId>(slot);
+}
+
 } // namespace acnet

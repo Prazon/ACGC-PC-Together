@@ -1682,6 +1682,66 @@ behind: conversation leases are built but cannot be reached without an NPC
 identity mapping, and villager gifts, favours and friendship are the reason
 finding 2 above matters at all.
 
+## Villagers are server-owned, phase one (2026-08-08)
+
+`Save_t.animals[]` was the largest remaining source of permanent divergence, and
+it hid well: town generation seeds its roll from the town seed, so a *fresh*
+save on every machine produced the same fifteen villagers. From the second boot
+onward each client evolved its own copy alone -- `mNpc_Grow` moved somebody in
+behind a local `RANDOM(100)`, move-outs came from local dialogue, and clothes,
+mood and catchphrases drifted apart until two players no longer agreed about who
+lived in the town.
+
+### What landed (protocol v25)
+
+The **roster** is town state: fifteen slots, each carrying the identity
+(`npc_id`, origin town, `name_id`, personality), the house acre and unit, the
+catchphrase, shirt and pending shirt, pattern and umbrella ids, mood, the
+`is_home`/`moved_in`/`removing` flags, previous town, the spawning player's
+name, and the fourteen inter-villager relations. `mNpc_Grow` returns early while
+connected.
+
+**The server does not invent villagers.** It holds no name, species or
+personality tables and is not allowed to, so the roster rides the
+`TownBootstrap`: the first resident's generation is the source, through the same
+codec the baseline uses so the two cannot disagree about its shape. Once adopted
+it is the server's and a later bootstrap cannot overwrite it. Because clients
+send a bootstrap on *every* login (that is also how appearance is saved), a town
+whose checkpoint predates this adopts its roster on the next login rather than
+needing to be recreated.
+
+Each occupied slot is now a real server NPC entity at `kVillagerEntityBase +
+slot`, derived rather than looked up so both ends compute the same identity from
+the same roster. That is re-synced after a checkpoint load as well, since a
+restart restores the roster but not the entities derived from it. The console
+consequently counts the town's actual neighbours instead of the two placeholder
+service NPCs, so a fresh town reads 0 rather than a misleading 1.
+
+`Animal_c::memories` is deliberately **not** carried. It is the per-player
+relationship record -- seven eighths of the 0x988-byte struct -- and it is
+account-scoped rather than town-scoped; projecting it from a town-wide roster
+would hand every player the same friendships. Vacating a slot therefore clears
+the identity and nothing else.
+
+### What phase one deliberately leaves
+
+- **Move-ins and move-outs.** Nobody moves in or out online now: `mNpc_Grow` is
+  off and the server does not yet make the decision. That is stable rather than
+  divergent, which is the improvement, but it is not the finished behaviour. The
+  server cannot pick *which* villager moves in without the character tables it
+  is not allowed to hold, so this needs the same shape the bootstrap uses -- the
+  server decides *that* somebody moves, a client supplies *who*.
+- **Conversation leases remain unreachable, and deliberately so.** They are now
+  addressable -- villagers are registered entities and the roster gives the slot
+  -- but taking one properly means blocking `aNPC_act_talk_init_proc` until the
+  lease is granted, which is a wait state inside the NPC talk state machine.
+  Wiring it fire-and-forget would journal who holds each villager while still
+  letting both players talk, which is plumbing without the payoff; wiring it
+  blocking, unverified, risks breaking villager conversation outright. This
+  wants a disc in front of it.
+- **Per-player memories, schedules and positions.** Villagers stand at their
+  front doors server-side because the roster is the only position it has.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as
