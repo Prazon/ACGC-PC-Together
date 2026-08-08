@@ -159,6 +159,15 @@ int Net_TownTuneAuthoritative(void);
 /* Retune the town. The accepted result and the broadcast both settle it. */
 int Net_RequestTownTune(u64 notes);
 void Net_ApplyAuthoritativeTownTune(void);
+
+/* TRUE once the town has reported its noticeboard. Save_Get(noticeboard) is
+ * then a projection: the board exists so townmates can leave each other notes,
+ * which a local copy cannot do. */
+int Net_NoticeBoardAuthoritative(void);
+/* Append a post. The server owns the eviction when the board is full, so two
+ * players posting at once cannot each drop a different old post. */
+int Net_RequestNoticePost(const void* post, u32 size);
+void Net_ApplyAuthoritativeNotices(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -218,6 +227,9 @@ void Net_ApplyAuthoritativeTownTune(void);
 #define Net_TownTuneAuthoritative() FALSE
 #define Net_RequestTownTune(notes) FALSE
 #define Net_ApplyAuthoritativeTownTune() ((void)0)
+#define Net_NoticeBoardAuthoritative() FALSE
+#define Net_RequestNoticePost(post, size) FALSE
+#define Net_ApplyAuthoritativeNotices() ((void)0)
 #endif
 
 #ifdef __cplusplus

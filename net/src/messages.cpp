@@ -755,4 +755,46 @@ bool decode(const std::vector<std::uint8_t>& input, TownTuneResult& value) {
     return true;
 }
 
+bool encode(const NoticePostRequest& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(kMaximumTransferBytes);
+    if (value.account == 0 || !value.idempotency.valid() || value.expected_revision == 0 ||
+        !writer.u64(value.account) || !writer.u64(value.idempotency.high) ||
+        !writer.u64(value.idempotency.low) || !writer.u32(value.expected_revision) ||
+        !writer.bytes(value.post.message.data(), value.post.message.size()) ||
+        !writer.bytes(value.post.posted_time.data(), value.post.posted_time.size())) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, NoticePostRequest& value) {
+    ByteReader reader(input);
+    return reader.u64(value.account) && reader.u64(value.idempotency.high) &&
+           reader.u64(value.idempotency.low) && reader.u32(value.expected_revision) &&
+           reader.bytes(value.post.message.data(), value.post.message.size()) &&
+           reader.bytes(value.post.posted_time.data(), value.post.posted_time.size()) &&
+           value.account != 0 && value.idempotency.valid() && value.expected_revision != 0 &&
+           reader.finished();
+}
+
+bool encode(const NoticePostResult& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!writer.u16(static_cast<std::uint16_t>(value.code)) || !writer.u64(value.idempotency.high) ||
+        !writer.u64(value.idempotency.low) || !writer.u32(value.revision) ||
+        !writer.u8(value.replayed ? 1 : 0)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, NoticePostResult& value) {
+    ByteReader reader(input);
+    std::uint16_t code = 0;
+    std::uint8_t replayed = 0;
+    if (!reader.u16(code) || code > static_cast<std::uint16_t>(ResultCode::InternalError) ||
+        !reader.u64(value.idempotency.high) || !reader.u64(value.idempotency.low) ||
+        !reader.u32(value.revision) || !reader.u8(replayed) || replayed > 1 || !reader.finished()) return false;
+    value.code = static_cast<ResultCode>(code);
+    value.replayed = replayed != 0;
+    return true;
+}
+
 } // namespace acnet

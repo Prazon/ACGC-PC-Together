@@ -1687,6 +1687,58 @@ void shop_tier_is_earned_and_server_owned() {
     CHECK(!acnet::encode_shop_delta(bad, payload));
 }
 
+void notice_board_is_town_state() {
+    acnet::NoticeBoard board;
+    board.revision = 3;
+    acnet::NoticePost first;
+    first.message[0] = 'A';
+    first.posted_time[0] = 0x20;
+    board.posts.push_back(first);
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_notice_delta(board, payload));
+    acnet::NoticeBoard decoded;
+    CHECK(acnet::decode_notice_delta(payload, decoded));
+    CHECK(decoded.revision == 3);
+    CHECK(decoded.posts.size() == 1);
+    CHECK(decoded.posts[0] == first);
+
+    /* The board is bounded at mNtc_BOARD_POST_COUNT; one more is a producer
+     * bug, not something a reader should have to trim. */
+    acnet::NoticeBoard oversized;
+    oversized.revision = 1;
+    oversized.posts.resize(acnet::kNoticeBoardPosts + 1);
+    CHECK(!acnet::encode_notice_delta(oversized, payload));
+
+    acnet::NoticeBoard unset;
+    unset.revision = 0;
+    CHECK(!acnet::encode_notice_delta(unset, payload));
+
+    acnet::NoticePostRequest request;
+    request.account = 9;
+    request.idempotency = {1, 2};
+    request.expected_revision = 3;
+    request.post = first;
+    CHECK(acnet::encode(request, payload));
+    acnet::NoticePostRequest decoded_request;
+    CHECK(acnet::decode(payload, decoded_request));
+    CHECK(decoded_request.post == first);
+    CHECK(decoded_request.expected_revision == 3);
+
+    acnet::NoticePostRequest stale = request;
+    stale.expected_revision = 0;
+    CHECK(!acnet::encode(stale, payload));
+
+    acnet::NoticePostResult result;
+    result.code = acnet::ResultCode::Ok;
+    result.idempotency = {1, 2};
+    result.revision = 4;
+    CHECK(acnet::encode(result, payload));
+    acnet::NoticePostResult decoded_result;
+    CHECK(acnet::decode(payload, decoded_result));
+    CHECK(decoded_result.revision == 4);
+    CHECK(decoded_result.code == acnet::ResultCode::Ok);
+}
+
 void town_tune_is_town_state() {
     /* Sixteen four-bit notes packed as mMld_TransformMelodyData_u8_2_u64 packs
      * them. Every nibble value is a note the game will play, so the only thing
@@ -5249,6 +5301,7 @@ int main() {
         {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
         {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
+        {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},
         {"shop shelf replicates town-wide", shop_shelf_replicates_town_wide},

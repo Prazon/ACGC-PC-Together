@@ -1,5 +1,7 @@
 #include "m_notice.h"
 
+#include "m_net_hooks.h"
+
 #include "lb_rtc.h"
 #include "lb_reki.h"
 #include "m_time.h"
@@ -233,7 +235,20 @@ extern int mNtc_notice_write_num() {
 }
 
 extern void mNtc_notice_write(mNtc_board_post_c* new_post) {
-    int write_num = mNtc_notice_write_num();
+    int write_num;
+
+    /* One town, one board -- it exists so townmates can leave each other notes,
+     * which a local copy cannot do. Online the server holds the posts and owns
+     * the eviction when the board is full, which is the part two simultaneous
+     * posters contend over: done locally they would each drop a different old
+     * post and disagree about the board afterwards.
+     * Net_ApplyAuthoritativeNotices projects the accepted board back. */
+    if (Net_NoticeBoardAuthoritative()) {
+        Net_RequestNoticePost(new_post, (u32)sizeof(*new_post));
+        return;
+    }
+
+    write_num = mNtc_notice_write_num();
     if (write_num == mNtc_BOARD_POST_COUNT) {
         mNtc_board_post_c* post = Save_Get(noticeboard);
         int i;

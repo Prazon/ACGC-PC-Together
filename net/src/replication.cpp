@@ -331,6 +331,41 @@ bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& de
            delta.house_id != 0 && delta.original_slot < kOriginalResidentSlots && reader.finished();
 }
 
+static bool encode_notices(ByteWriter& writer, const NoticeBoard& board) {
+    if (board.revision == 0 || board.posts.size() > kNoticeBoardPosts) return false;
+    if (!writer.u8(static_cast<std::uint8_t>(board.posts.size())) || !writer.u32(board.revision)) return false;
+    for (const NoticePost& post : board.posts) {
+        if (!writer.bytes(post.message.data(), post.message.size()) ||
+            !writer.bytes(post.posted_time.data(), post.posted_time.size())) return false;
+    }
+    return true;
+}
+
+static bool decode_notices(ByteReader& reader, NoticeBoard& board) {
+    std::uint8_t count = 0;
+    if (!reader.u8(count) || !reader.u32(board.revision) || count > kNoticeBoardPosts ||
+        board.revision == 0) return false;
+    board.posts.clear();
+    board.posts.resize(count);
+    for (NoticePost& post : board.posts) {
+        if (!reader.bytes(post.message.data(), post.message.size()) ||
+            !reader.bytes(post.posted_time.data(), post.posted_time.size())) return false;
+    }
+    return true;
+}
+
+bool encode_notice_delta(const NoticeBoard& board, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(kMaximumBaselineBytes);
+    if (!encode_notices(writer, board)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_notice_delta(const std::vector<std::uint8_t>& input, NoticeBoard& board) {
+    ByteReader reader(input);
+    return decode_notices(reader, board) && reader.finished();
+}
+
 bool encode_town_tune_delta(const TownTune& tune, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
     if (tune.revision == 0 || !writer.u64(tune.notes) || !writer.u32(tune.revision)) return false;
@@ -416,6 +451,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (!encode_turnips(writer, baseline.turnips)) return false;
     if (baseline.town_tune.revision == 0) return false;
     if (!writer.u64(baseline.town_tune.notes) || !writer.u32(baseline.town_tune.revision)) return false;
+    if (!encode_notices(writer, baseline.notices)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -513,6 +549,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     if (!decode_turnips(reader, baseline.turnips)) return false;
     if (!reader.u64(baseline.town_tune.notes) || !reader.u32(baseline.town_tune.revision) ||
         baseline.town_tune.revision == 0) return false;
+    if (!decode_notices(reader, baseline.notices)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
@@ -755,7 +792,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
         delta.kind == ResourceKind::Museum ||
         delta.kind == ResourceKind::Gyroid ||
         delta.kind == ResourceKind::Turnip ||
-        delta.kind == ResourceKind::TownTune) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::TownTune ||
+        delta.kind == ResourceKind::Notice) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

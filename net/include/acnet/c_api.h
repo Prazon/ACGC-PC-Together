@@ -405,6 +405,25 @@ uint32_t acnet_client_town_tune_revision(void);
 int acnet_client_request_town_tune(uint64_t notes);
 int acnet_client_take_town_tune_result(uint16_t* result_code, uint64_t* notes);
 
+/* The town noticeboard. Posts are oldest first and dense: `count` is how many
+ * slots are occupied, and the client fills the rest with the game's own
+ * empty-slot sentinel as it projects. Message bytes are opaque, in the game's
+ * font encoding, like mail text. */
+#define ACNET_NOTICE_MESSAGE_BYTES 192
+#define ACNET_NOTICE_TIME_BYTES 8
+#define ACNET_NOTICE_POSTS 15
+
+typedef struct AcNetNoticePost {
+    uint8_t message[ACNET_NOTICE_MESSAGE_BYTES];
+    uint8_t posted_time[ACNET_NOTICE_TIME_BYTES];
+} AcNetNoticePost;
+
+size_t acnet_client_notices(AcNetNoticePost* output, size_t capacity);
+uint32_t acnet_client_notice_revision(void);
+/* Append a post. The server owns the eviction when the board is full. */
+int acnet_client_request_notice_post(const AcNetNoticePost* post);
+int acnet_client_take_notice_result(uint16_t* result_code);
+
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no
  * registered house or no baseline has arrived yet. */

@@ -1185,6 +1185,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.museum = economy_.museum();
     baseline.turnips = turnips_;
     baseline.town_tune = town_tune_;
+    baseline.notices = notices_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1796,6 +1797,47 @@ bool TownRuntime::dispatch(Connection& connection,
                     !send_baseline(active.second, monotonic_ms, error)) return false;
             }
             return true;
+        }
+        case acnet::MessageType::NoticePostRequest: {
+            acnet::NoticePostRequest request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            acnet::NoticePostResult result;
+            result.idempotency = request.idempotency;
+            const std::uint64_t key = request.idempotency.high ^ (request.idempotency.low * 1099511628211ULL) ^
+                                      (connection.account * 1000003ULL);
+            const auto prior = notice_idempotency_.find(key);
+            if (prior != notice_idempotency_.end()) {
+                result = prior->second;
+                result.replayed = true;
+            } else if (request.expected_revision != notices_.revision) {
+                result.code = acnet::ResultCode::StaleRevision;
+                result.revision = notices_.revision;
+            } else {
+                /* mNtc_notice_write: at capacity the oldest post drops off the
+                 * front. Doing it here rather than on the client is the point --
+                 * two players posting at once would otherwise each evict a
+                 * different post and disagree about the board. */
+                if (notices_.posts.size() >= acnet::kNoticeBoardPosts)
+                    notices_.posts.erase(notices_.posts.begin());
+                notices_.posts.push_back(request.post);
+                notices_.revision = advance_revision(notices_.revision);
+                result.code = acnet::ResultCode::Ok;
+                result.revision = notices_.revision;
+                notice_idempotency_[key] = result;
+                if (!commit_state(125, error) ||
+                    !database_.audit(connection.account, "notice-post", "board post appended",
+                                     wall_unix_seconds(), error)) return false;
+                acnet::ReplicationDelta delta;
+                delta.kind = acnet::ResourceKind::Notice;
+                delta.zone = 0;
+                delta.target_account = 0;
+                if (acnet::encode_notice_delta(notices_, delta.payload)) deltas_.append(std::move(delta));
+            }
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) { error = "failed to serialize notice result"; return false; }
+            return send_payload(connection, acnet::MessageType::NoticePostResult, acnet::Channel::Transactions,
+                                payload, monotonic_ms, error);
         }
         case acnet::MessageType::TownTuneUpdate: {
             acnet::TownTuneUpdate request;

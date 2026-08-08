@@ -289,6 +289,10 @@ private:
      * revision and a stale edit is refused. */
     acnet::TownTune town_tune_;
     std::unordered_map<std::uint64_t, acnet::TownTuneResult> town_tune_idempotency_;
+    /* The noticeboard. The server owns the FIFO eviction, which is the part two
+     * simultaneous posters contend over. */
+    acnet::NoticeBoard notices_;
+    std::unordered_map<std::uint64_t, acnet::NoticePostResult> notice_idempotency_;
     /* The fruit this town grows, reported once by the bootstrapping client.
      * Zero until then, which prices every fruit as foreign. */
     std::uint16_t native_fruit_ = 0;

@@ -11,6 +11,8 @@
 #include "m_field_make.h"
 #include "m_kankyo.h"
 #include "m_name_table.h"
+#include "m_notice.h"
+#include "m_time.h"
 #include "m_collision_bg.h"
 #include "m_home_h.h"
 #include "m_mail.h"
@@ -1887,6 +1889,57 @@ void Net_ApplyAuthoritativeTownTune(void) {
     if (Save_Get(melody) != authoritative) Save_Set(melody, authoritative);
 }
 
+int Net_NoticeBoardAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_notice_revision() != 0;
+}
+
+/* The post is handed over as raw bytes because m_net_hooks.c is the only file
+ * that may see acnet types and m_notice.c is the only one that may see
+ * mNtc_board_post_c. Both agree on the layout -- 192 message bytes then the
+ * 8-byte lbRTC_time_c -- and the size is checked rather than assumed. */
+int Net_RequestNoticePost(const void* post, u32 size) {
+    AcNetNoticePost wire;
+
+    if (!Net_NoticeBoardAuthoritative() || post == NULL ||
+        size != ACNET_NOTICE_MESSAGE_BYTES + ACNET_NOTICE_TIME_BYTES) return FALSE;
+    memcpy(wire.message, post, ACNET_NOTICE_MESSAGE_BYTES);
+    memcpy(wire.posted_time, (const u8*)post + ACNET_NOTICE_MESSAGE_BYTES, ACNET_NOTICE_TIME_BYTES);
+    return acnet_client_request_notice_post(&wire);
+}
+
+/* The board, projected into the save the original reads. The authoritative list
+ * is dense and oldest-first; the original marks the end of the board with a
+ * post whose timestamp equals the clear code, so the tail is filled with that
+ * rather than zeroed -- mNtc_notice_write_num counts until it finds one. */
+void Net_ApplyAuthoritativeNotices(void) {
+    static u32 last_notice_revision = 0;
+    AcNetNoticePost posts[ACNET_NOTICE_POSTS];
+    mNtc_board_post_c* board;
+    u32 revision;
+    size_t count;
+    size_t i;
+    uint16_t code = 0;
+
+    if (!Net_IsConnected()) return;
+    while (acnet_client_take_notice_result(&code)) {
+    }
+    revision = acnet_client_notice_revision();
+    if (revision == 0 || revision == last_notice_revision) return;
+
+    count = acnet_client_notices(posts, ARRAY_COUNT(posts));
+    board = Save_Get(noticeboard);
+    for (i = 0; i < ACNET_NOTICE_POSTS; ++i) {
+        if (i < count) {
+            memcpy(board[i].message, posts[i].message, sizeof(board[i].message));
+            memcpy(&board[i].post_time, posts[i].posted_time, sizeof(board[i].post_time));
+        } else {
+            memset(board[i].message, 0, sizeof(board[i].message));
+            board[i].post_time = mTM_rtcTime_clear_code;
+        }
+    }
+    last_notice_revision = revision;
+}
+
 int Net_TurnipMarketAuthoritative(void) {
     return Net_IsConnected() && acnet_client_has_turnip_market();
 }
@@ -2183,6 +2236,7 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
      * watch it with. */
     Net_ApplyAuthoritativeTurnipMarket();
     Net_ApplyAuthoritativeTownTune();
+    Net_ApplyAuthoritativeNotices();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

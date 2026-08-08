@@ -85,11 +85,11 @@ engage: two players can talk to the same villager at once, both receive the
 first-meeting greeting, both complete the same favour, and both collect the
 reward. Move-ins, move-outs, and friendship diverge permanently.
 
-**7. Town-wide systems with no replication.** Bulletin board
-(`m_board_ovl.c`, 1368 lines), lost & found, dump, HRA, design patterns and
-Able Sisters, catalog, snowmen, balloon presents, the town tune
-(`Save_Get(melody)`, so every player hears a different one), and the
-holiday/event system (`m_event.c`, 3028 lines). *(Museum donations and mail
+**7. Town-wide systems with no replication.** Lost & found, dump, HRA, design
+patterns and Able Sisters, catalog, snowmen, balloon presents, and the
+holiday/event system (`m_event.c`, 3028 lines). *(The town tune and the
+noticeboard came off this list 2026-08-08 — both are server-owned town state
+now.)* *(Museum donations and mail
 delivery came off this list with the economy work; the turnip market came off
 2026-08-07 — it is now server-owned town state, and it was worse than
 divergence: turnips could not be sold online at all. See CURRENT_STATUS.md.)*

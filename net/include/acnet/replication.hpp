@@ -52,6 +52,55 @@ enum class ResourceKind : std::uint8_t {
      * and at the gate, so a locally-set one means every player hears a
      * different town. */
     TownTune,
+    /* The noticeboard. Town-wide by definition -- it exists so townmates can
+     * leave each other notes, which a local copy cannot do. */
+    Notice,
+};
+
+/* One noticeboard post. The message is opaque bytes in the game's own font
+ * encoding, sized to MAIL_BODY_LEN, like mail text -- nothing reinterprets
+ * player-written content. `posted_time` is the game's own lbRTC_time_c bytes,
+ * carried the same way for the same reason. */
+constexpr std::size_t kNoticeMessageBytes = 192;
+constexpr std::size_t kNoticeTimeBytes = 8;
+constexpr std::size_t kNoticeBoardPosts = 15; // mNtc_BOARD_POST_COUNT
+
+struct NoticePost {
+    std::array<std::uint8_t, kNoticeMessageBytes> message{};
+    std::array<std::uint8_t, kNoticeTimeBytes> posted_time{};
+
+    bool operator==(const NoticePost& other) const {
+        return message == other.message && posted_time == other.posted_time;
+    }
+};
+
+/* Only the occupied posts, oldest first. The original marks an empty slot by
+ * its timestamp matching the clear code; keeping the list dense here means the
+ * server never has to know what that sentinel is, and the client fills the tail
+ * with it as it projects. */
+struct NoticeBoard {
+    std::vector<NoticePost> posts;
+    Revision revision = 1;
+};
+
+bool encode_notice_delta(const NoticeBoard& board, std::vector<std::uint8_t>& output);
+bool decode_notice_delta(const std::vector<std::uint8_t>& input, NoticeBoard& board);
+
+/* Appending is contested -- two players may post at once -- so the request
+ * quotes the revision it saw. The server owns the eviction: at fifteen posts
+ * the oldest drops, exactly as mNtc_notice_write shifts the array down. */
+struct NoticePostRequest {
+    AccountId account = 0;
+    IdempotencyKey idempotency;
+    Revision expected_revision = 0;
+    NoticePost post;
+};
+
+struct NoticePostResult {
+    ResultCode code = ResultCode::InternalError;
+    IdempotencyKey idempotency;
+    Revision revision = 0;
+    bool replayed = false;
 };
 
 /* Save_t::melody -- sixteen notes of four bits each, packed into a u64 exactly
@@ -200,6 +249,7 @@ struct ZoneBaseline {
     /* Town-wide, like the shelf and the museum. */
     TurnipMarket turnips;
     TownTune town_tune;
+    NoticeBoard notices;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

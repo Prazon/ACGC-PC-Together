@@ -521,6 +521,14 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     }
                     baseline_.museum = museum;
                 }
+                if (delta.kind == ResourceKind::Notice && has_baseline_) {
+                    NoticeBoard board;
+                    if (!decode_notice_delta(delta.payload, board)) {
+                        error = "malformed notice delta";
+                        return false;
+                    }
+                    if (board.revision >= baseline_.notices.revision) baseline_.notices = std::move(board);
+                }
                 if (delta.kind == ResourceKind::TownTune && has_baseline_) {
                     TownTune tune;
                     if (!decode_town_tune_delta(delta.payload, tune)) {
@@ -660,6 +668,9 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             break;
         case MessageType::HouseUpdateResult:
             if (!decode(packet.payload, house_update_result_.emplace())) return false;
+            break;
+        case MessageType::NoticePostResult:
+            if (!decode(packet.payload, notice_result_.emplace())) return false;
             break;
         case MessageType::TownTuneResult:
             if (!decode(packet.payload, town_tune_result_.emplace())) return false;
@@ -954,6 +965,20 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+std::optional<NoticePostResult> ClientRuntime::take_notice_result() {
+    auto result = std::move(notice_result_); notice_result_.reset(); return result;
+}
+bool ClientRuntime::request_notice_post(const NoticePost& post, std::uint64_t now_ms, std::string& error) {
+    if (!has_baseline_) { error = "no baseline yet"; return false; }
+    NoticePostRequest request;
+    request.account = config_.account;
+    request.idempotency = {random_nonzero_u64(), random_nonzero_u64()};
+    request.expected_revision = baseline_.notices.revision;
+    request.post = post;
+    std::vector<std::uint8_t> payload;
+    if (!encode(request, payload)) { error = "failed to encode a notice post"; return false; }
+    return send_payload(MessageType::NoticePostRequest, Channel::Transactions, payload, now_ms, error);
 }
 std::optional<TownTuneResult> ClientRuntime::take_town_tune_result() {
     auto result = std::move(town_tune_result_); town_tune_result_.reset(); return result;

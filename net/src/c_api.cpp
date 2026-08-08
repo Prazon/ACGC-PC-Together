@@ -1013,6 +1013,47 @@ extern "C" int acnet_client_has_turnip_market(void) {
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" size_t acnet_client_notices(AcNetNoticePost* output, size_t capacity) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const auto& posts = client->baseline()->notices.posts;
+        if (output == nullptr) return posts.size();
+        const std::size_t count = std::min(capacity, posts.size());
+        for (std::size_t i = 0; i < count; ++i) {
+            std::copy(posts[i].message.begin(), posts[i].message.end(), output[i].message);
+            std::copy(posts[i].posted_time.begin(), posts[i].posted_time.end(), output[i].posted_time);
+        }
+        return count;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_notice_revision(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->notices.revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_notice_post(const AcNetNoticePost* post) {
+    try {
+        if (!client || post == nullptr) return 0;
+        acnet::NoticePost value;
+        std::copy(std::begin(post->message), std::end(post->message), value.message.begin());
+        std::copy(std::begin(post->posted_time), std::end(post->posted_time), value.posted_time.begin());
+        return client->request_notice_post(value, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_take_notice_result(uint16_t* result_code) {
+    try {
+        if (!client) return 0;
+        const auto result = client->take_notice_result();
+        if (!result.has_value()) return 0;
+        if (result_code != nullptr) *result_code = static_cast<uint16_t>(result->code);
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint64_t acnet_client_town_tune(void) {
     try {
         if (!client || client->baseline() == nullptr) return 0;

@@ -18,8 +18,10 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 13 adds each house's music box. An older checkpoint has none and every house
  * starts with an empty stereo.
  * 14 adds the town tune; an older checkpoint has none and the town keeps the
- * default melody until somebody retunes it. */
-constexpr std::uint16_t kTownStateVersion = 14;
+ * default melody until somebody retunes it.
+ * 15 adds the noticeboard; an older checkpoint has none and the board starts
+ * empty. */
+constexpr std::uint16_t kTownStateVersion = 15;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -193,6 +195,13 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
     for (std::uint16_t price : turnips_.daily_price) if (!writer.u16(price)) return {};
     if (!writer.u8(turnips_.trend) || !writer.u32(turnips_.revision)) return {};
     if (!writer.u64(town_tune_.notes) || !writer.u32(town_tune_.revision)) return {};
+    if (notices_.posts.size() > acnet::kNoticeBoardPosts ||
+        !writer.u8(static_cast<std::uint8_t>(notices_.posts.size())) ||
+        !writer.u32(notices_.revision)) return {};
+    for (const acnet::NoticePost& post : notices_.posts) {
+        if (!writer.bytes(post.message.data(), post.message.size()) ||
+            !writer.bytes(post.posted_time.data(), post.posted_time.size())) return {};
+    }
 
     const auto& mail = economy_.mail_records();
     if (mail.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -418,6 +427,21 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
     if (version >= 14) {
         if (!reader.u64(town_tune_.notes) || !reader.u32(town_tune_.revision) || town_tune_.revision == 0) {
             error = "invalid town tune"; return false;
+        }
+    }
+    if (version >= 15) {
+        std::uint8_t notice_count = 0;
+        if (!reader.u8(notice_count) || !reader.u32(notices_.revision) ||
+            notice_count > acnet::kNoticeBoardPosts || notices_.revision == 0) {
+            error = "invalid noticeboard"; return false;
+        }
+        notices_.posts.clear();
+        notices_.posts.resize(notice_count);
+        for (acnet::NoticePost& post : notices_.posts) {
+            if (!reader.bytes(post.message.data(), post.message.size()) ||
+                !reader.bytes(post.posted_time.data(), post.posted_time.size())) {
+                error = "invalid noticeboard post"; return false;
+            }
         }
     }
 

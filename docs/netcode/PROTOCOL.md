@@ -1,4 +1,4 @@
-# Dedicated town protocol v23
+# Dedicated town protocol v24
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -128,6 +128,26 @@ shelf.
 
 Client-side `mSP_PlusSales` returns early while connected, and the level and
 total are projected into `Save_t` alongside the shelf.
+
+## The noticeboard
+
+The town's fifteen board posts are server state, added in v24. Each is a
+192-byte message in the game's own font encoding plus the eight bytes of the
+game's `lbRTC_time_c`, both opaque -- nothing reinterprets player-written
+content, the same rule mail text follows.
+
+The authoritative list is **dense and oldest-first**: only occupied posts are
+carried, with a count. The original marks the end of the board with a post whose
+timestamp equals the clear code, so the client fills the tail with that sentinel
+as it projects, and the server never has to know what the sentinel is.
+
+`NoticePostRequest` (38) / `NoticePostResult` (39) ride the Transactions
+channel, quoting the observed revision and carrying an idempotency key. The
+server owns the eviction: at fifteen posts the oldest drops, exactly as
+`mNtc_notice_write` shifts the array down. That is the part two simultaneous
+posters contend over -- done on each client they would drop different posts and
+disagree about the board afterwards. `ResourceKind::Notice` deltas carry the
+whole board and are town-wide.
 
 ## The town tune
 
