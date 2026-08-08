@@ -24,6 +24,8 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 16 adds the villager roster. An older checkpoint has none, so the roster
  * reads as uninitialized and the next bootstrap adopts one.
  * 17 extends the roster with the pending move-in and the town's move-in clock.
+ * 18 adds each account's villager memories -- their history with each
+ * neighbour, which is the only record that a player and a villager have one.
  *
  * The roster is stored through the *wire* codec so the checkpoint and the
  * baseline cannot disagree about its shape -- which is worth having, but means
@@ -32,7 +34,7 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * than rejected, leaving it uninitialized for the next bootstrap to re-adopt.
  * A checkpoint is not worth failing to load over a roster that one login
  * restores. */
-constexpr std::uint16_t kTownStateVersion = 17;
+constexpr std::uint16_t kTownStateVersion = 18;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -221,6 +223,15 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
             roster.size() > std::numeric_limits<std::uint16_t>::max() ||
             !writer.u16(static_cast<std::uint16_t>(roster.size())) ||
             !writer.bytes(roster.data(), roster.size())) return {};
+    }
+    if (villager_memories_.size() > std::numeric_limits<std::uint32_t>::max() ||
+        !writer.u32(static_cast<std::uint32_t>(villager_memories_.size()))) return {};
+    for (acnet::AccountId account : sorted_keys(villager_memories_)) {
+        std::vector<std::uint8_t> memories;
+        if (!acnet::encode_villager_memories_payload(villager_memories_.at(account), memories) ||
+            memories.size() > std::numeric_limits<std::uint32_t>::max() || !writer.u64(account) ||
+            !writer.u32(static_cast<std::uint32_t>(memories.size())) ||
+            !writer.bytes(memories.data(), memories.size())) return {};
     }
 
     const auto& mail = economy_.mail_records();
@@ -477,6 +488,27 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
              * the bytes were consumed by the length prefix, and the next
              * bootstrap re-adopts a roster from a client. */
             villagers_ = {};
+        }
+    }
+    if (version >= 18) {
+        std::uint32_t account_count = 0;
+        if (!reader.u32(account_count) || account_count > 65535) {
+            error = "invalid villager memory table"; return false;
+        }
+        villager_memories_.clear();
+        for (std::uint32_t i = 0; i < account_count; ++i) {
+            acnet::AccountId account = 0;
+            std::uint32_t size = 0;
+            if (!reader.u64(account) || !reader.u32(size) || account == 0 || size > 64U * 1024U) {
+                error = "invalid villager memory record"; return false;
+            }
+            std::vector<std::uint8_t> payload(size);
+            acnet::VillagerMemories memories;
+            if ((size != 0 && !reader.bytes(payload.data(), payload.size())) ||
+                !acnet::decode_villager_memories_payload(payload, memories)) {
+                error = "invalid villager memory record"; return false;
+            }
+            villager_memories_[account] = memories;
         }
     }
 

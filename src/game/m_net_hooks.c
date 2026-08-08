@@ -1971,6 +1971,99 @@ static AcNetVillagerPose net_villager_poses[ACNET_VILLAGER_SLOTS];
 static int net_villager_pose_count = 0;
 static u32 net_villager_pose_timer = 0;
 
+/* The slot of this player's memory inside a villager's memory array, allocating
+ * an unused one if they have never spoken. -1 when the array is full, which the
+ * original also tolerates: the villager simply does not remember them. */
+static int Net_VillagerMemoryIndex(Animal_c* animal) {
+    Private_c* priv = Common_Get(now_private);
+    int index;
+    int i;
+
+    if (animal == NULL || priv == NULL) return -1;
+    index = mNpc_GetAnimalMemoryIdx(&priv->player_ID, animal->memories, ANIMAL_MEMORY_NUM);
+    if (index >= 0) return index;
+    for (i = 0; i < ANIMAL_MEMORY_NUM; ++i) {
+        if (mPr_NullCheckPersonalID(&animal->memories[i].memory_player_id)) return i;
+    }
+    return -1;
+}
+
+int Net_VillagerMemoriesAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_villager_memory_revision() != 0;
+}
+
+/* The authoritative memories, written into this player's slot of each
+ * villager's array. Other players' slots are left alone: they are that
+ * account's business and this client never sees them. */
+void Net_ApplyAuthoritativeVillagerMemories(void) {
+    static u32 last_memory_revision = 0;
+    u8 record[ACNET_VILLAGER_MEMORY_BYTES];
+    u32 revision;
+    int i;
+
+    if (!Net_VillagerMemoriesAuthoritative()) return;
+    revision = acnet_client_villager_memory_revision();
+    if (revision == last_memory_revision) return;
+
+    for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+        Animal_c* animal = &Save_Get(animals[i]);
+        int index;
+
+        if (!acnet_client_villager_memory((uint8_t)i, record, sizeof(record))) continue;
+        index = Net_VillagerMemoryIndex(animal);
+        if (index < 0) continue;
+        memcpy(&animal->memories[index], record, sizeof(record));
+    }
+    last_memory_revision = revision;
+}
+
+/* Submitted whenever they change, which is what a conversation does. Compared
+ * by content rather than on a timer: memories change rarely -- a talk, a letter
+ * -- so a hash over 15 records is far cheaper than sending them speculatively. */
+void Net_SubmitVillagerMemoriesIfChanged(void) {
+    static u64 last_submitted_hash = 0;
+    static int submit_pending = FALSE;
+    u8 present[ACNET_VILLAGER_SLOTS];
+    static u8 data[ACNET_VILLAGER_SLOTS * ACNET_VILLAGER_MEMORY_BYTES];
+    u64 hash = 1469598103934665603ULL;
+    uint16_t code = 0;
+    int i;
+
+    if (!Net_IsConnected()) return;
+    while (acnet_client_take_villager_memory_result(&code)) {
+        submit_pending = FALSE;
+        /* A refusal means somebody -- an import, another session -- moved the
+         * revision. Forget what was sent so the next comparison resubmits
+         * against the revision the projection just installed. */
+        if (code != 0) last_submitted_hash = 0;
+    }
+    if (submit_pending || acnet_client_villager_memory_revision() == 0) return;
+
+    memset(present, 0, sizeof(present));
+    memset(data, 0, sizeof(data));
+    for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+        Animal_c* animal = &Save_Get(animals[i]);
+        Private_c* priv = Common_Get(now_private);
+        int index;
+
+        if (animal->id.npc_id == EMPTY_NO || priv == NULL) continue;
+        /* Only a memory that already exists: allocating one here would tell the
+         * town this player had met somebody they have not. */
+        index = mNpc_GetAnimalMemoryIdx(&priv->player_ID, animal->memories, ANIMAL_MEMORY_NUM);
+        if (index < 0) continue;
+        present[i] = 1;
+        memcpy(&data[i * ACNET_VILLAGER_MEMORY_BYTES], &animal->memories[index],
+               ACNET_VILLAGER_MEMORY_BYTES);
+    }
+    hash = Net_HashBytes(hash, present, sizeof(present));
+    hash = Net_HashBytes(hash, data, sizeof(data));
+    if (hash == last_submitted_hash) return;
+    if (acnet_client_submit_villager_memories(present, data)) {
+        last_submitted_hash = hash;
+        submit_pending = TRUE;
+    }
+}
+
 int Net_IsVillagerSimulationHost(void) {
     return Net_VillagersAuthoritative() && acnet_client_is_npc_simulation_host();
 }
@@ -2534,6 +2627,10 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
      * the server has actually published an opening. */
     mNpc_NetOfferMoveIn();
     acnet_client_pump_conversations();
+    /* Project before submitting, so a submit compares against what the town
+     * actually holds rather than against a stale local copy. */
+    Net_ApplyAuthoritativeVillagerMemories();
+    Net_SubmitVillagerMemoriesIfChanged();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

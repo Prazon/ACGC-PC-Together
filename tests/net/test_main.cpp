@@ -1756,6 +1756,58 @@ void villager_roster_is_town_state() {
     CHECK(decoded_bootstrap.villagers == roster);
 }
 
+void villager_memories_are_account_state() {
+    /* A villager's memory of one player: the only record that the two have a
+     * history. Carried as the game's own Anmmem_c, opaque. */
+    acnet::VillagerMemories memories;
+    memories.revision = 6;
+    memories.slots[0].present = true;
+    memories.slots[0].data[0] = 0xAB;
+    memories.slots[0].data[acnet::kVillagerMemoryBytes - 1] = 0xCD;
+    memories.slots[9].present = true;
+    memories.slots[9].data[4] = 0x11;
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_villager_memories_payload(memories, payload));
+    acnet::VillagerMemories decoded;
+    CHECK(acnet::decode_villager_memories_payload(payload, decoded));
+    CHECK(decoded == memories);
+    /* An absent memory carries no bytes at all, so a villager this player has
+     * never spoken to costs nothing. */
+    CHECK(!decoded.slots[1].present);
+
+    acnet::VillagerMemories unset = memories;
+    unset.revision = 0;
+    CHECK(!acnet::encode_villager_memories_payload(unset, payload));
+
+    acnet::VillagerMemoryUpdate update;
+    update.account = 31;
+    update.idempotency = {2, 3};
+    update.expected_revision = 6;
+    update.memories = memories;
+    CHECK(acnet::encode(update, payload));
+    acnet::VillagerMemoryUpdate decoded_update;
+    CHECK(acnet::decode(payload, decoded_update));
+    CHECK(decoded_update.account == 31);
+    CHECK(decoded_update.memories == memories);
+
+    /* Quoting no revision is refused: the whole set is replaced, so a submit
+     * that had not observed the current one would silently discard whatever
+     * arrived in between. */
+    acnet::VillagerMemoryUpdate unversioned = update;
+    unversioned.expected_revision = 0;
+    CHECK(!acnet::encode(unversioned, payload));
+
+    acnet::VillagerMemoryResult result;
+    result.code = acnet::ResultCode::Ok;
+    result.idempotency = {2, 3};
+    result.revision = 7;
+    CHECK(acnet::encode(result, payload));
+    acnet::VillagerMemoryResult decoded_result;
+    CHECK(acnet::decode(payload, decoded_result));
+    CHECK(decoded_result.revision == 7);
+}
+
 void villager_poses_come_from_one_client() {
     /* Villagers cannot be simulated server-side -- no pathfinding, no
      * collision, no schedule tables -- so one client is designated and reports
@@ -5498,6 +5550,7 @@ int main() {
         {"villager roster is town state", villager_roster_is_town_state},
         {"villager move in and out", villager_move_in_and_out_are_server_decisions},
         {"villager poses come from one client", villager_poses_come_from_one_client},
+        {"villager memories are account state", villager_memories_are_account_state},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

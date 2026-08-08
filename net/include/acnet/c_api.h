@@ -489,6 +489,22 @@ int acnet_client_request_villager_move_in(uint8_t slot, const AcNetVillager* vil
  * emptied by the server at the next daily turnover, not here. */
 int acnet_client_request_villager_move_out(uint8_t slot);
 int acnet_client_take_villager_result(uint16_t* result_code);
+
+/* A villager's memory of this player: who they are, when they last spoke, the
+ * friendship, the saved letter. The game's own 312-byte Anmmem_c, carried
+ * opaquely. Account-scoped -- a villager's memory of one player is only ever
+ * read when that player is talking to them -- but server-owned all the same,
+ * because it is the only record that a player and a villager have a history. */
+#define ACNET_VILLAGER_MEMORY_BYTES 312
+
+/* Reads the authoritative memory for villager `slot`. Returns 0 when the town
+ * has none for this player, in which case the local one is kept. */
+int acnet_client_villager_memory(uint8_t slot, uint8_t* out, size_t size);
+uint32_t acnet_client_villager_memory_revision(void);
+/* Offers this player's memories of every villager. `present` is one byte per
+ * slot; `data` is ACNET_VILLAGER_SLOTS * ACNET_VILLAGER_MEMORY_BYTES. */
+int acnet_client_submit_villager_memories(const uint8_t* present, const uint8_t* data);
+int acnet_client_take_villager_memory_result(uint16_t* result_code);
 /* Who is holding villager `slot` in conversation, or 0 for nobody. Answered
  * from the last replicated NPC state, so it costs no round trip -- the check
  * happens the instant a player presses A, and a request that had to wait for an

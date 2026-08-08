@@ -205,6 +205,13 @@ int Net_IsVillagerSimulationHost(void);
  * its AI put them; everyone else has the actor moved to the reported pose. */
 void Net_UpdateVillagerPose(ACTOR* npc_actor, int slot);
 void Net_FlushVillagerPoses(void);
+/* This player's history with each villager -- friendship, last spoken, the
+ * saved letter. Server-owned and account-scoped: it is the only record that a
+ * player and a villager have a history at all, and the local save that used to
+ * hold it is going away. Projected in, and submitted whenever it changes. */
+int Net_VillagerMemoriesAuthoritative(void);
+void Net_ApplyAuthoritativeVillagerMemories(void);
+void Net_SubmitVillagerMemoriesIfChanged(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -278,6 +285,9 @@ void Net_FlushVillagerPoses(void);
 #define Net_IsVillagerSimulationHost() FALSE
 #define Net_UpdateVillagerPose(npc_actor, slot) ((void)0)
 #define Net_FlushVillagerPoses() ((void)0)
+#define Net_VillagerMemoriesAuthoritative() FALSE
+#define Net_ApplyAuthoritativeVillagerMemories() ((void)0)
+#define Net_SubmitVillagerMemoriesIfChanged() ((void)0)
 #endif
 
 #ifdef __cplusplus

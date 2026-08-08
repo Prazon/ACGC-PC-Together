@@ -148,6 +148,27 @@ public:
     const acnet::TurnipMarket& turnip_market() const { return turnips_; }
     std::uint8_t shop_tier() const { return static_cast<std::uint8_t>(shop_stock_.tier); }
     std::uint32_t shop_sales_sum() const { return shop_stock_.sales_sum; }
+    /* Villager state for the operator console. Everything here is otherwise
+     * invisible to a host trying to work out why a town looks wrong. */
+    bool villagers_initialized() const { return villagers_.initialized; }
+    acnet::AccountId npc_simulation_host() const { return npc_simulation_host_; }
+    bool villager_move_in_pending() const { return villagers_.move_in.pending; }
+    std::uint8_t villager_move_in_slot() const { return villagers_.move_in.slot; }
+    std::size_t villagers_leaving() const {
+        std::size_t count = 0;
+        for (const acnet::VillagerSlot& slot : villagers_.slots) {
+            if (slot.occupied && slot.villager.removing != 0) ++count;
+        }
+        return count;
+    }
+    std::size_t villagers_in_conversation() const {
+        std::size_t count = 0;
+        for (std::size_t slot = 0; slot < acnet::kVillagerSlots; ++slot) {
+            const acnet::ConversationState* talk = npcs_.conversation(acnet::villager_entity(slot));
+            if (talk != nullptr && talk->active) ++count;
+        }
+        return count;
+    }
     /* 0 = Sunday, matching the schedule's own indexing. */
     int town_weekday() const {
         return acnet::town_date_from_seconds(clock_.state().town_unix_seconds).weekday;
@@ -305,6 +326,10 @@ private:
     acnet::AccountId npc_simulation_host_ = 0;
     bool refresh_npc_simulation_host(std::string& error);
     acnet::VillagerRoster villagers_;
+    /* Each account's own history with each villager. Account-scoped, so it
+     * lives beside the ledgers rather than in the town-wide roster. */
+    std::unordered_map<acnet::AccountId, acnet::VillagerMemories> villager_memories_;
+    std::unordered_map<std::uint64_t, acnet::VillagerMemoryResult> villager_memory_idempotency_;
     /* Registers one NpcState per occupied roster slot so villagers are real
      * server entities -- which is what conversation leases address. */
     bool sync_villager_npcs(std::string& error);

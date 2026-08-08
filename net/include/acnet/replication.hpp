@@ -60,6 +60,9 @@ enum class ResourceKind : std::uint8_t {
     Villager,
 };
 
+bool encode_villager_memories_payload(const VillagerMemories& memories, std::vector<std::uint8_t>& output);
+bool decode_villager_memories_payload(const std::vector<std::uint8_t>& input, VillagerMemories& memories);
+
 bool encode_villager_delta(const VillagerRoster& roster, std::vector<std::uint8_t>& output);
 bool decode_villager_delta(const std::vector<std::uint8_t>& input, VillagerRoster& roster);
 
@@ -260,6 +263,9 @@ struct ZoneBaseline {
     /* Which connection is simulating the villagers, or 0 for nobody. The server
      * picks it and everyone is told, so exactly one client's AI drives them. */
     AccountId npc_simulation_host = 0;
+    /* This account's own history with each villager. Account-scoped, like the
+     * inventory and the mailbox, rather than town-wide. */
+    VillagerMemories villager_memories;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

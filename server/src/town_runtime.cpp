@@ -1211,6 +1211,10 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.notices = notices_;
     baseline.villagers = villagers_;
     baseline.npc_simulation_host = npc_simulation_host_;
+    {
+        const auto memories = villager_memories_.find(connection.account);
+        if (memories != villager_memories_.end()) baseline.villager_memories = memories->second;
+    }
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1873,6 +1877,42 @@ bool TownRuntime::dispatch(Connection& connection,
                                   payload, monotonic_ms, error)) return false;
             }
             return true;
+        }
+        case acnet::MessageType::VillagerMemoryUpdate: {
+            acnet::VillagerMemoryUpdate request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            acnet::VillagerMemoryResult result;
+            result.idempotency = request.idempotency;
+            const std::uint64_t key = request.idempotency.high ^ (request.idempotency.low * 1099511628211ULL) ^
+                                      (connection.account * 1000003ULL);
+            const auto prior = villager_memory_idempotency_.find(key);
+            acnet::VillagerMemories& stored = villager_memories_[connection.account];
+            if (prior != villager_memory_idempotency_.end()) {
+                result = prior->second;
+                result.replayed = true;
+            } else if (request.expected_revision != stored.revision) {
+                result.code = acnet::ResultCode::StaleRevision;
+                result.revision = stored.revision;
+            } else {
+                /* An account may only ever write its own memories, which is
+                 * why the account is overwritten from the connection above
+                 * rather than trusted from the request. */
+                const acnet::Revision next = advance_revision(stored.revision);
+                stored = request.memories;
+                stored.revision = next;
+                result.code = acnet::ResultCode::Ok;
+                result.revision = stored.revision;
+                villager_memory_idempotency_[key] = result;
+                if (!commit_transaction(connection.account, 0xA004, acnet::ResultCode::Ok, error)) return false;
+            }
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) {
+                error = "failed to serialize villager memory result";
+                return false;
+            }
+            return send_payload(connection, acnet::MessageType::VillagerMemoryResult,
+                                acnet::Channel::Transactions, payload, monotonic_ms, error);
         }
         case acnet::MessageType::VillagerRequest: {
             acnet::VillagerRequest request;

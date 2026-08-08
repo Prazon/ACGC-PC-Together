@@ -271,6 +271,52 @@ struct NpcPoseUpdate {
     std::vector<NpcPose> poses;
 };
 
+/* A villager's memory of one player: who they are, when they last spoke, the
+ * friendship, the saved letter. Carried as the game's own 312-byte record --
+ * opaque, like mail text and catchphrases, because nothing here reinterprets
+ * player-written content and the server has no reason to understand it.
+ *
+ * Account-scoped, not town-wide: a villager's memory of player A is only ever
+ * read when A is talking to them. It has to be server state all the same,
+ * because it is the *only* record that a player and a villager have a history,
+ * and the local save that used to hold it is going away -- the extended
+ * residents plan boots the client from a server baseline with no local save at
+ * all, at which point an unreplicated memory is a relationship that silently
+ * resets every login. */
+constexpr std::size_t kVillagerMemoryBytes = 312; // sizeof(Anmmem_c)
+
+struct VillagerMemory {
+    bool present = false;
+    std::array<std::uint8_t, kVillagerMemoryBytes> data{};
+
+    bool operator==(const VillagerMemory& other) const {
+        return present == other.present && (!present || data == other.data);
+    }
+};
+
+struct VillagerMemories {
+    std::array<VillagerMemory, kVillagerSlots> slots{};
+    Revision revision = 1;
+
+    bool operator==(const VillagerMemories& other) const {
+        return slots == other.slots && revision == other.revision;
+    }
+};
+
+struct VillagerMemoryUpdate {
+    AccountId account = 0;
+    IdempotencyKey idempotency;
+    Revision expected_revision = 0;
+    VillagerMemories memories;
+};
+
+struct VillagerMemoryResult {
+    ResultCode code = ResultCode::InternalError;
+    IdempotencyKey idempotency;
+    Revision revision = 0;
+    bool replayed = false;
+};
+
 enum class VillagerOpType : std::uint8_t {
     /* A client supplies the newcomer for the opening the server published. */
     MoveIn,

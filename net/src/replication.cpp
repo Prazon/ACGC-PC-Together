@@ -418,6 +418,39 @@ static bool decode_villagers(ByteReader& reader, VillagerRoster& roster) {
     return true;
 }
 
+static bool encode_villager_memories(ByteWriter& writer, const VillagerMemories& memories) {
+    if (memories.revision == 0 || !writer.u32(memories.revision)) return false;
+    for (const VillagerMemory& memory : memories.slots) {
+        if (!writer.u8(memory.present ? 1 : 0)) return false;
+        if (memory.present && !writer.bytes(memory.data.data(), memory.data.size())) return false;
+    }
+    return true;
+}
+
+static bool decode_villager_memories(ByteReader& reader, VillagerMemories& memories) {
+    if (!reader.u32(memories.revision) || memories.revision == 0) return false;
+    for (VillagerMemory& memory : memories.slots) {
+        std::uint8_t present = 0;
+        memory = {};
+        if (!reader.u8(present) || present > 1) return false;
+        memory.present = present != 0;
+        if (memory.present && !reader.bytes(memory.data.data(), memory.data.size())) return false;
+    }
+    return true;
+}
+
+bool encode_villager_memories_payload(const VillagerMemories& memories, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(kMaximumBaselineBytes);
+    if (!encode_villager_memories(writer, memories)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_villager_memories_payload(const std::vector<std::uint8_t>& input, VillagerMemories& memories) {
+    ByteReader reader(input);
+    return decode_villager_memories(reader, memories) && reader.finished();
+}
+
 bool encode_villager_delta(const VillagerRoster& roster, std::vector<std::uint8_t>& output) {
     ByteWriter writer(kMaximumBaselineBytes);
     if (!encode_villagers(writer, roster)) return false;
@@ -530,6 +563,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (!encode_notices(writer, baseline.notices)) return false;
     if (!encode_villagers(writer, baseline.villagers)) return false;
     if (!writer.u64(baseline.npc_simulation_host)) return false;
+    if (!encode_villager_memories(writer, baseline.villager_memories)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -631,6 +665,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     if (!decode_notices(reader, baseline.notices)) return false;
     if (!decode_villagers(reader, baseline.villagers)) return false;
     if (!reader.u64(baseline.npc_simulation_host)) return false;
+    if (!decode_villager_memories(reader, baseline.villager_memories)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;

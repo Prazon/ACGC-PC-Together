@@ -484,6 +484,23 @@ void print_accounts(const acserver::TownRuntime& runtime) {
     std::cout << std::flush;
 }
 
+/* The villager line: what a host needs to tell a healthy town from a stuck one.
+ * "no roster" means no client has handed one over yet, which is the state a
+ * brand-new town sits in until its first resident logs in. */
+std::string villager_summary(const acserver::TownRuntime& runtime) {
+    if (!runtime.villagers_initialized()) return "no roster (waiting for a client)";
+    std::ostringstream out;
+    out << runtime.villager_count() << "/" << 15;
+    if (runtime.npc_simulation_host() == 0) out << ", nobody simulating";
+    else out << ", simulated by " << runtime.npc_simulation_host();
+    if (runtime.villager_move_in_pending())
+        out << ", move-in open for slot " << static_cast<unsigned>(runtime.villager_move_in_slot());
+    if (runtime.villagers_leaving() != 0) out << ", " << runtime.villagers_leaving() << " leaving";
+    if (runtime.villagers_in_conversation() != 0)
+        out << ", " << runtime.villagers_in_conversation() << " in conversation";
+    return out.str();
+}
+
 /* mSP_SHOP_TYPE_*, in the original's order. */
 const char* shop_tier_name(std::uint8_t tier) {
     switch (tier) {
@@ -549,6 +566,7 @@ void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownR
               << " | Time " << format_town_time(clock.town_unix_seconds)
               << " | Weather " << weather_name(clock.weather)
               << " | Shop " << shop_tier_name(runtime.shop_tier())
+              << " | Villagers " << villager_summary(runtime)
               << " | Turnips " << turnip_summary(runtime)
               << " | World " << (runtime.town_initialized() ? "ready" : "awaiting first resident")
               << " | Tick " << metrics.ticks
@@ -572,6 +590,7 @@ void print_startup_banner(const acserver::TownRuntime& runtime, const acserver::
               << " Weather      : " << weather_name(clock.weather) << "\n"
               << " Shop         : " << shop_tier_name(runtime.shop_tier()) << " (lifetime sales "
               << runtime.shop_sales_sum() << ")\n"
+              << " Villagers    : " << villager_summary(runtime) << "\n"
               << " Turnips      : " << turnip_summary(runtime) << "\n"
               << " Turnip week  : " << turnip_week(runtime) << "\n"
               << " World        : " << (runtime.town_initialized() ? "ready" : "awaiting first resident") << "\n"

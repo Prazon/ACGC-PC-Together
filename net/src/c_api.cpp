@@ -683,6 +683,49 @@ extern "C" int acnet_client_request_villager_move_out(uint8_t slot) {
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" int acnet_client_villager_memory(uint8_t slot, uint8_t* out, size_t size) {
+    try {
+        if (!client || out == nullptr || client->baseline() == nullptr ||
+            slot >= acnet::kVillagerSlots || size != acnet::kVillagerMemoryBytes) return 0;
+        const acnet::VillagerMemory& memory = client->baseline()->villager_memories.slots[slot];
+        if (!memory.present) return 0;
+        std::copy(memory.data.begin(), memory.data.end(), out);
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_villager_memory_revision(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->villager_memories.revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_submit_villager_memories(const uint8_t* present, const uint8_t* data) {
+    try {
+        if (!client || present == nullptr || data == nullptr) return 0;
+        acnet::VillagerMemories memories;
+        for (std::size_t i = 0; i < acnet::kVillagerSlots; ++i) {
+            memories.slots[i].present = present[i] != 0;
+            if (!memories.slots[i].present) continue;
+            std::copy_n(data + i * acnet::kVillagerMemoryBytes, acnet::kVillagerMemoryBytes,
+                        memories.slots[i].data.begin());
+        }
+        return client->submit_villager_memories(memories, acnet::client_monotonic_milliseconds(),
+                                                last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_take_villager_memory_result(uint16_t* result_code) {
+    try {
+        if (!client) return 0;
+        const auto result = client->take_villager_memory_result();
+        if (!result.has_value()) return 0;
+        if (result_code != nullptr) *result_code = static_cast<uint16_t>(result->code);
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" int acnet_client_take_villager_result(uint16_t* result_code) {
     try {
         if (!client) return 0;

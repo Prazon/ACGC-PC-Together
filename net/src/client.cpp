@@ -694,6 +694,13 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             ++npc_pose_serial_;
             break;
         }
+        case MessageType::VillagerMemoryResult:
+            if (!decode(packet.payload, villager_memory_result_.emplace())) return false;
+            /* The accepted revision is what the next submit must quote, and the
+             * baseline that carries it only arrives on a re-baseline. */
+            if (villager_memory_result_->code == ResultCode::Ok && has_baseline_)
+                baseline_.villager_memories.revision = villager_memory_result_->revision;
+            break;
         case MessageType::VillagerResult:
             if (!decode(packet.payload, villager_result_.emplace())) return false;
             break;
@@ -993,6 +1000,21 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+std::optional<VillagerMemoryResult> ClientRuntime::take_villager_memory_result() {
+    auto result = std::move(villager_memory_result_); villager_memory_result_.reset(); return result;
+}
+bool ClientRuntime::submit_villager_memories(const VillagerMemories& memories, std::uint64_t now_ms,
+                                             std::string& error) {
+    if (!has_baseline_) { error = "no baseline yet"; return false; }
+    VillagerMemoryUpdate update;
+    update.account = config_.account;
+    update.idempotency = {random_nonzero_u64(), random_nonzero_u64()};
+    update.expected_revision = baseline_.villager_memories.revision;
+    update.memories = memories;
+    std::vector<std::uint8_t> payload;
+    if (!encode(update, payload)) { error = "failed to encode villager memories"; return false; }
+    return send_payload(MessageType::VillagerMemoryUpdate, Channel::Transactions, payload, now_ms, error);
 }
 bool ClientRuntime::send_npc_poses(const NpcPoseUpdate& update, std::uint64_t now_ms, std::string& error) {
     if (state_ != ClientConnectionState::Connected) return true;

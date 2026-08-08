@@ -1,4 +1,4 @@
-# Dedicated town protocol v28
+# Dedicated town protocol v29
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,32 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### Villager memories (v29)
+
+A villager's memory of one player — who they are, when they last spoke, the
+friendship, the saved letter — is the game's own 312-byte `Anmmem_c`, carried
+opaquely like mail text. **Account-scoped**, not town-wide: a villager's memory
+of player A is only ever read when A is talking to them, so it rides that
+account's `Baseline` beside the inventory and mailbox rather than the roster.
+
+It has to be server state all the same, because it is the *only* record that a
+player and a villager have a history, and the local save that used to hold it is
+going away — the extended-residents plan boots the client from a server baseline
+with no local save at all, at which point an unreplicated memory is a
+relationship that silently resets every login.
+
+`VillagerMemoryUpdate` (47) / `VillagerMemoryResult` (48) replace the whole set
+and quote the observed revision, so a submit that had not seen the current one
+cannot discard what arrived in between. The account is taken from the connection
+rather than the request: an account may only ever write its own memories. An
+absent memory carries no bytes, so villagers this player has never met cost
+nothing.
+
+The client submits on content change rather than on a timer — memories change
+rarely, and a hash over fifteen records is far cheaper than sending them
+speculatively — and only submits a memory that already exists, since allocating
+one would tell the town this player had met somebody they had not.
 
 ### Villager positions (v28)
 
