@@ -7,6 +7,7 @@
 #include "PR/gbi.h"
 #include "pc_assets.h"
 #include "pc_disc.h"
+#include "pc_modloader.h"
 
 extern int g_pc_verbose;
 
@@ -80,6 +81,16 @@ static u8* load_file(const char* path, unsigned int* out_size) {
 void pc_load_asset(const char* bin_path, void* dest, unsigned int size,
                    unsigned int rom_off, int rom_src, int swap_type) {
     int loaded = 0;
+    /* A mod override outranks the disc. Already in host byte order -- an
+     * override is authored for this build, not extracted from a GameCube ROM --
+     * so it deliberately skips do_swap below. */
+    {
+        const void* override = pc_modloader_override(bin_path, size);
+        if (override) {
+            memcpy(dest, override, size);
+            return;
+        }
+    }
     /* Try ROM-direct first */
     if (rom_src != SRC_NONE) {
         u8* rom = (rom_src == SRC_REL) ? g_rel_data : g_dol_data;

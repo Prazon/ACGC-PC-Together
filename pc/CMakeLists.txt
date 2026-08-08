@@ -297,7 +297,8 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_m_card.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_save_bswap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_model_viewer.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_texture_pack.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_modloader.c
+    src/pc_texture_pack.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_settings.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_pause_menu.c
