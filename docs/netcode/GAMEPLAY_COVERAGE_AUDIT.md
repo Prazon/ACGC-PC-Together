@@ -85,11 +85,14 @@ engage: two players can talk to the same villager at once, both receive the
 first-meeting greeting, both complete the same favour, and both collect the
 reward. Move-ins, move-outs, and friendship diverge permanently.
 
-**7. Town-wide systems with no replication.** Museum donations, bulletin board
-(`m_board_ovl.c`, 1368 lines), mail delivery, turnip market
-(`m_kabu_manager.c` — each client rolls its own prices), lost & found, dump,
-HRA, design patterns and Able Sisters, catalog, snowmen, balloon presents, and
-the holiday/event system (`m_event.c`, 3028 lines).
+**7. Town-wide systems with no replication.** Bulletin board
+(`m_board_ovl.c`, 1368 lines), lost & found, dump, HRA, design patterns and
+Able Sisters, catalog, snowmen, balloon presents, the town tune
+(`Save_Get(melody)`, so every player hears a different one), and the
+holiday/event system (`m_event.c`, 3028 lines). *(Museum donations and mail
+delivery came off this list with the economy work; the turnip market came off
+2026-08-07 — it is now server-owned town state, and it was worse than
+divergence: turnips could not be sold online at all. See CURRENT_STATUS.md.)*
 
 **8. Daily world regeneration runs on every client independently.**
 `m_all_grow.c`, `m_random_field.c`, `m_field_make.c` — weeds, flower growth and
@@ -120,12 +123,13 @@ Player-to-player trading has full server escrow with zero game-side callers.
 **11. Furniture uses a whole-room submit rather than the transaction API.**
 `FurnitureOpType{Place, Remove}` is dead; the client hashes and submits the
 entire room. Conflict resolution is last-writer-wins at room granularity.
-`AcNetHouseState` carries no wallpaper/carpet (`mHm_wf_c wall_floor`), exterior
-palette, door design, mailbox, or music box. Storage layers *are* covered —
+`AcNetHouseState` carries no mailbox or music box (`music_box[2]`). Storage
+layers *are* covered —
 `mCoBG_LAYER_NUM` is 4 and all four are captured. *(The gyroid came off this
 list 2026-08-07: display, message, purchases and proceeds are now a
-server-owned `GyroidState` with its own transaction family — see
-CURRENT_STATUS.md.)*
+server-owned `GyroidState` with its own transaction family. The wallpaper,
+carpet, pattern flags, exterior palette and door design came off it the same
+day as `HouseSurfaces` — see CURRENT_STATUS.md.)*
 
 ## Delivered in this pass — encounter species authority
 

@@ -22,8 +22,8 @@ already perform because it has the same world data.
 
 | Gap | Why it is derivable |
 |-|-|
-| **Terrain lean.** Only yaw is replicated, so remotes stand bolt upright on every slope. `Player_actor_set_lean_angle` computes pitch/roll from the ground normal under the player. | The viewer has the same collision mesh at the remote's interpolated position, so it can run the same computation. Also fixes the remote balloon's lean target, currently flat. |
-| **Per-state shadow.** `Player_actor_SetupShadow` toggles `shape_info.draw_shadow` per main index (off in a pitfall, etc.). Remotes always draw one — `Actor_info_make_actor` defaults it to TRUE. | Keyed on `action`, which is replicated. Same table. |
+| **Running lean.** *Delivered 2026-08-07.* Also mis-described here: `Player_actor_set_lean_angle` does **not** read the ground normal. It derives a forward pitch from the body animation's playback speed, so it is a run lean rather than terrain lean, and the viewer that already reproduces that speed gets it for free. Remotes previously left `shape_info.rotation.x` at zero. | Derived from the animation speed the viewer already computes. |
+| **Per-state shadow.** *Delivered 2026-08-07.* This entry was **wrong**: remotes did not "always draw one", they drew none at all. `Actor_info_make_actor` does default `draw_shadow` to TRUE, but it also defaults `shadow_proc` to NULL, and `Actor_draw` skips the shadow entirely without one — the remote actor never called `Shape_Info_init`. It now builds the local player's `mAc_ActorShadowCircle` and follows `Player_actor_SetupShadow`'s table from the replicated `action`. | Keyed on `action`, which is replicated. Same table. |
 | **Footprints, ripples, dust, splash.** `Player_actor_SetEffect_Walk` and friends emit these from the keyframe frame plus the ground attribute. Remotes emit none, so they cross sand and snow without a trace. | Both inputs are local: the viewer runs the remote's keyframe itself and can read the ground attribute at its position. |
 | **Nameplate.** `remote->name` is replicated and never drawn, so in a crowd there is no way to tell who is who. | Pure presentation; the data is already there. |
 
