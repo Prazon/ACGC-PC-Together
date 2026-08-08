@@ -1844,14 +1844,55 @@ written one order and read another. Found by re-reading the save/load pair, not
 by a test -- the month soak would only have caught it on a restart that happened
 to carry memories.
 
+### Phases seven and eight: NPC gifts and the event flags (v31, v32)
+
+**NPC gifts are a server transaction.** This is the item-loss bug that had been
+flagged as needing a maintainer decision. Villagers being server-side did not
+unblock it the way expected -- the NPCs handing these out are not all villagers,
+so a conversation lease cannot gate it -- but the decision resolved itself once
+the alternative was written down: leaving it alone was *actively losing items*.
+A gift written locally sat in the pocket working until the player's next pickup
+or purchase, then silently vanished.
+
+So `EconomyOpType::Grant` is client-trusted, and the only one here. The server
+checks a real item and a free pocket; everything else is bounded by the
+per-message rate limit, the journal and an `audit_log` row, so abuse is visible
+after the fact even if it cannot be prevented in front. That is the trust
+already extended for player movement, and the town is invite-keyed.
+
+Nine deliberate call sites, not one hook on `mPr_SetFreePossessionItem`: the
+gyroid proceeds peel bells into money bags through that same function and
+already have their own transaction, so a blanket hook would have granted twice.
+Each site falls back to the original local write offline.
+
+**The event flags ride with the special visitor.** `mEv_CheckFirstJob` and the
+Halloween status are read from them and gate what villagers do and which
+dialogue runs, so leaving them local kept towns diverging in a way the visitor
+alone did not explain.
+
+**Villager schedules need no replication of their own** -- worth recording,
+because it looked like the last gap. `mNPS_schedule_c` lives in common data
+rather than the save: it is *derived* from the roster, the town clock and these
+event flags, all three now shared, and positions come from the simulation host
+regardless.
+
+### The persistence rule this cycle established
+
+Twice now a wire change has invalidated a stored blob, because the roster and
+the event block are both persisted *through the wire codec* -- which is worth
+having, since the checkpoint and the baseline then cannot disagree about shape.
+The rule is now written beside the version constant: anything persisted that way
+needs a version bump **and** a tolerant read of the old version. Both are
+recoverable because the blobs are length-prefixed. `make check`'s smoke step is
+what catches it, by starting on a checkpoint the previous build wrote -- it has
+now done so twice.
+
 ### Still open on villagers
-- **Schedules.** Villagers move under the host client's AI, but *what* they are
-  doing at a given hour (`m_npc_schedule.c`) is still each client's own. In
-  practice the host's positions carry most of it; the gap is the state behind
-  them.
-- **Gulliver, Wisp, K.K. and the holiday set.** The scheduled special visitor is
-  town state now, but the events that spawn from date and local RNG without
-  going through `mEv_special_c` are not.
+Nothing on villagers is outstanding that is not bug-testing. The roster,
+turnover, leases, positions, memories, the special visitor, the event flags and
+NPC gifts are all server-owned; schedules are derived from state that already
+is. What remains is watching it run -- see the tuning note on positions above,
+which is the piece most likely to need adjustment on screen.
 
 ## Compatibility note for the protocol version
 
