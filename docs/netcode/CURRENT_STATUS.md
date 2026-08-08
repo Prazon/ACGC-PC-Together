@@ -1614,6 +1614,18 @@ game no renewal had happened since the town was founded, so the first offline
 boot after a long online session would try to catch up months at once, and
 `mAGrw_CheckKabuPeddler` would misjudge the turnip seller meanwhile.
 
+### The noticeboard is town state (protocol v24)
+
+The board exists so townmates can leave each other notes, which a local copy
+cannot do -- every player was writing to their own fifteen slots and reading
+nobody else's. The server holds the posts and owns the eviction, which is the
+contended part: at fifteen posts the oldest drops, and done on each client they
+would drop different posts and disagree afterwards.
+
+The authoritative list is dense and oldest-first rather than fifteen fixed
+slots, so the client fills the tail with the game's clear-code sentinel as it
+projects and the server never has to know what that sentinel is.
+
 ### Why the server cannot yet do the regeneration itself -- read before trying
 
 This is the blocking finding, and it is worth stating precisely because the
@@ -1638,6 +1650,37 @@ correct when terrain is edited. Only then is the port itself worth starting.
 Until that lands the town does not regenerate online -- no new weeds, fossils,
 gyroids or money rock -- which is a real missing feature, but a visible and
 consistent one rather than the silent per-client drift it replaced.
+
+**The lost & found is blocked behind it.** `PoliceBox_c` is a twenty-item array
+and would be easy to replicate, but `mPB_force_set_keep_item` is its only
+filler and that lives inside the regeneration path. Replicating it today would
+replicate a permanently empty box.
+
+### The remaining backlog is two decisions, not a list of tasks
+
+Everything cheaply finishable has been done. What is left divides into:
+
+**1. A directly granted item still vanishes -- and fixing it is a decision.**
+`Net_ApplyAuthoritativeState` rewrites all fifteen pockets when the server's
+inventory revision changes, and *only* then. So when a villager hands a player
+an item, `mPr_SetPossessionItem` writes the pocket, the server never hears
+about it, and the item sits there working until the player's next pickup,
+purchase or catch bumps the revision -- at which point it silently disappears.
+Works until it doesn't, which is the worst shape a bug can have.
+
+The fix is a grant transaction, and that is where it stops being a coding
+question. The server does not model villagers, so it has nothing to validate a
+grant against: the request would reduce to "the client says give me this item",
+which is an item-duplication cheat wearing a transaction's clothes and runs
+straight into `MASTER_PLAN.md`'s rejected-approaches list. The alternatives are
+to accept that in a private invite-key town, to refuse gifts outright until
+villagers are server-side (visible and honest, but removes gameplay), or to
+leave it. **This wants the maintainer's call, not a unilateral one.**
+
+**2. Villagers.** Unchanged, and still the roadmap phase everything else waits
+behind: conversation leases are built but cannot be reached without an NPC
+identity mapping, and villager gifts, favours and friendship are the reason
+finding 2 above matters at all.
 
 ## Compatibility note for the protocol version
 
