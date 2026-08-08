@@ -8,8 +8,8 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P0** table `static_assert`s | **done** |
 | **P1** Lua vendored, host, sandbox | **done** |
 | **P2** calendar API, holidays, runtime wiring, persistence | **done** |
-| **P3** `ModCalendar` replication | **server + wire done**; client presentation outstanding |
-| **P4** T1 asset override | not started |
+| **P3** `ModCalendar` replication | **done** (server, wire and client) |
+| **P4** T1 asset override | **done** |
 | **P5** arena, `.pcasset`, model compiler | not started |
 | **P6** table growth, registry, placeholder | not started |
 | **P7** delivery, server side | not started |
@@ -56,8 +56,13 @@ The server discovers it, sandboxes it, resolves its holidays against the authori
 fires begin/end hooks on window edges, commits grants through the mail authority (journaled,
 auditable), persists `store`/`load` in SQLite, and replicates the resolved calendar to clients.
 
-**A player cannot see any of this yet.** The client-side registry and the three decomp call sites
-are the remaining half of P3.
+The client stores the replicated calendar, and two decomp call sites draw from it: mod holidays
+are marked on the in-game calendar and named from the wire.
+
+**Not visually verified.** This environment has no SDL2, cmake or ninja, so the graphical client
+cannot be built here. Every changed decomp TU compiles clean under the real build's flag set with
+`NETCODE_ENABLED` both on and off, but nobody has seen a marker render. That is the first thing to
+check on a machine with a disc image.
 
 ### Recurrence forms
 
@@ -75,6 +80,21 @@ date = { month = 3,  computed = 'vernal_equinox' }              -- or autumn_equ
 `calendar.register` and `calendar.on` are load-time only. The rest are callable from hooks:
 `today`, `weather`, `is_active`, `players_online`, `set_weather`, `announce`, `grant`,
 `store`, `load`.
+
+## Client-side asset override (P4)
+
+Independent of the Lua framework in both directions:
+
+```
+mods/lantern-set/overrides/con_kaiwa2_w1_tex.bin
+```
+
+Any file whose name matches an entry in the generated asset table replaces the disc's copy. Sizes
+must match exactly — the destination is a fixed-size array — and a mismatch is reported and
+refused rather than truncated. Mods are scanned in id order so a conflict between two mods
+resolves identically on every machine.
+
+This is the override tier: it replaces existing assets and cannot add new ones. Adding is P5/P6.
 
 ## Corrections made while building
 
@@ -103,6 +123,9 @@ Each came from measuring rather than trusting a prior description.
 
 - **Protocol is now v23** and `kTownStateVersion` is 13. Both move fast — re-check before
   assuming a number.
+- **Mod calendar markers use event byte band 64..99** (`mSC_EVENT_MOD_BASE`, 36 slots). The stock
+  values are the soncho enum plus 32 and 101-103, so that band is free. A town may declare more
+  holidays (64) than it can mark (36); the marker pass stops at the band's end.
 - **`music_box` is 64 bits with 55 used** — 9 spare song slots before P9 forces a save and wire
   change. Master already replicates it (v22), so P9 builds on that rather than inventing it.
 - **P8 is blocked on fuzzing the `.pcasset` parser.** It is the first point where the client
