@@ -92,6 +92,22 @@ struct RuntimeAccountSummary {
     std::size_t carried_mail = 0;
 };
 
+/* One installed mod, as an operator needs to see it. Joins the manifest (who
+ * the mod says it is) with the host's runtime state (whether it is actually
+ * running), because neither alone answers "is my mod working". A quarantined
+ * mod is still installed and still listed -- silently omitting it would look
+ * identical to a mod the server never found, which is a different problem with
+ * a different fix. */
+struct RuntimeModSummary {
+    std::string id;
+    std::string name;
+    std::string version;
+    bool quarantined = false;
+    std::string last_error;
+    std::size_t holidays = 0;
+    std::size_t songs = 0;
+};
+
 struct RuntimeEvent {
     std::uint64_t sequence = 0;
     std::int64_t wall_unix_seconds = 0;
@@ -178,6 +194,10 @@ public:
     const ModPackStore& mod_packstore() const { return mod_packstore_; }
     std::array<std::uint8_t, 32> mod_manifest_digest() const { return mod_registry_.manifest_digest(); }
     std::vector<std::string> loaded_mods() const { return mod_host_.loaded_ids(); }
+
+    /* Every installed mod in load order, for the console and --list-mods. */
+    std::vector<RuntimeModSummary> mod_summaries() const;
+    std::size_t mod_quarantined_count() const;
     std::optional<acnet::Transform> player_transform(acnet::AccountId account) const {
         const acnet::PlayerView* player = players_.by_account(account);
         return player == nullptr ? std::nullopt : std::optional<acnet::Transform>(player->transform);

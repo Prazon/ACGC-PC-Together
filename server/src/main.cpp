@@ -73,6 +73,7 @@ void usage() {
                  "[--ban N|--unban N|--import-gci FILE|--export-gci FILE|--checkpoint-now]\n"
                  "  Operator gifts (run with the town stopped, one shot):\n"
                  "    --list-accounts                 print every known account, its bank, and its mailbox\n"
+                 "    --list-mods                     print every installed mod, its state and what it declares\n"
                  "    --grant-bells ACCOUNT=AMOUNT    deposit bells straight into a bank account\n"
                  "    --send-mail ACCOUNT             post a letter, with --mail-item and --mail-text\n"
                  "    --mail-item ITEM                attach item ITEM (decimal or 0x hex) to the letter\n"
@@ -156,6 +157,43 @@ std::string shorten(std::string value, std::size_t maximum) {
     value.resize(maximum - 3);
     value += "...";
     return value;
+}
+
+/* Bytes as an operator reads them. Content packs are small enough that three
+ * units cover everything, so there is no loop and no table. */
+std::string format_bytes(std::uint64_t bytes) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(1);
+    if (bytes >= 1024ULL * 1024ULL) out << (static_cast<double>(bytes) / (1024.0 * 1024.0)) << " MB";
+    else if (bytes >= 1024ULL) out << (static_cast<double>(bytes) / 1024.0) << " KB";
+    else out << bytes << " B";
+    return out.str();
+}
+
+/* The mods row, always exactly one line whatever is installed -- the dashboard
+ * repaints four times a second and a section that changes height drags every
+ * row below it (same reason as kVisitorRows). So this is counts only; the names
+ * live in the startup banner and --list-mods, which print once and may be as
+ * tall as they need to be. */
+std::string mod_row(const acserver::TownRuntime& runtime) {
+    const std::vector<acserver::RuntimeModSummary> mods = runtime.mod_summaries();
+    if (mods.empty()) return "none installed";
+    std::size_t quarantined = 0;
+    std::size_t holidays = 0;
+    std::size_t songs = 0;
+    for (const acserver::RuntimeModSummary& mod : mods) {
+        if (mod.quarantined) quarantined++;
+        holidays += mod.holidays;
+        songs += mod.songs;
+    }
+    std::ostringstream out;
+    out << (mods.size() - quarantined) << '/' << mods.size() << " running";
+    if (quarantined != 0) out << " (" << quarantined << " QUARANTINED)";
+    out << "  | " << holidays << (holidays == 1 ? " holiday" : " holidays");
+    if (songs != 0) out << ", " << songs << (songs == 1 ? " song" : " songs");
+    out << "  | " << runtime.mod_packstore().blob_count() << " assets, "
+        << format_bytes(runtime.mod_packstore().total_bytes());
+    return out.str();
 }
 
 /* The dashboard repaints four times a second, so its geometry has to be
@@ -307,6 +345,8 @@ public:
                /* Same rule as the row above: budgeted to the frame width so a
                 * busy island cannot wrap and shift everything below it. */
                << " Island     " << shorten(island_row.str(), kDashboardColumns - 12) << "\n"
+               /* Budgeted to the frame width like the two rows above it. */
+               << " Mods       " << shorten(mod_row(runtime), kDashboardColumns - 12) << "\n"
                << "--------------------------------------------------------------------------------\n"
                << " RESIDENT SLOTS\n";
 
@@ -484,6 +524,41 @@ void print_accounts(const acserver::TownRuntime& runtime) {
     std::cout << std::flush;
 }
 
+/* What the banner and --list-mods both print for one mod. `indent` differs
+ * because the banner's lines sit inside its box and the listing's do not. */
+void print_mod_lines(const acserver::TownRuntime& runtime, const char* indent) {
+    for (const acserver::RuntimeModSummary& mod : runtime.mod_summaries()) {
+        std::cout << indent << (mod.quarantined ? "[!!] " : "[ok] ") << mod.id;
+        if (!mod.version.empty()) std::cout << ' ' << mod.version;
+        if (!mod.name.empty() && mod.name != mod.id) std::cout << "  \"" << mod.name << '"';
+        if (mod.quarantined) {
+            /* The reason, not just the state. An operator who can see only that
+             * a mod stopped has to go looking for the log line that says why,
+             * and the answer is almost always a Lua error they can read. */
+            std::cout << "  QUARANTINED";
+            if (!mod.last_error.empty()) std::cout << ": " << shorten(mod.last_error, 96);
+        } else {
+            std::cout << "  " << mod.holidays << (mod.holidays == 1 ? " holiday" : " holidays");
+            if (mod.songs != 0) std::cout << ", " << mod.songs << (mod.songs == 1 ? " song" : " songs");
+        }
+        std::cout << '\n';
+    }
+}
+
+void print_mods(const acserver::TownRuntime& runtime) {
+    const std::vector<acserver::RuntimeModSummary> mods = runtime.mod_summaries();
+    if (mods.empty()) {
+        std::cout << "No mods installed: put each one in its own directory under the town's mods/ "
+                     "directory, with a mod.toml inside.\n";
+        return;
+    }
+    std::cout << "  " << mods.size() << (mods.size() == 1 ? " mod" : " mods") << " installed, in load order:\n";
+    print_mod_lines(runtime, "  ");
+    std::cout << "  Content: " << runtime.mod_packstore().blob_count() << " assets, "
+              << format_bytes(runtime.mod_packstore().total_bytes()) << " to deliver.\n"
+              << std::flush;
+}
+
 /* mSP_SHOP_TYPE_*, in the original's order. */
 const char* shop_tier_name(std::uint8_t tier) {
     switch (tier) {
@@ -539,6 +614,21 @@ std::string turnip_week(const acserver::TownRuntime& runtime) {
     return out.str();
 }
 
+/* The mods field for the one-line dashboard, empty when no mods are installed.
+ * Empty rather than "Mods 0" so a vanilla town's line is exactly what it was
+ * before mods existed -- an operator who installs none should see no trace of
+ * the subsystem. A quarantine is always spelled out: that is the one mod state
+ * worth interrupting a status line for. */
+std::string mod_field(const acserver::TownRuntime& runtime) {
+    const std::size_t total = runtime.mod_summaries().size();
+    if (total == 0) return std::string();
+    const std::size_t quarantined = runtime.mod_quarantined_count();
+    std::ostringstream out;
+    out << " | Mods " << (total - quarantined) << '/' << total;
+    if (quarantined != 0) out << " (" << quarantined << " QUARANTINED)";
+    return out.str();
+}
+
 void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownRuntimeConfig& config) {
     const acserver::RuntimeMetrics& metrics = runtime.metrics();
     const acserver::ClockState& clock = runtime.clock_state();
@@ -551,6 +641,7 @@ void print_dashboard(const acserver::TownRuntime& runtime, const acserver::TownR
               << " | Shop " << shop_tier_name(runtime.shop_tier())
               << " | Turnips " << turnip_summary(runtime)
               << " | World " << (runtime.town_initialized() ? "ready" : "awaiting first resident")
+              << mod_field(runtime)
               << " | Tick " << metrics.ticks
               << " | RX/TX " << metrics.packets_received << '/' << metrics.packets_sent
               << " | Reconnects " << metrics.reconnects << '\n' << std::flush;
@@ -575,8 +666,20 @@ void print_startup_banner(const acserver::TownRuntime& runtime, const acserver::
               << " Turnips      : " << turnip_summary(runtime) << "\n"
               << " Turnip week  : " << turnip_week(runtime) << "\n"
               << " World        : " << (runtime.town_initialized() ? "ready" : "awaiting first resident") << "\n"
-              << " Data         : " << config.data_directory.string() << "\n"
-              << " Security     : " << (config.invite_key.empty() ? "unauthenticated" : "invite key enabled") << "\n"
+              << " Data         : " << config.data_directory.string() << "\n";
+    const std::vector<acserver::RuntimeModSummary> mods = runtime.mod_summaries();
+    if (mods.empty()) {
+        std::cout << " Mods         : none installed\n";
+    } else {
+        const std::size_t quarantined = runtime.mod_quarantined_count();
+        std::cout << " Mods         : " << (mods.size() - quarantined) << " of " << mods.size() << " running";
+        if (quarantined != 0) std::cout << ", " << quarantined << " QUARANTINED";
+        std::cout << "\n";
+        print_mod_lines(runtime, "                  ");
+        std::cout << " Content      : " << runtime.mod_packstore().blob_count() << " assets, "
+                  << format_bytes(runtime.mod_packstore().total_bytes()) << "\n";
+    }
+    std::cout << " Security     : " << (config.invite_key.empty() ? "unauthenticated" : "invite key enabled") << "\n"
               << " Dashboard    : " << (dashboard ? "refreshes four times per second" : "disabled") << "\n"
               << " Stop safely  : press Ctrl+C\n"
               << "============================================================\n" << std::flush;
@@ -641,6 +744,7 @@ int run_server(int argc, char** argv) {
     bool dashboard = config.dashboard;
     bool checkpoint_now = false;
     bool list_accounts = false;
+    bool list_mods = false;
     std::uint64_t ban_account = 0;
     std::uint64_t unban_account = 0;
     std::uint64_t grant_account = 0;
@@ -664,6 +768,10 @@ int run_server(int argc, char** argv) {
         }
         if (argument == "--list-accounts") {
             list_accounts = true;
+            continue;
+        }
+        if (argument == "--list-mods") {
+            list_mods = true;
             continue;
         }
         if (argument == "--smoke") {
@@ -765,7 +873,7 @@ int run_server(int argc, char** argv) {
         std::cerr << "--send-mail needs --mail-item ITEM, --mail-text TEXT, or both\n";
         return 2;
     }
-    const bool one_shot_admin = checkpoint_now || list_accounts || ban_account != 0 || unban_account != 0 ||
+    const bool one_shot_admin = checkpoint_now || list_accounts || list_mods || ban_account != 0 || unban_account != 0 ||
                                 grant_account != 0 || mail_account != 0 || have_shop_sales || have_song ||
                                 !import_gci.empty() || !export_gci.empty();
     /* Say it once, before the town listens, and only for a run that will take
@@ -828,6 +936,7 @@ int run_server(int argc, char** argv) {
             }
         }
         if (ok && list_accounts) print_accounts(runtime);
+        if (ok && list_mods) print_mods(runtime);
         if (ok && checkpoint_now) ok = runtime.checkpoint_now(error);
         if (ok && !export_gci.empty()) ok = runtime.export_gci(export_gci, error);
         std::string shutdown_error;

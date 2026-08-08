@@ -169,6 +169,54 @@ commands go through the same authority, journal, and revision rules a player
 transaction uses, so a gift survives a restart, and `audit_log` in `town.db`
 records it as `grant-bells` or `send-mail`.
 
+### Seeing which mods are running
+
+Mods live in `towns/default/mods/`, one directory each. The console reports them
+in three places, at increasing detail.
+
+The startup banner lists every installed mod once, in load order:
+
+```text
+ Mods         : 2 of 3 running, 1 QUARANTINED
+                  [!!] broken-mod 0.1.0  "Broken Mod"  QUARANTINED: broken-mod/init.lua:2: attempt to index a nil value (local 't')
+                  [ok] spring-festival 1.2.0  "Spring Festival"  3 holidays
+                  [ok] tunes 0.4.0  "Extra Tunes"  1 holiday, 2 songs
+ Content      : 3 assets, 89 B
+```
+
+The live dashboard carries a one-line summary, because it repaints four times a
+second and a section that changes height would drag every row below it:
+
+```text
+ Mods       2/3 running (1 QUARANTINED)  | 4 holidays, 2 songs  | 3 assets, 89 B
+```
+
+And with the town stopped, the full listing on its own:
+
+```text
+AnimalCrossingServer --data towns/default --list-mods
+```
+
+Three things are worth knowing when reading this output.
+
+A **quarantined** mod is installed but not running: it errored during load, or
+failed enough hooks in a row to be shut off. The town keeps serving without it,
+which is deliberate -- a broken holiday mod is never worth dropping a town's
+players for -- so nothing else will tell you it stopped. The console prints the
+Lua error that caused it, which is usually the whole diagnosis.
+
+A quarantined mod reports **zero holidays and zero songs**, and that is the
+honest number rather than a display quirk. The host drops the declarations of a
+mod it has stopped running, so those holidays really are off the calendar.
+
+A town with no mods installed prints `none installed` in the banner and **no
+mods field at all** on the dashboard line, so its output is exactly what it was
+before mods existed.
+
+Mods load once, before the first client connects. There is no hot reload --
+changing the set mid-session would desync the calendar clients already hold --
+so after fixing a mod, restart the server.
+
 For a complete backup, stop the server and copy the whole `towns/default`
 directory. To restore, keep the failed directory for diagnosis, replace it with
 the backup as one directory, and start the server. Startup validates checkpoint

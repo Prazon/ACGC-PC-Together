@@ -2519,6 +2519,45 @@ bool TownRuntime::send_mail(acnet::AccountId recipient,
     return true;
 }
 
+std::vector<RuntimeModSummary> TownRuntime::mod_summaries() const {
+    std::vector<RuntimeModSummary> summaries;
+    const std::vector<ModManifest>& order = mod_registry_.load_order();
+    summaries.reserve(order.size());
+    for (const ModManifest& manifest : order) {
+        RuntimeModSummary summary;
+        summary.id = manifest.id;
+        summary.name = manifest.name;
+        summary.version = manifest.version;
+        summary.quarantined = mod_host_.quarantined(manifest.id);
+        summary.last_error = mod_host_.last_error(manifest.id);
+        /* Counted by namespace prefix rather than from a per-mod tally: the host
+         * namespaces every declaration <mod-id>.<id> when it registers, so the
+         * prefix already *is* the owner and there is no second list that could
+         * drift out of step with the first.
+         *
+         * A quarantined mod therefore reports zero of both, because the host
+         * drops the declarations of a mod it has stopped running. That is the
+         * honest number -- those holidays are not on the calendar. */
+        const std::string prefix = manifest.id + ".";
+        for (const HolidaySpec& holiday : mod_host_.holidays()) {
+            if (holiday.id.compare(0, prefix.size(), prefix) == 0) summary.holidays++;
+        }
+        for (const CustomSong& song : mod_host_.music().songs()) {
+            if (song.id.compare(0, prefix.size(), prefix) == 0) summary.songs++;
+        }
+        summaries.push_back(std::move(summary));
+    }
+    return summaries;
+}
+
+std::size_t TownRuntime::mod_quarantined_count() const {
+    std::size_t count = 0;
+    for (const ModManifest& manifest : mod_registry_.load_order()) {
+        if (mod_host_.quarantined(manifest.id)) count++;
+    }
+    return count;
+}
+
 std::vector<RuntimeAccountSummary> TownRuntime::account_summaries() const {
     std::vector<RuntimeAccountSummary> summaries;
     summaries.reserve(accounts_.size());

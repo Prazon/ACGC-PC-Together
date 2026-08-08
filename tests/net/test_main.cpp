@@ -1591,6 +1591,120 @@ void mod_registration_is_load_time_only() {
     CHECK(host.holidays().size() == 1);
 }
 
+/* The operator console's mod summary. This is the only view an operator has of
+ * whether their mods are working, so the counts have to be right for the case
+ * that actually happens: some mods fine, one broken. A summary that reported
+ * three mods running when one had been quarantined would be worse than no
+ * summary at all -- it would say the thing the operator wants to hear. */
+void mod_summaries_report_what_is_running() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-mod-summary-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } cleanup{root};
+
+    const std::filesystem::path town = root / "town";
+    std::filesystem::create_directories(town);
+    modtest::write_mod(town / "mods", "aviary",
+        "calendar.register { id = 'dawn', name = 'dawn_name', date = { month = 3, day = 2 } }\n"
+        "calendar.register { id = 'dusk', name = 'dusk_name', date = { month = 3, day = 9 } }\n"
+        "music.define { id = 'birdsong', name = 'birdsong_name', audio = 'birdsong.pcasset' }\n");
+    modtest::write_mod(town / "mods", "brittle",
+        "local nothing = nil\n"
+        "return nothing.field\n");
+    modtest::write_mod(town / "mods", "cellar",
+        "calendar.register { id = 'vintage', name = 'vintage_name', date = { month = 9, day = 1 } }\n");
+
+    acserver::TownRuntimeConfig config;
+    config.port = 0;
+    config.data_directory = town;
+    config.connection_timeout_ms = 60000;
+    config.invite_key = "summary-key";
+
+    std::string error;
+    acserver::TownRuntime server(config);
+    CHECK(server.initialize(1700000000, error));
+
+    const std::vector<acserver::RuntimeModSummary> summaries = server.mod_summaries();
+
+    /* Every installed mod is listed, including the broken one. An operator
+     * debugging a mod that "did nothing" must be able to tell a mod that failed
+     * from one the server never found -- omitting the failure makes those two
+     * situations print identically. */
+    CHECK(summaries.size() == 3);
+
+    /* Load order, ties broken by id -- never filesystem order. */
+    CHECK(summaries[0].id == "aviary");
+    CHECK(summaries[1].id == "brittle");
+    CHECK(summaries[2].id == "cellar");
+
+    CHECK(!summaries[0].quarantined);
+    CHECK(summaries[0].version == "1.0.0");
+    CHECK(summaries[0].holidays == 2);
+    CHECK(summaries[0].songs == 1);
+    CHECK(summaries[0].last_error.empty());
+
+    CHECK(summaries[1].quarantined);
+    /* The reason, not just the state: the console prints this, and a Lua error
+     * naming a file and line is usually the whole diagnosis. */
+    CHECK(!summaries[1].last_error.empty());
+    /* A quarantined mod owns nothing. The host drops the declarations of a mod
+     * it has stopped running, so these are not merely hidden -- that holiday is
+     * genuinely not on the calendar, and the summary must not imply it is. */
+    CHECK(summaries[1].holidays == 0);
+    CHECK(summaries[1].songs == 0);
+
+    CHECK(!summaries[2].quarantined);
+    CHECK(summaries[2].holidays == 1);
+    CHECK(summaries[2].songs == 0);
+
+    CHECK(server.mod_quarantined_count() == 1);
+
+    /* The counts the console prints agree with the lists the rest of the server
+     * works from. Two independent tallies of the same thing drift apart exactly
+     * when someone adds a third way to register something. */
+    std::size_t counted_holidays = 0;
+    std::size_t counted_songs = 0;
+    for (const acserver::RuntimeModSummary& summary : summaries) {
+        counted_holidays += summary.holidays;
+        counted_songs += summary.songs;
+    }
+    CHECK(counted_holidays == 3);
+    CHECK(counted_songs == 1);
+    CHECK(server.loaded_mods().size() == 3);
+
+    CHECK(server.shutdown(error));
+}
+
+/* A town with no mods installed must be indistinguishable from one built before
+ * mods existed. The console keys off an empty summary to print nothing at all,
+ * so "empty" has to mean empty rather than one placeholder entry. */
+void mod_summaries_are_empty_without_mods() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-mod-nosummary-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } cleanup{root};
+    std::filesystem::create_directories(root);
+
+    acserver::TownRuntimeConfig config;
+    config.port = 0;
+    config.data_directory = root;
+    config.connection_timeout_ms = 60000;
+    config.invite_key = "empty-key";
+
+    std::string error;
+    acserver::TownRuntime server(config);
+    CHECK(server.initialize(1700000000, error));
+    CHECK(server.mod_summaries().empty());
+    CHECK(server.mod_quarantined_count() == 0);
+    CHECK(server.shutdown(error));
+}
+
 /* The whole P2 path against a real TownRuntime: a mod on disk is discovered,
  * sandboxed, loaded, its holidays resolved against the authoritative clock, and
  * its persisted state survives a restart. */
@@ -6765,6 +6879,8 @@ int main() {
         {"mod music respects the music_box limit", mod_music_respects_the_music_box_limit},
         {"mod music slots are never reused", mod_music_slots_are_never_reused},
         {"mod music grant routes through runtime", mod_music_grant_routes_through_the_runtime},
+        {"mod summaries report what is running", mod_summaries_report_what_is_running},
+        {"mod summaries are empty without mods", mod_summaries_are_empty_without_mods},
         {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
         {"mod calendar replicates", mod_calendar_replicates},
         {"asset delivery messages round trip", asset_delivery_messages_round_trip},
