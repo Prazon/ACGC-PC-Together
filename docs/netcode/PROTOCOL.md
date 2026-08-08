@@ -1,4 +1,4 @@
-# Dedicated town protocol v21
+# Dedicated town protocol v22
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -360,7 +360,9 @@ player's own designs, plus the exterior palette, its two pending values
 carried opaquely, since they address game tables whose size the server has no
 reason to know and the client clamps an out-of-range index as it loads the room.
 A `pattern_bits` byte with anything set outside the two defined flags is a
-decode failure. `HouseUpdate` and the `HouseState` baseline share one codec, so
+decode failure. v22 adds the house's `music_box` beside them: two u32s holding
+the 64-bit bitfield of which K.K. songs the stereo has, exactly as the save
+stores it. The island cabin keeps its own, separate from any resident's. `HouseUpdate` and the `HouseState` baseline share one codec, so
 the request and the broadcast can never disagree about field order.
 The owner may bootstrap a house once. Later full-room updates atomically consume
 added items from authoritative inventory and return removed items; moves and

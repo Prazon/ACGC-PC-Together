@@ -14,8 +14,10 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * palette and door design. An older checkpoint simply has none, and every field
  * defaults to the index-zero surface the game itself falls back to.
  * 12 adds the weekly turnip schedule; an older checkpoint has none and the
- * next Sunday job rolls one. */
-constexpr std::uint16_t kTownStateVersion = 12;
+ * next Sunday job rolls one.
+ * 13 adds each house's music box. An older checkpoint has none and every house
+ * starts with an empty stereo. */
+constexpr std::uint16_t kTownStateVersion = 13;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -234,6 +236,7 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
         }
         if (!writer.u8(house.surfaces.exterior_palette) || !writer.u8(house.surfaces.ordered_exterior_palette) ||
             !writer.u8(house.surfaces.next_exterior_palette) || !writer.u8(house.surfaces.door_design)) return {};
+        for (std::uint32_t songs : house.music_box) if (!writer.u32(songs)) return {};
         if (!writer.u32(static_cast<std::uint32_t>(house.furniture.size()))) return {};
         std::vector<std::pair<acnet::FurnitureAddress, acnet::ItemSlot>> furniture;
         for (const auto& item : house.furniture) furniture.push_back(item);
@@ -491,6 +494,11 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
                 !reader.u8(house.surfaces.ordered_exterior_palette) ||
                 !reader.u8(house.surfaces.next_exterior_palette) || !reader.u8(house.surfaces.door_design)) {
                 error = "invalid house surface state"; return false;
+            }
+        }
+        if (version >= 13) {
+            for (std::uint32_t& songs : house.music_box) {
+                if (!reader.u32(songs)) { error = "invalid house music box"; return false; }
             }
         }
         if (!reader.u32(furniture_count) || furniture_count > acnet::kMaximumHouseFurniture) {

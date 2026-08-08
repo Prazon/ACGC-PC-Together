@@ -226,6 +226,13 @@ static void Net_CaptureHouseSurfaces(const NetRoomBinding* room, AcNetHouseSurfa
         surfaces->ordered_exterior_palette = home->ordered_outlook_pal;
         surfaces->next_exterior_palette = home->next_outlook_pal;
         surfaces->door_design = home->door_original;
+        surfaces->music_box[0] = home->music_box[0];
+        surfaces->music_box[1] = home->music_box[1];
+    } else {
+        /* The cabin keeps its own stereo, separate from any resident's. */
+        const mHm_cottage_c* cottage = &Save_Get(island).cottage;
+        surfaces->music_box[0] = cottage->music_box[0];
+        surfaces->music_box[1] = cottage->music_box[1];
     }
 }
 
@@ -456,11 +463,21 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
         if (home->outlook_pal != state.exterior_palette ||
             home->ordered_outlook_pal != state.ordered_exterior_palette ||
             home->next_outlook_pal != state.next_exterior_palette ||
-            home->door_original != state.door_design) changed = TRUE;
+            home->door_original != state.door_design ||
+            home->music_box[0] != state.music_box[0] ||
+            home->music_box[1] != state.music_box[1]) changed = TRUE;
         home->outlook_pal = state.exterior_palette;
         home->ordered_outlook_pal = state.ordered_exterior_palette;
         home->next_outlook_pal = state.next_exterior_palette;
         home->door_original = state.door_design;
+        home->music_box[0] = state.music_box[0];
+        home->music_box[1] = state.music_box[1];
+    } else {
+        mHm_cottage_c* cottage = &Save_Get(island).cottage;
+        if (cottage->music_box[0] != state.music_box[0] ||
+            cottage->music_box[1] != state.music_box[1]) changed = TRUE;
+        cottage->music_box[0] = state.music_box[0];
+        cottage->music_box[1] = state.music_box[1];
     }
     if (!room.shared) {
         if (state.main_light_on) mRmTp_IndexLightSwitchON(room.slot * 2);

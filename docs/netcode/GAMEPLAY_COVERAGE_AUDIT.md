@@ -123,8 +123,11 @@ Player-to-player trading has full server escrow with zero game-side callers.
 **11. Furniture uses a whole-room submit rather than the transaction API.**
 `FurnitureOpType{Place, Remove}` is dead; the client hashes and submits the
 entire room. Conflict resolution is last-writer-wins at room granularity.
-`AcNetHouseState` carries no mailbox or music box (`music_box[2]`). Storage
-layers *are* covered —
+`AcNetHouseState` now carries everything this finding listed. *(The music box
+landed 2026-08-08. The "mailbox" item was stale even when written: a house
+mailbox's letters are server-owned through the mail transaction family and its
+own `MailboxState` revision, not through the house state.)* Storage layers *are*
+covered —
 `mCoBG_LAYER_NUM` is 4 and all four are captured. *(The gyroid came off this
 list 2026-08-07: display, message, purchases and proceeds are now a
 server-owned `GyroidState` with its own transaction family. The wallpaper,
