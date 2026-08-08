@@ -184,8 +184,161 @@ bool weekday_from_name(const std::string& name, int& out) {
     return false;
 }
 
+/* Query and effect bindings.
+ *
+ * Each closes over a WorldContext holding the mod's id and the ModWorld the
+ * runtime installed. A null world means the runtime has not wired itself up
+ * yet -- registration-only tests hit this -- and every binding reports that
+ * rather than dereferencing it. */
+
+struct WorldContext {
+    std::string mod_id;
+    ModWorld* world = nullptr;
+};
+
+WorldContext* world_ctx(lua_State* L) {
+    return static_cast<WorldContext*>(lua_touserdata(L, lua_upvalueindex(1)));
+}
+
+int calendar_today(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.today: the town is not available yet");
+    const acnet::TownDate date = ctx->world->today();
+    lua_newtable(L);
+    const auto set = [&L](const char* key, int value) {
+        lua_pushinteger(L, value);
+        lua_setfield(L, -2, key);
+    };
+    set("year", date.year);
+    set("month", date.month);
+    set("day", date.day);
+    set("hour", date.hour);
+    set("weekday", date.weekday);
+    return 1;
+}
+
+int calendar_weather(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.weather: the town is not available yet");
+    static const char* const kNames[4] = { "clear", "cloudy", "rain", "snow" };
+    const int kind = ctx->world->weather();
+    lua_pushstring(L, (kind >= 0 && kind < 4) ? kNames[kind] : "clear");
+    return 1;
+}
+
+int calendar_is_active(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const char* id = luaL_checkstring(L, 1);
+    if (ctx->world == nullptr) { lua_pushboolean(L, 0); return 1; }
+    /* A mod names its own holiday unqualified; the namespace is added here so a
+     * mod cannot probe another mod's calendar. */
+    lua_pushboolean(L, ctx->world->holiday_active(ctx->mod_id + "." + id) ? 1 : 0);
+    return 1;
+}
+
+int calendar_players_online(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    lua_newtable(L);
+    if (ctx->world == nullptr) return 1;
+    const std::vector<std::uint64_t> accounts = ctx->world->players_online();
+    for (std::size_t i = 0; i < accounts.size(); ++i) {
+        lua_pushinteger(L, static_cast<lua_Integer>(accounts[i]));
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+
+int calendar_set_weather(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const char* name = luaL_checkstring(L, 1);
+    static const char* const kNames[4] = { "clear", "cloudy", "rain", "snow" };
+    int kind = -1;
+    for (int i = 0; i < 4; ++i) {
+        if (std::strcmp(name, kNames[i]) == 0) { kind = i; break; }
+    }
+    if (kind < 0) return luaL_error(L, "calendar.set_weather: unknown weather '%s'", name);
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.set_weather: the town is not available yet");
+    lua_pushboolean(L, ctx->world->set_weather(kind) ? 1 : 0);
+    return 1;
+}
+
+int calendar_announce(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const char* key = luaL_checkstring(L, 1);
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.announce: the town is not available yet");
+    ctx->world->announce(ctx->mod_id, key);
+    return 0;
+}
+
+int calendar_grant(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const lua_Integer account = luaL_checkinteger(L, 1);
+    const lua_Integer item = luaL_checkinteger(L, 2);
+    if (account <= 0) return luaL_error(L, "calendar.grant: account must be positive");
+    if (item < 0 || item > 0xFFFF) return luaL_error(L, "calendar.grant: item is out of range");
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.grant: the town is not available yet");
+    /* The runtime commits through EconomyAuthority and journals before this
+     * returns true, so a mod told the grant succeeded can rely on it surviving
+     * a crash. */
+    lua_pushboolean(L, ctx->world->grant_item(static_cast<std::uint64_t>(account),
+                                              static_cast<std::uint16_t>(item)) ? 1 : 0);
+    return 1;
+}
+
+/* store/load take numbers, strings and booleans. Everything is rendered to text
+ * with a one-character type tag so load() can hand back the type it was given
+ * rather than always a string. */
+int calendar_store(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const char* key = luaL_checkstring(L, 1);
+    if (ctx->world == nullptr) return luaL_error(L, "calendar.store: the town is not available yet");
+
+    std::string encoded;
+    switch (lua_type(L, 2)) {
+        case LUA_TNUMBER:
+            encoded = "n" + std::string(lua_tostring(L, 2));
+            break;
+        case LUA_TSTRING: {
+            std::size_t length = 0;
+            const char* text = lua_tolstring(L, 2, &length);
+            if (length > 512) return luaL_error(L, "calendar.store: strings are limited to 512 bytes");
+            encoded = "s" + std::string(text, length);
+            break;
+        }
+        case LUA_TBOOLEAN:
+            encoded = lua_toboolean(L, 2) ? "b1" : "b0";
+            break;
+        default:
+            return luaL_error(L, "calendar.store: value must be a number, string or boolean");
+    }
+    if (std::strlen(key) > 64) return luaL_error(L, "calendar.store: keys are limited to 64 bytes");
+    lua_pushboolean(L, ctx->world->store(ctx->mod_id, key, encoded) ? 1 : 0);
+    return 1;
+}
+
+int calendar_load(lua_State* L) {
+    WorldContext* ctx = world_ctx(L);
+    const char* key = luaL_checkstring(L, 1);
+    std::string encoded;
+    if (ctx->world == nullptr || !ctx->world->load(ctx->mod_id, key, encoded) || encoded.empty()) {
+        lua_pushnil(L);
+        return 1;
+    }
+    const std::string body = encoded.substr(1);
+    switch (encoded[0]) {
+        case 'n': lua_pushnumber(L, std::strtod(body.c_str(), nullptr)); break;
+        case 'b': lua_pushboolean(L, body == "1" ? 1 : 0); break;
+        case 's': lua_pushlstring(L, body.data(), body.size()); break;
+        default:  lua_pushnil(L); break;
+    }
+    return 1;
+}
+
 int calendar_register(lua_State* L) {
     auto* ctx = static_cast<RegistrationContext*>(lua_touserdata(L, lua_upvalueindex(1)));
+    if (ctx->sink == nullptr) {
+        return luaL_error(L, "calendar.register may only be called while the mod is loading");
+    }
     luaL_checktype(L, 1, LUA_TTABLE);
 
     HolidaySpec spec;
@@ -327,13 +480,30 @@ int calendar_on(lua_State* L) {
     return 0;
 }
 
-void install_calendar_api(lua_State* L, RegistrationContext* ctx) {
+void install_calendar_api(lua_State* L, RegistrationContext* ctx, WorldContext* world) {
     lua_newtable(L);
     lua_pushlightuserdata(L, ctx);
     lua_pushcclosure(L, calendar_register, 1);
     lua_setfield(L, -2, "register");
     lua_pushcfunction(L, calendar_on);
     lua_setfield(L, -2, "on");
+
+    static const luaL_Reg kWorldApi[] = {
+        { "today", calendar_today },
+        { "weather", calendar_weather },
+        { "is_active", calendar_is_active },
+        { "players_online", calendar_players_online },
+        { "set_weather", calendar_set_weather },
+        { "announce", calendar_announce },
+        { "grant", calendar_grant },
+        { "store", calendar_store },
+        { "load", calendar_load },
+    };
+    for (const luaL_Reg& entry : kWorldApi) {
+        lua_pushlightuserdata(L, world);
+        lua_pushcclosure(L, entry.func, 1);
+        lua_setfield(L, -2, entry.name);
+    }
     lua_setglobal(L, "calendar");
 }
 
@@ -343,6 +513,11 @@ struct ModHost::Mod {
     std::string id;
     lua_State* L = nullptr;
     AllocState alloc;
+    /* Both are addressed by light-userdata upvalues in the calendar bindings,
+     * so they must live exactly as long as the lua_State does. Holding them by
+     * value here is what guarantees that. */
+    RegistrationContext registration;
+    WorldContext world;
     std::uint64_t random_seed = 0;
     bool quarantined = false;
     int consecutive_errors = 0;
@@ -479,10 +654,11 @@ bool ModHost::load_all(const ModRegistry& registry, const ModLimits& limits, std
             return false;
         }
         install_sandbox(mod->L, &mod->random_seed);
-        RegistrationContext registration;
-        registration.mod_id = manifest.id;
-        registration.sink = &holidays_;
-        install_calendar_api(mod->L, &registration);
+        mod->registration.mod_id = manifest.id;
+        mod->registration.sink = &holidays_;
+        mod->world.mod_id = manifest.id;
+        mod->world.world = world_;
+        install_calendar_api(mod->L, &mod->registration, &mod->world);
         const std::size_t holidays_before = holidays_.size();
 
         const std::filesystem::path entry = manifest.root / manifest.entry;
@@ -517,6 +693,10 @@ bool ModHost::load_all(const ModRegistry& registry, const ModLimits& limits, std
         } else {
             log_mod_event(mod->id, "loaded", manifest.version);
         }
+        /* Registration is load-time only. Closing the sink here means a mod
+         * calling calendar.register from a hook gets a clear error rather than
+         * mutating a calendar that has already been resolved and replicated. */
+        mod->registration.sink = nullptr;
         metrics_.memory_denials += mod->alloc.denials;
         mods_.push_back(std::move(mod));
     }
@@ -561,6 +741,49 @@ bool ModHost::call_hook(const std::string& mod_id, const char* hook) {
     metrics_.memory_denials += mod->alloc.denials;
     mod->alloc.denials = 0;
     return true;
+}
+
+void ModHost::call_holiday_hook(const std::string& holiday_id, bool begin) {
+    const std::size_t dot = holiday_id.find('.');
+    if (dot == std::string::npos) return;
+    const std::string owner = holiday_id.substr(0, dot);
+    const std::string local = holiday_id.substr(dot + 1);
+
+    Mod* mod = find(owner);
+    if (mod == nullptr || mod->quarantined || mod->L == nullptr) return;
+
+    lua_getglobal(mod->L, begin ? "on_holiday_begin" : "on_holiday_end");
+    if (!lua_isfunction(mod->L, -1)) {
+        lua_pop(mod->L, 1);
+        return;
+    }
+    /* The mod sees its own unqualified id -- the namespace is the host's
+     * bookkeeping, not something a mod author should have to write out. */
+    lua_pushlstring(mod->L, local.data(), local.size());
+
+    ++metrics_.hooks_called;
+    lua_sethook(mod->L, budget_hook, LUA_MASKCOUNT, limits_.instructions_hour);
+    const int status = lua_pcall(mod->L, 1, 0, 0);
+    lua_sethook(mod->L, nullptr, 0, 0);
+
+    if (status != LUA_OK) {
+        const char* message = lua_tostring(mod->L, -1);
+        mod->last_error = (message != nullptr) ? message : "unknown error";
+        lua_pop(mod->L, 1);
+        ++metrics_.hook_errors;
+        ++mod->consecutive_errors;
+        log_mod_event(mod->id, "hook_error",
+                      std::string(begin ? "on_holiday_begin" : "on_holiday_end") + ": " + mod->last_error);
+        if (mod->consecutive_errors >= limits_.errors_to_quarantine) {
+            mod->quarantined = true;
+            ++metrics_.quarantined;
+            log_mod_event(mod->id, "quarantined", "too many consecutive errors");
+        }
+    } else {
+        mod->consecutive_errors = 0;
+    }
+    metrics_.memory_denials += mod->alloc.denials;
+    mod->alloc.denials = 0;
 }
 
 void ModHost::drop_quarantined_holidays() {

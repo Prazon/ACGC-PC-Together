@@ -25,6 +25,42 @@ struct ModLimits {
     int errors_to_quarantine = 3;
 };
 
+/* What a mod is allowed to see and change, as an interface rather than a
+ * dependency on TownRuntime.
+ *
+ * Two reasons it is shaped this way. mod_host.cpp stays free of the runtime
+ * header, which keeps the Lua layer buildable and testable on its own; and the
+ * set of things a mod can do is enumerated in one place, so widening a mod's
+ * reach is a visible edit here rather than an accident somewhere in the
+ * bindings.
+ *
+ * Every mutating call routes through the same authority a player transaction
+ * uses. A mod is trusted to *ask*, exactly like a client is -- it never commits
+ * anything itself. */
+class ModWorld {
+public:
+    virtual ~ModWorld() = default;
+
+    /* Authoritative town time. There is no other clock a mod can read: `os` is
+     * absent from the sandbox, so this is the only source of "now". */
+    virtual acnet::TownDate today() const = 0;
+    /* 0 clear, 1 cloudy, 2 rain, 3 snow -- acnet::Weather's ordering. */
+    virtual int weather() const = 0;
+    virtual std::vector<std::uint64_t> players_online() const = 0;
+    virtual bool holiday_active(const std::string& holiday_id) const = 0;
+
+    /* Effects. Each returns false if the runtime refused; a mod sees the
+     * refusal rather than a silent no-op. */
+    virtual bool set_weather(int kind) = 0;
+    virtual bool grant_item(std::uint64_t account, std::uint16_t item) = 0;
+    virtual void announce(const std::string& mod_id, const std::string& string_key) = 0;
+
+    /* Per-mod key/value that survives a restart. Values are small scalars
+     * rendered as text; anything larger belongs in the mod's own files. */
+    virtual bool store(const std::string& mod_id, const std::string& key, const std::string& value) = 0;
+    virtual bool load(const std::string& mod_id, const std::string& key, std::string& value) const = 0;
+};
+
 struct ModMetrics {
     std::uint64_t hooks_called = 0;
     std::uint64_t hook_errors = 0;
@@ -54,7 +90,17 @@ public:
      * A mod whose chunk fails to load or errors during `on_load` is quarantined
      * and the rest still load: one bad mod must not deny the others.
      * Returns false only for an error that makes the whole set unusable. */
+    /* Installed before load_all so a mod can query during registration. May be
+     * null in tests that only exercise registration; the bindings then report
+     * "the town is not available yet" rather than crashing. */
+    void set_world(ModWorld* world) { world_ = world; }
+
     bool load_all(const ModRegistry& registry, const ModLimits& limits, std::string& error);
+
+    /* Calls `on_holiday_begin` / `on_holiday_end` on the mod that owns the
+     * holiday, passing the un-namespaced id. Silently does nothing if the owner
+     * is quarantined or defines no such hook. */
+    void call_holiday_hook(const std::string& holiday_id, bool begin);
 
     /* Calls a global function by name if the mod defines one. Returns false if
      * the mod is quarantined, has no such function, or the call failed --
@@ -86,6 +132,7 @@ private:
     struct Mod;
     std::vector<std::unique_ptr<Mod>> mods_;
     std::vector<HolidaySpec> holidays_;
+    ModWorld* world_ = nullptr;
     ModLimits limits_;
     ModMetrics metrics_;
 

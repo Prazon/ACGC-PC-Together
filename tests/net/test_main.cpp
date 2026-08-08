@@ -41,6 +41,8 @@
 #include <iostream>
 #include <iomanip>
 #include <limits>
+#include <map>
+#include <set>
 #include <deque>
 #include <stdexcept>
 #include <string>
@@ -1356,6 +1358,214 @@ void mod_calendar_holidays_are_namespaced() {
     host.drop_quarantined_holidays();
     CHECK(host.holidays().size() == 1);
     CHECK(host.holidays()[0].id == "beta.harvest");
+}
+
+namespace modtest {
+
+/* A ModWorld a test controls, so the Lua surface can be exercised without a
+ * whole TownRuntime. Records effects so a test can assert what a mod asked for. */
+class FakeWorld : public acserver::ModWorld {
+public:
+    acnet::TownDate date;
+    int weather_kind = 0;
+    std::vector<std::uint64_t> online;
+    std::set<std::string> active_holidays;
+    bool allow_effects = true;
+
+    std::vector<int> weather_requests;
+    std::vector<std::pair<std::uint64_t, std::uint16_t>> grants;
+    std::vector<std::pair<std::string, std::string>> announcements;
+    std::map<std::string, std::string> kv;
+
+    acnet::TownDate today() const override { return date; }
+    int weather() const override { return weather_kind; }
+    std::vector<std::uint64_t> players_online() const override { return online; }
+    bool holiday_active(const std::string& id) const override { return active_holidays.count(id) != 0; }
+
+    bool set_weather(int kind) override {
+        weather_requests.push_back(kind);
+        if (allow_effects) weather_kind = kind;
+        return allow_effects;
+    }
+    bool grant_item(std::uint64_t account, std::uint16_t item) override {
+        grants.emplace_back(account, item);
+        return allow_effects;
+    }
+    void announce(const std::string& mod_id, const std::string& key) override {
+        announcements.emplace_back(mod_id, key);
+    }
+    bool store(const std::string& mod_id, const std::string& key, const std::string& value) override {
+        if (!allow_effects) return false;
+        kv[mod_id + "/" + key] = value;
+        return true;
+    }
+    bool load(const std::string& mod_id, const std::string& key, std::string& value) const override {
+        const auto it = kv.find(mod_id + "/" + key);
+        if (it == kv.end()) return false;
+        value = it->second;
+        return true;
+    }
+};
+
+} // namespace modtest
+
+/* The query side. A mod's only clock is calendar.today(): `os` is absent, so
+ * anything time-dependent has to come through here and is therefore
+ * reproducible from server state. */
+void mod_calendar_queries_read_the_town() {
+    const auto mods = modtest::make_mods_dir("query");
+    modtest::write_mod(mods.root, "probe",
+        "seen = {}\n"
+        "function on_hour()\n"
+        "  local t = calendar.today()\n"
+        "  seen.year, seen.month, seen.day, seen.hour, seen.weekday =\n"
+        "      t.year, t.month, t.day, t.hour, t.weekday\n"
+        "  seen.weather = calendar.weather()\n"
+        "  seen.players = #calendar.players_online()\n"
+        "  seen.active = calendar.is_active('lantern')\n"
+        "  if seen.year ~= 2026 then error('year ' .. tostring(seen.year)) end\n"
+        "  if seen.weather ~= 'rain' then error('weather ' .. seen.weather) end\n"
+        "  if seen.players ~= 2 then error('players ' .. seen.players) end\n"
+        "  if not seen.active then error('holiday should be active') end\n"
+        "end\n");
+
+    modtest::FakeWorld world;
+    world.date.year = 2026;
+    world.date.month = 10;
+    world.date.day = 7;
+    world.date.hour = 19;
+    world.date.weekday = 3;
+    world.weather_kind = 2;                       /* rain */
+    world.online = { 11, 22 };
+    world.active_holidays.insert("probe.lantern");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(host.call_hook("probe", "on_hour"));
+    CHECK(host.last_error("probe").empty());
+}
+
+/* The effect side. A mod asks; the runtime commits. A refusal is visible to the
+ * mod rather than a silent no-op, which is what lets a mod written against an
+ * authoritative town behave sensibly when the town says no. */
+void mod_calendar_effects_route_through_the_runtime() {
+    const auto mods = modtest::make_mods_dir("effects");
+    modtest::write_mod(mods.root, "lantern-night",
+        "function on_holiday_begin(id)\n"
+        "  if id ~= 'lantern_night' then error('unexpected id ' .. id) end\n"
+        "  calendar.set_weather('clear')\n"
+        "  calendar.announce('banner')\n"
+        "end\n"
+        "function on_holiday_end(id)\n"
+        "  for _, account in ipairs(calendar.players_online()) do\n"
+        "    calendar.grant(account, 0x30A1)\n"
+        "  end\n"
+        "  calendar.store('awarded_year', calendar.today().year)\n"
+        "end\n");
+
+    modtest::FakeWorld world;
+    world.date.year = 2026;
+    world.online = { 7, 9 };
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+
+    /* The host passes the un-namespaced id to the owning mod. */
+    host.call_holiday_hook("lantern-night.lantern_night", true);
+    CHECK(world.weather_requests.size() == 1);
+    CHECK(world.weather_requests[0] == 0);
+    CHECK(world.announcements.size() == 1);
+    CHECK(world.announcements[0].first == "lantern-night");
+    CHECK(world.announcements[0].second == "banner");
+
+    host.call_holiday_hook("lantern-night.lantern_night", false);
+    CHECK(world.grants.size() == 2);
+    CHECK(world.grants[0].first == 7 && world.grants[0].second == 0x30A1);
+    CHECK(world.kv["lantern-night/awarded_year"] == "n2026");
+    CHECK(host.last_error("lantern-night").empty());
+
+    /* A hook belonging to another mod is not called. */
+    host.call_holiday_hook("someone-else.lantern_night", true);
+    CHECK(world.weather_requests.size() == 1);
+}
+
+/* store/load round-trips the three value types a mod can persist, and is
+ * per-mod: one mod cannot read another's state. */
+void mod_calendar_store_round_trips() {
+    const auto mods = modtest::make_mods_dir("store");
+    modtest::write_mod(mods.root, "keeper",
+        "function on_hour()\n"
+        "  calendar.store('count', 41)\n"
+        "  calendar.store('label', 'lantern')\n"
+        "  calendar.store('done', true)\n"
+        "  if calendar.load('count') ~= 41 then error('number') end\n"
+        "  if calendar.load('label') ~= 'lantern' then error('string') end\n"
+        "  if calendar.load('done') ~= true then error('boolean') end\n"
+        "  if calendar.load('absent') ~= nil then error('absent should be nil') end\n"
+        "end\n");
+    modtest::write_mod(mods.root, "nosy",
+        "function on_hour()\n"
+        "  if calendar.load('count') ~= nil then error('read another mod state') end\n"
+        "end\n");
+
+    modtest::FakeWorld world;
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+
+    CHECK(host.call_hook("keeper", "on_hour"));
+    CHECK(host.last_error("keeper").empty());
+    CHECK(host.call_hook("nosy", "on_hour"));
+    CHECK(host.last_error("nosy").empty());
+
+    /* Oversized keys and values are refused rather than truncated. */
+    const auto big = modtest::make_mods_dir("big");
+    modtest::write_mod(big.root, "hoarder",
+        "function on_hour() calendar.store('k', string.rep('x', 600)) end\n");
+    acserver::ModRegistry big_registry;
+    CHECK(big_registry.scan(big.root, error));
+    acserver::ModHost big_host;
+    big_host.set_world(&world);
+    CHECK(big_host.load_all(big_registry, acserver::ModLimits{}, error));
+    CHECK(!big_host.call_hook("hoarder", "on_hour"));
+    CHECK(big_host.last_error("hoarder").find("512") != std::string::npos);
+}
+
+/* Registration is load-time only. A mod that calls register from a hook would
+ * be mutating a calendar that has already been resolved and replicated, so it
+ * gets a clear error instead. */
+void mod_registration_is_load_time_only() {
+    const auto mods = modtest::make_mods_dir("latereg");
+    modtest::write_mod(mods.root, "sneaky",
+        "calendar.register { id = 'early', name = 'n', date = { month = 1, day = 1 } }\n"
+        "function on_hour()\n"
+        "  calendar.register { id = 'late', name = 'n', date = { month = 2, day = 2 } }\n"
+        "end\n");
+
+    modtest::FakeWorld world;
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(host.holidays().size() == 1);
+
+    CHECK(!host.call_hook("sneaky", "on_hour"));
+    CHECK(host.last_error("sneaky").find("while the mod is loading") != std::string::npos);
+    CHECK(host.holidays().size() == 1);
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -5865,6 +6075,10 @@ int main() {
         {"mod calendar api registers holidays", mod_calendar_api_registers_holidays},
         {"mod calendar api rejects bad specs", mod_calendar_api_rejects_bad_specs},
         {"mod calendar holidays are namespaced", mod_calendar_holidays_are_namespaced},
+        {"mod calendar queries read the town", mod_calendar_queries_read_the_town},
+        {"mod calendar effects route through runtime", mod_calendar_effects_route_through_the_runtime},
+        {"mod calendar store round trips", mod_calendar_store_round_trips},
+        {"mod registration is load time only", mod_registration_is_load_time_only},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
