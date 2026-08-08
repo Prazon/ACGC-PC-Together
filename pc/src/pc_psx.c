@@ -307,6 +307,8 @@ int pc_psx_boot_selected(void) {
     if (pc_libretro_load(g_pc_settings.psx_core, g_pc_settings.psx_bios_dir, "save") != 0)
         return PC_PSX_ERR_NO_CORE;
 
+    pc_libretro_set_analog_mode(g_pc_settings.psx_analog);
+
     if (pc_libretro_load_game(s_selected_path) != 0) {
         pc_libretro_unload();
         return PC_PSX_ERR_BOOT;
@@ -323,6 +325,8 @@ int pc_psx_boot_index(int index) {
 
     if (pc_libretro_load(g_pc_settings.psx_core, g_pc_settings.psx_bios_dir, "save") != 0)
         return PC_PSX_ERR_NO_CORE;
+
+    pc_libretro_set_analog_mode(g_pc_settings.psx_analog);
 
     if (pc_libretro_load_game(s_list_paths[index]) != 0) {
         pc_libretro_unload();
@@ -344,6 +348,8 @@ int pc_psx_boot(void) {
     if (pc_libretro_load(g_pc_settings.psx_core, g_pc_settings.psx_bios_dir, "save") != 0)
         return PC_PSX_ERR_NO_CORE;
 
+    pc_libretro_set_analog_mode(g_pc_settings.psx_analog);
+
     if (pc_libretro_load_game(game_path) != 0) {
         pc_libretro_unload();
         return PC_PSX_ERR_BOOT;
@@ -351,8 +357,12 @@ int pc_psx_boot(void) {
     return PC_PSX_OK;
 }
 
-void pc_psx_frame(uint16_t buttons) {
+void pc_psx_frame(uint16_t buttons, int16_t stick_x, int16_t stick_y) {
     pc_libretro_set_input(buttons);
+    /* Only the left stick is driven: the game's pad_t carries a plain
+     * OSContPad, which has no substick, so there is no C-stick to map to the
+     * DualShock's right stick without widening that struct. */
+    pc_libretro_set_analog(stick_x, stick_y, 0, 0);
     pc_libretro_run_frame();
 
     /* Drain this frame's audio and resample to the game's 32kHz output,

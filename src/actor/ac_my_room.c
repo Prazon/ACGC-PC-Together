@@ -2268,6 +2268,15 @@ static void aMR_RequestStartEmu_List(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_acto
 
 #ifdef TARGET_PC
         my_room->emu_info.list_source = list_source;
+
+        /* The prompt this request raises is drawn before the player confirms,
+         * so aMR_SetEmulatorStartMessage runs too late to flavor it — set the
+         * wording flag here or the PS1 item asks about NES software. */
+        {
+            extern int g_pc_psx_msg_flavor;
+            g_pc_psx_msg_flavor = (list_source == aMR_EMU_LIST_PSX);
+        }
+
         if (list_source == aMR_EMU_LIST_PSX) {
             card_count = pc_psx_list_games();
         } else {
@@ -2370,7 +2379,12 @@ static void aMR_FamicomEmuCommonMove(FTR_ACTOR* ftr_actor, ACTOR* actorx, GAME* 
             return;
         }
         if (rom_no == PSX_EMU_ROM_DIRECT) {
+            extern int g_pc_psx_msg_flavor;
+
             my_room->emu_info.list_source = aMR_EMU_LIST_PSX;
+            /* Same reason as in aMR_RequestStartEmu_List: this path skips the
+             * picker but still raises the yes/no prompt before boot. */
+            g_pc_psx_msg_flavor = 1;
             aMR_RequestStartEmu(my_room, ftr_actor, rom_no, 255);
             return;
         }

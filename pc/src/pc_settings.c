@@ -26,6 +26,7 @@ PCSettings g_pc_settings = {
     .psx_bios_dir = "bios",
     .psx_game = "",
     .psx_games = "",
+    .psx_analog = 1,
 };
 
 static const char* SETTINGS_FILE = "settings.ini";
@@ -93,7 +94,11 @@ static const char* DEFAULT_SETTINGS =
     "psx_game = \n"
     "# The shelf: '|'-separated disc filenames offered by the PlayStation furniture.\n"
     "# Leave blank to list everything in psx_roms_dir instead.\n"
-    "psx_games = \n";
+    "psx_games = \n"
+    "# Present port 1 as a DualShock so the stick works: 1 = analog, 0 = digital pad.\n"
+    "# A few early PS1 games only poll a digital pad and ignore or misread an\n"
+    "# analog one; set 0 for those.\n"
+    "psx_analog = 1\n";
 
 static const char* skip_ws(const char* s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -162,6 +167,8 @@ static void apply_setting(const char* key, const char* value) {
     } else if (strcmp(key, "psx_games") == 0) {
         strncpy(g_pc_settings.psx_games, value, sizeof(g_pc_settings.psx_games) - 1);
         g_pc_settings.psx_games[sizeof(g_pc_settings.psx_games) - 1] = '\0';
+    } else if (strcmp(key, "psx_analog") == 0) {
+        g_pc_settings.psx_analog = (val != 0);
     }
 }
 

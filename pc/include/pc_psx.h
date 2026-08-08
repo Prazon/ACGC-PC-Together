@@ -55,7 +55,9 @@ int pc_psx_boot_selected(void);
 
 /* Run one emulated frame: apply input, run the core, push audio to the
  * game's 32kHz output. buttons is a PC_LR_PAD_* bitmask (pc_libretro_core.h). */
-void pc_psx_frame(uint16_t buttons);
+/* Run one emulated frame. buttons is a PC_LR_PAD_* bitmask; stick_x/stick_y
+ * are the left stick in libretro's -32768..32767 range (+X right, +Y down). */
+void pc_psx_frame(uint16_t buttons, int16_t stick_x, int16_t stick_y);
 
 /* Draw the current framebuffer to the window (own GL pipeline, mirrors the
  * NES path; honors the nes_aspect setting). */

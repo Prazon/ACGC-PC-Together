@@ -415,14 +415,20 @@ static int mMsg_LoadMsgData(mMsg_Data_c* msg_data, int index, int cut) {
                 }
             }
 
-            /* PlayStation furniture: the shared emulator quit-instructions
-             * text (0x17B5) says "NES" — swap in "PlayStation" when the PS1
-             * item requested the emulator. AC's charset is ASCII-compatible
-             * for letters, so a byte-level word replace with tail shift is
-             * safe; the buffer holds mMsg_MSG_BUF_SIZE with slack. */
+            /* PlayStation furniture: the emulator dialog text says "NES" —
+             * swap in "PlayStation" when the PS1 item requested the emulator.
+             * 0x17B5 is the quit instructions, 11122 the "play your NES
+             * software?" prompt (aMR_MSG_STATE_QQQ_EMULATOR and _MEMORY1) and
+             * 12392 its memory-card variant (_MEMORY2, _MEMORY_OVER3). All
+             * are shared with the stock NES furniture, so the flavor flag is
+             * what keeps that item's own wording intact. AC's charset is
+             * ASCII-compatible for letters, so a byte-level word replace with
+             * tail shift is safe; the buffer holds mMsg_MSG_BUF_SIZE with
+             * slack. */
             {
                 extern int g_pc_psx_msg_flavor;
-                if (index == 0x17B5 && g_pc_psx_msg_flavor) {
+                if (g_pc_psx_msg_flavor &&
+                    (index == 0x17B5 || index == 11122 || index == 12392)) {
                     static const u8 repl[11] = "PlayStation";
                     u8* p = msg_data->text_buf.data;
                     int msg_size = (int)size;

@@ -40,6 +40,7 @@ static void (*p_retro_run)(void);
 static void (*p_retro_get_system_av_info)(struct retro_system_av_info*);
 static void* (*p_retro_get_memory_data)(unsigned);
 static size_t (*p_retro_get_memory_size)(unsigned);
+static void (*p_retro_set_controller_port_device)(unsigned, unsigned);
 
 static char s_system_dir[512];
 static char s_save_dir[512];
@@ -55,6 +56,13 @@ static unsigned s_audio_write, s_audio_read; /* in frames */
 static double s_sample_rate = 44100.0;
 
 static uint16_t s_pad_state;
+
+/* Port 0 stick positions in libretro's -32768..32767 range, indexed
+ * [RETRO_DEVICE_INDEX_ANALOG_LEFT|RIGHT][RETRO_DEVICE_ID_ANALOG_X|Y].
+ * Meaningless unless s_analog_mode put the port in analog mode: a core told
+ * to emulate a digital pad never asks for these. */
+static int16_t s_analog_state[2][2];
+static int s_analog_mode = 1;
 
 /* ---------------------------------------------------------------------- */
 /* Callbacks                                                              */
@@ -162,9 +170,18 @@ static void lr_input_poll(void) {
 }
 
 static int16_t lr_input_state(unsigned port, unsigned device, unsigned index, unsigned id) {
-    (void)index;
     if (port != 0) return 0;
     unsigned base = device & RETRO_DEVICE_MASK;
+
+    if (base == RETRO_DEVICE_ANALOG) {
+        /* index 2 is RETRO_DEVICE_INDEX_ANALOG_BUTTON — per-button pressure,
+         * which this frontend does not source. 0 there means "no pressure
+         * data"; the core falls back to the digital state below. */
+        if (index > RETRO_DEVICE_INDEX_ANALOG_RIGHT) return 0;
+        if (id > RETRO_DEVICE_ID_ANALOG_Y) return 0;
+        return s_analog_state[index][id];
+    }
+
     if (base != RETRO_DEVICE_JOYPAD) return 0;
     if (id == RETRO_DEVICE_ID_JOYPAD_MASK) return (int16_t)s_pad_state;
     if (id < 16) return (s_pad_state >> id) & 1;
@@ -209,6 +226,7 @@ int pc_libretro_load(const char* core_path, const char* system_dir, const char* 
     RESOLVE(retro_get_system_av_info);
     RESOLVE(retro_get_memory_data);
     RESOLVE(retro_get_memory_size);
+    RESOLVE(retro_set_controller_port_device);
 
     snprintf(s_system_dir, sizeof(s_system_dir), "%s", system_dir);
     snprintf(s_save_dir, sizeof(s_save_dir), "%s", save_dir);
@@ -222,6 +240,7 @@ int pc_libretro_load(const char* core_path, const char* system_dir, const char* 
     s_have_frame = 0;
     s_audio_read = s_audio_write = 0;
     s_pad_state = 0;
+    memset(s_analog_state, 0, sizeof(s_analog_state));
     s_pixfmt = PC_LR_PIXFMT_0RGB1555;
 
     p_retro_set_environment(lr_environment);
@@ -274,6 +293,13 @@ int pc_libretro_load_game(const char* game_path) {
     printf("[libretro] game loaded: %s (%.2f fps, %.0f Hz, max %ux%u)\n", game_path,
            av.timing.fps, s_sample_rate, av.geometry.max_width, av.geometry.max_height);
 
+    /* Cores default port 0 to a digital pad, so the sticks are dead until the
+     * port is explicitly switched. Must come after retro_load_game: swanstation
+     * builds its controller objects during load and would discard a device set
+     * before that. */
+    p_retro_set_controller_port_device(0, s_analog_mode ? RETRO_DEVICE_ANALOG : RETRO_DEVICE_JOYPAD);
+    printf("[libretro] port 0 device: %s\n", s_analog_mode ? "analog (DualShock)" : "digital pad");
+
     lr_sram_path_for(game_path);
     lr_sram_load();
 
@@ -312,6 +338,17 @@ double pc_libretro_sample_rate(void) {
 
 void pc_libretro_set_input(uint16_t buttons) {
     s_pad_state = buttons;
+}
+
+void pc_libretro_set_analog(int16_t lx, int16_t ly, int16_t rx, int16_t ry) {
+    s_analog_state[RETRO_DEVICE_INDEX_ANALOG_LEFT][RETRO_DEVICE_ID_ANALOG_X] = lx;
+    s_analog_state[RETRO_DEVICE_INDEX_ANALOG_LEFT][RETRO_DEVICE_ID_ANALOG_Y] = ly;
+    s_analog_state[RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_X] = rx;
+    s_analog_state[RETRO_DEVICE_INDEX_ANALOG_RIGHT][RETRO_DEVICE_ID_ANALOG_Y] = ry;
+}
+
+void pc_libretro_set_analog_mode(int enable) {
+    s_analog_mode = enable ? 1 : 0;
 }
 
 void pc_libretro_save_sram(void) {

@@ -52,6 +52,19 @@ static u16 psx_map_pad(pad_t* pad) {
     return mask;
 }
 
+/* GC stick (s8, +Y up) -> libretro axis (-32768..32767, +Y down).
+ * pc_pad.c scales a real gamepad to the full s8 range, so 258 lands 127 on
+ * 32766; the keyboard's ±80 reaches about 63% deflection, which is why the
+ * digital d-pad mirror above is kept rather than replaced. */
+static int16_t psx_stick_axis(int v, int invert) {
+    int s = (invert ? -v : v) * 258;
+
+    if (s > 32767) s = 32767;
+    if (s < -32768) s = -32768;
+
+    return (int16_t)s;
+}
+
 static void psx_emu_main(GAME* psx) {
     int padid;
     pad_t* current_pad;
@@ -85,7 +98,9 @@ static void psx_emu_main(GAME* psx) {
 
     if (!psx_done) {
         sAdo_GameFrame(); /* pump audio engine each frame, like the NES scene */
-        pc_psx_frame(psx_map_pad(&gamePT->pads[0]));
+        pc_psx_frame(psx_map_pad(&gamePT->pads[0]),
+                     psx_stick_axis(gamePT->pads[0].now.stick_x, 0),
+                     psx_stick_axis(gamePT->pads[0].now.stick_y, 1));
         pc_psx_render();
 
         /* Flush the memory card periodically so a crash can't lose much. */

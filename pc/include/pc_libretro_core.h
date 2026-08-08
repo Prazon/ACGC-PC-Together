@@ -49,6 +49,17 @@ double pc_libretro_sample_rate(void);
 /* Set the RetroPad digital state for port 0 (bitmask of PC_LR_PAD_*). */
 void pc_libretro_set_input(uint16_t buttons);
 
+/* Set port 0's stick positions, libretro range -32768..32767, +X right and
+ * +Y down. Ignored unless analog mode is on (see below). */
+void pc_libretro_set_analog(int16_t lx, int16_t ly, int16_t rx, int16_t ry);
+
+/* Choose what port 0 presents as: nonzero for an analog pad (PS1 DualShock),
+ * zero for the original digital pad. Cores default to digital, so without
+ * this the sticks read as centred no matter what pc_libretro_set_analog says.
+ * Takes effect at the next pc_libretro_load_game, so call it before booting.
+ * Defaults to analog. */
+void pc_libretro_set_analog_mode(int enable);
+
 /* Write SRAM (PS1 memory card) to save_dir/<game>.srm. Safe to call anytime
  * after load_game. */
 void pc_libretro_save_sram(void);

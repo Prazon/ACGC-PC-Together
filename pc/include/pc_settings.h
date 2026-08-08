@@ -27,6 +27,7 @@ typedef struct {
     char psx_bios_dir[260];     /* PS1 BIOS folder (scph5501.bin etc.) */
     char psx_game[260];         /* disc image filename to boot; empty = first found */
     char psx_games[1024];       /* '|'-separated shelf of disc filenames; empty = list the whole folder */
+    int psx_analog;             /* 1=present port 1 as a DualShock (default), 0=original digital pad */
 } PCSettings;
 
 extern PCSettings g_pc_settings;
