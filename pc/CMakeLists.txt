@@ -298,6 +298,9 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_save_bswap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_model_viewer.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_modloader.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_arena.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_assets.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_cache.c
     src/pc_texture_pack.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_settings.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c
