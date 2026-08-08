@@ -531,6 +531,21 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                      * the revision decides which week is current. */
                     if (market.revision >= baseline_.turnips.revision) baseline_.turnips = market;
                 }
+                if (delta.kind == ResourceKind::ModCalendar) {
+                    ModCalendarState calendar;
+                    if (!decode_mod_calendar(delta.payload, calendar)) {
+                        error = "malformed mod calendar delta";
+                        return false;
+                    }
+                    /* Deliberately not gated on has_baseline_: the calendar is
+                     * town-wide and a client needs it to draw a marker whether
+                     * or not it has finished loading a zone. The revision keeps
+                     * a retry from replacing a newer resolution. */
+                    if (!has_mod_calendar_ || calendar.revision >= mod_calendar_.revision) {
+                        mod_calendar_ = std::move(calendar);
+                        has_mod_calendar_ = true;
+                    }
+                }
                 if (delta.kind == ResourceKind::Resident) {
                     ResidentRoster roster;
                     if (!decode_resident_delta(delta.payload, roster)) {

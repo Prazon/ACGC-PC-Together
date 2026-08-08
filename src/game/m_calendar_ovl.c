@@ -1,4 +1,6 @@
 #include "m_calendar_ovl.h"
+#include "m_net_hooks.h"
+#include "m_soncho.h"
 
 #include "m_common_data.h"
 #include "lb_reki.h"
@@ -327,6 +329,30 @@ static void mCD_make_calendar_data_fixed_day_event(mCD_month_entry_c* entry) {
     for (i = 0; i < ARRAY_COUNT(event_table); i++) {
         mDC_set_event_day_data(entry, event_table[i].month, event_table[i].day, event_table[i].event, mCD_DAY_EVENT, 0);
     }
+
+#ifdef NETCODE_ENABLED
+    /* Mod-declared holidays, marked after the stock table so a mod cannot
+     * displace a built-in day. The server resolved these against the town's
+     * year already, so the dates are used as given rather than recomputed. */
+    {
+        const int mod_count = Net_ModHolidayCount();
+        int mod_index;
+
+        for (mod_index = 0; mod_index < mod_count && mod_index < mSC_EVENT_MOD_MAX; mod_index++) {
+            u8 month = 0;
+            u8 day = 0;
+            u8 marker = 0;
+            u8 live = 0;
+
+            if (!Net_ModHoliday(mod_index, &month, &day, &marker, &live)) continue;
+            if (!marker) continue;
+            if (month < 1 || month > 12 || day < 1 || day > 31) continue;
+
+            mDC_set_event_day_data(entry, month, day, (u8)(mSC_EVENT_MOD_BASE + mod_index),
+                                   mCD_DAY_EVENT, 0);
+        }
+    }
+#endif
 }
 
 typedef struct {

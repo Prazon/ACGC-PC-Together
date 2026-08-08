@@ -1129,6 +1129,39 @@ static void Net_UpdateGameplayReadiness(GAME_PLAY* play) {
     }
 }
 
+int Net_ModHolidayCount(void) {
+    return Net_IsConnected() ? acnet_client_mod_holiday_count() : 0;
+}
+
+int Net_ModHoliday(int index, u8* month, u8* day, u8* marker, u8* live) {
+    if (!Net_IsConnected()) return FALSE;
+    return acnet_client_mod_holiday(index, month, day, marker, live) ? TRUE : FALSE;
+}
+
+int Net_ModHolidayName(int index, u8* out, int out_len) {
+    if (!Net_IsConnected()) return 0;
+    return acnet_client_mod_holiday_name(index, out, out_len);
+}
+
+int Net_ModHolidayOnDate(int month, int day) {
+    int count;
+    int i;
+
+    if (!Net_IsConnected()) return -1;
+    count = acnet_client_mod_holiday_count();
+    for (i = 0; i < count; i++) {
+        u8 holiday_month = 0;
+        u8 holiday_day = 0;
+        u8 marker = 0;
+        u8 live = 0;
+        if (!acnet_client_mod_holiday(i, &holiday_month, &holiday_day, &marker, &live)) continue;
+        /* Only marker holidays draw on the calendar; a mod can declare a
+         * holiday that happens without being advertised. */
+        if (marker && (int)holiday_month == month && (int)holiday_day == day) return i;
+    }
+    return -1;
+}
+
 static void Net_ApplyAuthoritativeClock(void) {
     const s64 town_seconds = acnet_client_town_time();
     time_t raw;

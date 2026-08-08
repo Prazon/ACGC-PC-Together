@@ -1,4 +1,5 @@
 #include "m_soncho.h"
+#include "m_net_hooks.h"
 
 #include "m_common_data.h"
 #include "m_name_table.h"
@@ -326,7 +327,29 @@ extern void mSC_get_event_name_str(u8* buf, int buf_len, int soncho_event) {
         28  // birthday
     };
 
-    mString_Load_StringFromRom(buf, buf_len, mString_SONCHO_EVENT_NAME_START + chg_string_idx[soncho_event & 0x7F]);
+    {
+        const int event = soncho_event & 0x7F;
+
+#ifdef NETCODE_ENABLED
+        /* A mod holiday has no ROM string -- its name arrived over the wire in
+         * the game's codepage, already transcoded by the server. */
+        if (event >= mSC_EVENT_MOD_BASE && event < mSC_EVENT_MOD_BASE + mSC_EVENT_MOD_MAX) {
+            if (Net_ModHolidayName(event - mSC_EVENT_MOD_BASE, buf, buf_len) > 0) return;
+            mem_clear(buf, buf_len, CHAR_SPACE);
+            return;
+        }
+#endif
+
+        /* chg_string_idx has mSC_EVENT_NUM + 1 entries and was previously
+         * indexed without a bound, so a special event value (32, 101-103) read
+         * past it. Clamp rather than read out of range. */
+        if (event > mSC_EVENT_NUM) {
+            mem_clear(buf, buf_len, CHAR_SPACE);
+            return;
+        }
+
+        mString_Load_StringFromRom(buf, buf_len, mString_SONCHO_EVENT_NAME_START + chg_string_idx[event]);
+    }
 }
 
 extern void mSC_event_name_set(u8 soncho_event) {

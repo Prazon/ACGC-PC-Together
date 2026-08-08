@@ -151,6 +151,23 @@ u32 Net_TurnipSellPrice(mActor_name_t item);
 /* Projects the authoritative schedule into the save so Kabu_get_price and the
  * shop dialogue read it without further plumbing. */
 void Net_ApplyAuthoritativeTurnipMarket(void);
+
+/* Mod-declared holidays, for presentation only.
+ *
+ * The server resolved these against the town's year before sending them, so the
+ * client draws what it is told and never computes a date. A town with no mods
+ * reports zero, which is what makes every call site below a no-op by default.
+ *
+ * Names are in the game's own codepage, not ASCII (include/m_font.h), because
+ * no ROM string exists for a mod's holiday. */
+int Net_ModHolidayCount(void);
+/* Fills the date and whether the holiday is live right now. Returns FALSE if
+ * `index` is out of range. */
+int Net_ModHoliday(int index, u8* month, u8* day, u8* marker, u8* live);
+/* Space-pads `out` to `out_len`. Returns the glyph count, or 0 if unavailable. */
+int Net_ModHolidayName(int index, u8* out, int out_len);
+/* Index of the holiday on `month`/`day` that wants a calendar marker, or -1. */
+int Net_ModHolidayOnDate(int month, int day);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -207,6 +224,10 @@ void Net_ApplyAuthoritativeTurnipMarket(void);
 #define Net_TurnipMarketAuthoritative() FALSE
 #define Net_TurnipSellPrice(item) 0
 #define Net_ApplyAuthoritativeTurnipMarket() ((void)0)
+#define Net_ModHolidayCount() 0
+#define Net_ModHoliday(index, month, day, marker, live) FALSE
+#define Net_ModHolidayName(index, out, out_len) 0
+#define Net_ModHolidayOnDate(month, day) (-1)
 #endif
 
 #ifdef __cplusplus

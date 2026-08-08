@@ -491,6 +491,41 @@ extern "C" uint8_t acnet_client_weather(void) {
     return client && client->baseline() != nullptr ? client->baseline()->weather : 0;
 }
 
+extern "C" int acnet_client_mod_holiday_count(void) {
+    const acnet::ModCalendarState* calendar = client ? client->mod_calendar() : nullptr;
+    return calendar == nullptr ? 0 : static_cast<int>(calendar->holidays.size());
+}
+
+extern "C" int acnet_client_mod_holiday(int index, uint8_t* month, uint8_t* day,
+                                        uint8_t* marker, uint8_t* live) {
+    const acnet::ModCalendarState* calendar = client ? client->mod_calendar() : nullptr;
+    if (calendar == nullptr || index < 0 || static_cast<std::size_t>(index) >= calendar->holidays.size())
+        return 0;
+    const acnet::ModHolidayEntry& entry = calendar->holidays[static_cast<std::size_t>(index)];
+    if (month != nullptr) *month = entry.month;
+    if (day != nullptr) *day = entry.day;
+    if (marker != nullptr) *marker = (entry.flags & acnet::kModHolidayMarker) != 0 ? 1 : 0;
+    if (live != nullptr) *live = (entry.flags & acnet::kModHolidayLive) != 0 ? 1 : 0;
+    return 1;
+}
+
+extern "C" int acnet_client_mod_holiday_name(int index, uint8_t* out, int out_len) {
+    const acnet::ModCalendarState* calendar = client ? client->mod_calendar() : nullptr;
+    if (calendar == nullptr || out == nullptr || out_len <= 0) return 0;
+    if (index < 0 || static_cast<std::size_t>(index) >= calendar->holidays.size()) return 0;
+    const std::size_t name_index = calendar->holidays[static_cast<std::size_t>(index)].name_index;
+    if (name_index >= calendar->strings.size()) return 0;
+    const std::vector<std::uint8_t>& text = calendar->strings[name_index];
+
+    /* Space-padded rather than NUL-terminated: the game's name records are
+     * fixed-width and space-filled (mIN_ITEM_NAME_LEN), and a NUL would render
+     * as whatever glyph sits at codepoint 0. */
+    const std::size_t copied = std::min(text.size(), static_cast<std::size_t>(out_len));
+    for (std::size_t i = 0; i < copied; ++i) out[i] = text[i];
+    for (std::size_t i = copied; i < static_cast<std::size_t>(out_len); ++i) out[i] = ' ';
+    return static_cast<int>(copied);
+}
+
 extern "C" uint8_t acnet_client_weather_intensity(void) {
     return client && client->baseline() != nullptr ? client->baseline()->weather_intensity : 0;
 }

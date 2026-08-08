@@ -424,6 +424,24 @@ uint64_t acnet_client_bank_balance(void);
 uint64_t acnet_client_debt(void);
 int64_t acnet_client_town_time(void);
 uint8_t acnet_client_weather(void);
+
+/* Mod-declared holidays for the current town year.
+ *
+ * Presentation only. The client draws a calendar marker and a name from these
+ * and never derives a date itself -- the server resolved the recurrence against
+ * the town's year before sending it, which is what stops two clients disagreeing
+ * about which day a holiday falls on.
+ *
+ * A town with no mods, or a server too old to send a calendar, reports 0
+ * entries and every query fails cleanly. */
+int acnet_client_mod_holiday_count(void);
+/* Fills month (1-12), day (1-31), and the active-now flag. Returns 0 if `index`
+ * is out of range. */
+int acnet_client_mod_holiday(int index, uint8_t* month, uint8_t* day, uint8_t* marker, uint8_t* live);
+/* Copies the holiday's name in the game's own codepage (NOT ASCII -- see
+ * include/m_font.h) into `out`, space-padded to `out_len`. Returns the glyph
+ * count written, or 0 if the index is out of range. */
+int acnet_client_mod_holiday_name(int index, uint8_t* out, int out_len);
 uint8_t acnet_client_weather_intensity(void);
 uint32_t acnet_client_town_seed(void);
 uint16_t acnet_client_town_land_id(void);

@@ -63,6 +63,18 @@ enum {
 
   mSC_SPECIAL_EVENT_ARBEIT = 32,
 
+  /* Mod-declared holidays occupy a band of their own in the calendar's event
+   * byte. That byte is masked with 0x7F by the calendar overlay, and the stock
+   * values are the enum above plus 32 (arbeit) and 101-103 (vacations), so
+   * 64..99 is free and stays clear of both. A mod holiday's calendar event is
+   * mSC_EVENT_MOD_BASE + its index in the replicated calendar.
+   *
+   * The band is smaller than kMaxModHolidayEntries (64): a town may declare
+   * more holidays than it can *mark*, and the marker pass simply stops at the
+   * band's end rather than colliding with the vacations. */
+  mSC_EVENT_MOD_BASE = 64,
+  mSC_EVENT_MOD_MAX = 36,
+
   mSC_SPECIAL_EVENT_JAN_VACATION = 101,
   mSC_SPECIAL_EVENT_FEB_VACATION = 102,
   mSC_SPECIAL_EVENT_MORNING_AEROBICS = 103

@@ -94,6 +94,13 @@ public:
     std::uint64_t packets_received() const { return packets_received_; }
     std::uint64_t packets_sent() const { return packets_sent_; }
     const ZoneBaseline* baseline() const { return has_baseline_ ? &baseline_ : nullptr; }
+
+    /* The town's mod-declared calendar, or nullptr if this town runs no mods
+     * (or runs a server too old to send one). Presentation only: the client
+     * draws markers and names from it and never derives a date itself. */
+    const ModCalendarState* mod_calendar() const {
+        return has_mod_calendar_ ? &mod_calendar_ : nullptr;
+    }
     Revision baseline_revision() const { return baseline_revision_; }
     /* Counts whole baselines received, and nothing else. baseline_revision()
      * moves for every delta of every kind -- a viewer that keyed its bulk tile
@@ -236,6 +243,8 @@ private:
     std::deque<TileChange> tile_changes_;
     bool tile_changes_overflowed_ = false;
     bool has_baseline_ = false;
+    ModCalendarState mod_calendar_;
+    bool has_mod_calendar_ = false;
     std::uint32_t town_seed_ = 0;
     std::uint16_t town_land_id_ = 0;
     std::uint8_t resident_slot_ = 0xFF;
