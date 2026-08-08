@@ -1398,6 +1398,108 @@ Known limitations:
   repaints it; the pockets themselves are already reverted by the inventory
   projection.
 
+## Shared surfaces, the stalk market, and the rest of the face (2026-08-07)
+
+Four fixes from a fresh sweep for state that is required for gameplay or
+visuals and was still simulated per client. Protocol went 17 -> 20 across three
+of them; checkpoints went 10 -> 12.
+
+### Remote players cast no shadow
+
+`ac_net_remote_player.c` never called `Shape_Info_init`, so `shadow_proc` kept
+`Actor_info_make_actor`'s NULL default and `Actor_draw` skipped the shadow
+entirely. Remote players floated over unshaded ground in every zone.
+`VISUAL_REPLICATION_AUDIT.md` had this backwards -- it said remotes *always*
+draw a shadow -- so the entry has been corrected.
+
+They now build the same `mAc_ActorShadowCircle` the local player does, and
+`draw_shadow` follows `Player_actor_SetupShadow`'s per-main-index table from the
+replicated action. Only the non-NORMAL entries are named rather than copying the
+121-entry array; every one of them is a state where the player is inside or
+underneath something, which is what confirms the reading. The shadow starts
+disabled and is enabled from the branch that confirms the skeleton is built,
+because `Actor_draw` runs `shadow_proc` whether or not the draw proc bailed out.
+
+The same commit added the running lean. `Player_actor_set_lean_angle` derives
+its pitch from the body animation's playback *speed*, not from the ground normal
+as the audit claimed, so the viewer that already reproduces that speed gets it
+for free.
+
+### A house's surfaces are shared (protocol v18)
+
+`AcNetHouseState` carried the furniture standing on a room's surfaces but never
+the surfaces: two players in the same room each saw their own wallpaper and
+carpet, and repainting a house or hanging a design on its door was invisible to
+everyone but the owner. `HouseSurfaces` adds, per floor, a wallpaper index, a
+flooring index and the two `mHm_fllot_bit_c` flags, plus the exterior palette,
+its two pending values, and the door design. It rides the existing whole-room
+submit, so contested edits resolve exactly as furniture does.
+
+Indices are carried opaquely -- they address game tables the server has no
+reason to know the size of, and `aMI_CheckFloorWallIndex` already clamps a bad
+one as the room loads. The pattern byte is different: the original defines two
+bits and anything else is rejected at the decoder rather than masked. The
+candidate hash covers the block, because repainting a wall moves nothing in the
+furniture grid and the submit would otherwise never fire.
+
+### Turnips could not be sold at all (protocol v19)
+
+The original prices turnips from the town's weekly schedule rather than from
+`mSP_ItemNo2ItemPrice`, so they are absent from the generated price tables, so
+`shop_sell_price` returned 0 -- and `EconomyAuthority` reads a zero price as
+"unsellable" and refuses the whole transaction. Nook would not take them.
+Underneath that, every client rolled its own week, so no two players were quoted
+the same price and none of those prices matched what the server would pay.
+
+`TurnipMarket` is now town state, carried in the baseline and kept live by a
+town-wide `Turnip` delta. The daily job rolls a fresh week when the town date
+lands on a Sunday, reproducing `Kabu_decide_price_schedule` including the random
+walk's inverted-looking clamp. The sell resolver consults it before the static
+tables, multiplying by `{10, 50, 100, 0}` and deliberately not dividing by the
+sell/buy ratio. Client-side the schedule is projected into `Save_t`, so
+`Kabu_get_price` and the counter dialogue quote the authoritative number with no
+further plumbing, and both sides multiply the same per-turnip value by the same
+bundle size. `Kabu_manager` returns early while connected.
+
+`TownDate` gained a weekday, floored rather than truncated so it stays correct
+before the epoch.
+
+### The face, umbrella and hand a viewer could not draw (protocol v20)
+
+Category C of `VISUAL_REPLICATION_AUDIT.md`, batched into one bump as that page
+recommended. `PlayerAppearanceBits` is six bytes -- bee swell, decoy and colour
+flash in one flag byte, plus the sunburn rank, the umbrella action, and the item
+held mid-pickup -- riding `InputCommand` up and the presentation delta down.
+They are kept out of `AppearanceUpdate` on purpose: its 1/s rate bucket and
+journal are the wrong shape for a face that swells and subsides. That was the
+open question the audit left.
+
+`mPlib_Load_PlayerFaceTexAndPalletEx` is the remote-facing form of the two
+resource pickers that previously only worked for the local player, including the
+tanned-palette branch and its suppression under the decoy face.
+
+A replicated `aTOL_ACTION_DESTRUCT` is never forwarded to the umbrella -- its
+lifetime belongs to the tool-change path and the actor's `dt`. The animation
+*phase* is still deliberately absent: a bare start frame is not enough, because
+by the time the delta lands the animation has moved on.
+
+### Verification and the growing debt
+
+`make check` and `make sanitize` are green at every commit -- 52/52 tests, fuzz,
+load, chaos, and the 31-day soak, which crosses several Sundays and so exercises
+the turnip reroll and its checkpointing. New cases cover the house-surface round
+trip and its rejected pattern byte, an end-to-end assertion that the *second*
+client receives the surfaces, 400 weeks of turnip rolls across all three trends
+asserting no zero price ever appears, and a decoder case for every bound the
+appearance bits added.
+
+**None of the visual work in this cycle has been seen on screen.** That now
+covers the shadow, the lean, the shared surfaces, the face resources and the
+umbrella, stacked on top of the equally unverified remote presentation work from
+2026-08-06. `VISUAL_REPLICATION_AUDIT.md` warned against exactly this stacking.
+A `scripts/smoke_online_windows.ps1` pass with a real disc is the single highest
+-value next action, and bisecting any visual bug gets harder with each addition.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as
@@ -1472,6 +1574,15 @@ The earlier 2026-08-06 release gate completed successfully:
   `da0346e24b83fb93d51146a1d7287de7b6ecf5ebf0e6dede16d4b8193d595e09`.
 
 ## Next recommended task
+
+**Blocking everything visual: run the client.** Five cycles of remote
+presentation work -- faces, tools, locomotion speed, shadows, lean, the shared
+room surfaces, the face resource bits and the umbrella -- are built, unit-tested
+where the portable core can reach them, and have never been drawn. Every further
+addition to `ac_net_remote_player.c` makes bisecting the first visual bug
+harder. `scripts/smoke_online_windows.ps1` with a legitimate disc, then the
+rest of this list.
+
 
 Nook's counter, the museum, and the shelf are wired end to end. What is left is
 proving it on screen, and the one transaction still out of reach:
