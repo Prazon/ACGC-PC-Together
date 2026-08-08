@@ -1,4 +1,4 @@
-# Dedicated town protocol v22
+# Dedicated town protocol v23
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -368,6 +368,52 @@ The owner may bootstrap a house once. Later full-room updates atomically consume
 added items from authoritative inventory and return removed items; moves and
 rotations conserve the item multiset. Free size changes and invented furniture
 are rejected. Every client in the house receives the accepted baseline.
+
+### `ModCalendar` (v23)
+
+Appended to `ResourceKind` — the enum is a `u8` validated against its last value,
+so a kind is only ever added at the end.
+
+The town's mod-declared holidays for the current year, plus the names for them:
+
+```
+u32   revision            (never 0)
+u16   year                the year these dates are resolved for
+u8    manifest_digest[32] SHA-256 over the active mod set
+u8    holiday_count       <= kMaxModHolidayEntries (64)
+  repeated:
+    u8  month             1-12
+    u8  day               1-31
+    u8  hour_from         0-23
+    u8  hour_to           0-23, >= hour_from
+    u8  flags             bit0 marker, bit1 live-now; other bits must be clear
+    u8  name_index        < string_count
+u8    string_count        <= kMaxModStrings (64)
+  repeated:
+    u8  length            <= kMaxModStringBytes (128)
+    u8  bytes[length]     game codepage, not ASCII or UTF-8
+```
+
+The client receives **resolved dates, never recurrence rules**. The server has
+already applied the rule to the town's year, which is what stops a client
+disagreeing about which day a holiday falls on.
+
+Names travel as bytes because the game's font is a 256-entry custom codepage
+(`include/m_font.h`); the client cannot derive a mod's holiday name from
+anything it already has, and there is no ROM string for it. The server
+transcodes and rejects anything without a glyph at mod load, so an unmappable
+character is a startup error for the operator rather than a garbled name for
+every player.
+
+At full occupancy the resource exceeds `kMaxPayloadBytes`, so it travels on the
+Bulk channel through `fragmentation.cpp` like any other oversized payload;
+`kMaxModCalendarBytes` (12288) bounds what a decoder will consider at all.
+
+Reserved flag bits must be clear. That is what lets a later version add a flag
+without an older client mistaking it for one it already understood.
+
+A client that does not know this kind ignores the delta and sees an ordinary
+town — the mod calendar is additive, and no part of the protocol requires it.
 
 Snapshots also carry a four-house light mask sourced from each authoritative
 house's `main_light_on` state. The original client uses that switch for the

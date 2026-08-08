@@ -268,6 +268,8 @@ private:
     /* Fires holiday_begin/holiday_end for windows that opened or closed since
      * the last call. */
     void update_mod_holiday_edges();
+    /* Encodes the resolved calendar and queues it as a town-wide delta. */
+    void publish_mod_calendar();
 
     std::vector<std::uint8_t> encode_state() const;
     bool decode_state(const std::vector<std::uint8_t>& payload, std::string& error);
@@ -324,6 +326,7 @@ private:
     /* Which holidays were inside their window at the last check, so
      * begin/end hooks fire exactly once per edge rather than every tick. */
     std::vector<std::string> mod_active_holidays_;
+    acnet::Revision mod_calendar_revision_ = 0;
     PersistenceStore persistence_;
     DatabaseStore database_;
     std::unordered_map<acnet::SessionId, Connection> connections_;

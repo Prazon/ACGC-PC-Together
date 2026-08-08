@@ -41,6 +41,13 @@ int main(int argc, char** argv) {
             (void)acnet::decode_fragment(packet.payload, fragment);
             (void)acnet::decode_baseline(packet.payload, baseline);
             (void)acnet::decode_deltas(packet.payload, deltas);
+            /* Mod-declared calendar. Reachable from any town that installs a
+             * mod, and the client indexes its string array directly, so it gets
+             * the same bounded-garbage treatment as every other parser. */
+            {
+                acnet::ModCalendarState mod_calendar;
+                (void)acnet::decode_mod_calendar(packet.payload, mod_calendar);
+            }
         }
         if ((iteration % 1000) == 0) {
             acnet::ClientHello hello;

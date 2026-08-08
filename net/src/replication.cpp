@@ -343,6 +343,85 @@ bool decode_turnip_delta(const std::vector<std::uint8_t>& input, TurnipMarket& m
     return decode_turnips(reader, market) && reader.finished();
 }
 
+bool encode_mod_calendar(const ModCalendarState& state, std::vector<std::uint8_t>& output) {
+    if (state.revision == 0) return false;
+    if (state.holidays.size() > kMaxModHolidayEntries) return false;
+    if (state.strings.size() > kMaxModStrings) return false;
+
+    /* Explicitly larger than the default payload limit: see kMaxModCalendarBytes. */
+    ByteWriter writer(kMaxModCalendarBytes);
+    if (!writer.u32(state.revision) || !writer.u16(state.year) ||
+        !writer.bytes(state.manifest_digest.data(), state.manifest_digest.size()) ||
+        !writer.u8(static_cast<std::uint8_t>(state.holidays.size())))
+        return false;
+
+    for (const ModHolidayEntry& holiday : state.holidays) {
+        /* Validated on the way out as well as in. An out-of-range month here is
+         * a server bug, and shipping it would put the fault on the client that
+         * rejected the packet. */
+        if (holiday.month < 1 || holiday.month > 12) return false;
+        if (holiday.day < 1 || holiday.day > 31) return false;
+        if (holiday.hour_from > 23 || holiday.hour_to > 23) return false;
+        if (holiday.hour_to < holiday.hour_from) return false;
+        if ((holiday.flags & ~(kModHolidayMarker | kModHolidayLive)) != 0) return false;
+        if (holiday.name_index >= state.strings.size()) return false;
+        if (!writer.u8(holiday.month) || !writer.u8(holiday.day) || !writer.u8(holiday.hour_from) ||
+            !writer.u8(holiday.hour_to) || !writer.u8(holiday.flags) || !writer.u8(holiday.name_index))
+            return false;
+    }
+
+    if (!writer.u8(static_cast<std::uint8_t>(state.strings.size()))) return false;
+    for (const std::vector<std::uint8_t>& text : state.strings) {
+        if (text.size() > kMaxModStringBytes) return false;
+        if (!writer.u8(static_cast<std::uint8_t>(text.size()))) return false;
+        if (!text.empty() && !writer.bytes(text.data(), text.size())) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode_mod_calendar(const std::vector<std::uint8_t>& input, ModCalendarState& state) {
+    state = ModCalendarState{};
+    if (input.size() > kMaxModCalendarBytes) return false;
+    ByteReader reader(input);
+    std::uint8_t holiday_count = 0;
+    if (!reader.u32(state.revision) || state.revision == 0 || !reader.u16(state.year) ||
+        !reader.bytes(state.manifest_digest.data(), state.manifest_digest.size()) ||
+        !reader.u8(holiday_count) || holiday_count > kMaxModHolidayEntries)
+        return false;
+
+    state.holidays.resize(holiday_count);
+    for (ModHolidayEntry& holiday : state.holidays) {
+        if (!reader.u8(holiday.month) || !reader.u8(holiday.day) || !reader.u8(holiday.hour_from) ||
+            !reader.u8(holiday.hour_to) || !reader.u8(holiday.flags) || !reader.u8(holiday.name_index))
+            return false;
+        if (holiday.month < 1 || holiday.month > 12) return false;
+        if (holiday.day < 1 || holiday.day > 31) return false;
+        if (holiday.hour_from > 23 || holiday.hour_to > 23) return false;
+        if (holiday.hour_to < holiday.hour_from) return false;
+        /* Reserved bits must be clear, so adding a flag later cannot be
+         * mistaken for one an old client already understood. */
+        if ((holiday.flags & ~(kModHolidayMarker | kModHolidayLive)) != 0) return false;
+    }
+
+    std::uint8_t string_count = 0;
+    if (!reader.u8(string_count) || string_count > kMaxModStrings) return false;
+    state.strings.resize(string_count);
+    for (std::vector<std::uint8_t>& text : state.strings) {
+        std::uint8_t length = 0;
+        if (!reader.u8(length) || length > kMaxModStringBytes) return false;
+        text.resize(length);
+        if (length != 0 && !reader.bytes(text.data(), text.size())) return false;
+    }
+
+    /* Every holiday must name a string that actually arrived: the client
+     * indexes this array directly. */
+    for (const ModHolidayEntry& holiday : state.holidays) {
+        if (holiday.name_index >= state.strings.size()) return false;
+    }
+    return reader.finished();
+}
+
 bool ResidentRoster::operator==(const ResidentRoster& other) const {
     for (std::size_t i = 0; i < slots.size(); ++i) {
         const ResidentIdentity& left = slots[i];

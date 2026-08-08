@@ -1675,6 +1675,105 @@ void mod_calendar_drives_a_real_town() {
     }
 }
 
+/* Wire format for the mod calendar. The client indexes `strings` directly and
+ * draws a marker from `flags`, so every bound here is one the decoder must
+ * enforce rather than trust. */
+void mod_calendar_replicates() {
+    acnet::ModCalendarState state;
+    state.revision = 7;
+    state.year = 2026;
+    state.manifest_digest.fill(0xAB);
+    state.strings.push_back({ 'L', 'a', 'n', 't', 'e', 'r', 'n' });
+    state.strings.push_back({ 'H', 'a', 'r', 'v', 'e', 's', 't' });
+
+    acnet::ModHolidayEntry lantern;
+    lantern.month = 10;
+    lantern.day = 7;
+    lantern.hour_from = 18;
+    lantern.hour_to = 22;
+    lantern.flags = acnet::kModHolidayMarker | acnet::kModHolidayLive;
+    lantern.name_index = 0;
+    state.holidays.push_back(lantern);
+
+    acnet::ModHolidayEntry harvest;
+    harvest.month = 11;
+    harvest.day = 26;
+    harvest.flags = acnet::kModHolidayMarker;
+    harvest.name_index = 1;
+    state.holidays.push_back(harvest);
+
+    std::vector<std::uint8_t> encoded;
+    CHECK(acnet::encode_mod_calendar(state, encoded));
+    acnet::ModCalendarState decoded;
+    CHECK(acnet::decode_mod_calendar(encoded, decoded));
+    CHECK(decoded.revision == 7);
+    CHECK(decoded.year == 2026);
+    CHECK(decoded.manifest_digest == state.manifest_digest);
+    CHECK(decoded.holidays.size() == 2);
+    CHECK(decoded.holidays[0].month == 10 && decoded.holidays[0].day == 7);
+    CHECK((decoded.holidays[0].flags & acnet::kModHolidayLive) != 0);
+    CHECK((decoded.holidays[1].flags & acnet::kModHolidayLive) == 0);
+    CHECK(decoded.strings.size() == 2);
+    CHECK(decoded.strings[1].size() == 7);
+
+    /* Full at both caps still round-trips. */
+    acnet::ModCalendarState full;
+    full.revision = 1;
+    full.year = 2026;
+    for (std::size_t i = 0; i < acnet::kMaxModStrings; ++i) {
+        full.strings.push_back(std::vector<std::uint8_t>(acnet::kMaxModStringBytes, 'x'));
+    }
+    for (std::size_t i = 0; i < acnet::kMaxModHolidayEntries; ++i) {
+        acnet::ModHolidayEntry entry;
+        entry.month = 6;
+        entry.day = 1;
+        entry.name_index = static_cast<std::uint8_t>(i);
+        full.holidays.push_back(entry);
+    }
+    CHECK(acnet::encode_mod_calendar(full, encoded));
+    CHECK(acnet::decode_mod_calendar(encoded, decoded));
+    CHECK(decoded.holidays.size() == acnet::kMaxModHolidayEntries);
+
+    /* Refusals. Each of these is something a hostile or buggy peer could send. */
+    acnet::ModCalendarState bad = state;
+    bad.revision = 0;                                  /* zero revision is never valid */
+    CHECK(!acnet::encode_mod_calendar(bad, encoded));
+
+    bad = state;
+    bad.holidays[0].month = 13;
+    CHECK(!acnet::encode_mod_calendar(bad, encoded));
+
+    bad = state;
+    bad.holidays[0].hour_to = 3;                       /* window ends before it starts */
+    CHECK(!acnet::encode_mod_calendar(bad, encoded));
+
+    bad = state;
+    bad.holidays[0].name_index = 9;                    /* dangling string index */
+    CHECK(!acnet::encode_mod_calendar(bad, encoded));
+
+    bad = state;
+    bad.holidays.resize(acnet::kMaxModHolidayEntries + 1, lantern);
+    CHECK(!acnet::encode_mod_calendar(bad, encoded));
+
+    /* A reserved flag bit must be refused, so adding one later cannot be
+     * mistaken for a flag an old client already understood. */
+    CHECK(acnet::encode_mod_calendar(state, encoded));
+    encoded[38] |= 0x80;                               /* first holiday's flags byte */
+    CHECK(!acnet::decode_mod_calendar(encoded, decoded));
+
+    /* Truncation at every length must be refused rather than read past. */
+    CHECK(acnet::encode_mod_calendar(state, encoded));
+    for (std::size_t cut = 0; cut < encoded.size(); ++cut) {
+        std::vector<std::uint8_t> truncated(encoded.begin(), encoded.begin() + static_cast<long>(cut));
+        acnet::ModCalendarState ignored;
+        CHECK(!acnet::decode_mod_calendar(truncated, ignored));
+    }
+    /* Trailing junk is refused too -- the decoder must consume exactly. */
+    CHECK(acnet::encode_mod_calendar(state, encoded));
+    encoded.push_back(0);
+    CHECK(!acnet::decode_mod_calendar(encoded, decoded));
+}
+
 void town_configuration_is_loaded_and_validated() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -6187,6 +6286,7 @@ int main() {
         {"mod calendar store round trips", mod_calendar_store_round_trips},
         {"mod registration is load time only", mod_registration_is_load_time_only},
         {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
+        {"mod calendar replicates", mod_calendar_replicates},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},

@@ -48,7 +48,45 @@ enum class ResourceKind : std::uint8_t {
      * market, and every player must be quoted the same price for the same
      * turnip on the same day. */
     Turnip,
+    /* The town's mod-declared holidays for the current year, plus the strings
+     * that name them. Town-wide and slow-moving -- resolved once per town day --
+     * so it rides the normal delta path rather than the snapshot. Appended, not
+     * inserted: the wire encodes this enum as a u8 validated against the last
+     * value, so reordering would silently change every existing kind. */
+    ModCalendar,
 };
+
+/* One mod holiday as the client needs it: when it is, what to call it, and
+ * whether to mark it on the calendar. The client never sees the recurrence rule
+ * -- the server has already resolved it against the town's year, which is what
+ * keeps a client from disagreeing about what day a holiday falls on. */
+struct ModHolidayEntry {
+    std::uint8_t month = 0;      /* 1-12 */
+    std::uint8_t day = 0;        /* 1-31 */
+    std::uint8_t hour_from = 0;  /* 0-23 */
+    std::uint8_t hour_to = 23;   /* 0-23, >= hour_from */
+    std::uint8_t flags = 0;      /* bit0 marker, bit1 live now */
+    std::uint8_t name_index = 0; /* index into `strings` */
+};
+
+constexpr std::uint8_t kModHolidayMarker = 1u << 0;
+constexpr std::uint8_t kModHolidayLive = 1u << 1;
+
+struct ModCalendarState {
+    Revision revision = 0;
+    std::uint16_t year = 0;
+    /* SHA-256 over the active mod set, so a client can tell whether it has the
+     * town's content without downloading anything. Advisory in this protocol
+     * version: a mismatch never refuses a connection. */
+    std::array<std::uint8_t, 32> manifest_digest{};
+    std::vector<ModHolidayEntry> holidays;
+    /* Display names, already transcoded to the game's codepage by the server --
+     * they are not ASCII and the client cannot derive them from anything it has. */
+    std::vector<std::vector<std::uint8_t>> strings;
+};
+
+bool encode_mod_calendar(const ModCalendarState& state, std::vector<std::uint8_t>& output);
+bool decode_mod_calendar(const std::vector<std::uint8_t>& input, ModCalendarState& state);
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
  * Population 0 means "not reported"; capacity is never 0. */

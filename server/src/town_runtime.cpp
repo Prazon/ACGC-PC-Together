@@ -2,10 +2,12 @@
 
 #include "acnet/protocol.hpp"
 #include "acserver/gci.hpp"
+#include "acserver/mod_strings.hpp"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <map>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -508,7 +510,52 @@ bool TownRuntime::resolve_mod_calendar(int year, std::string& error) {
     mod_calendar_.swap(resolved);
     mod_calendar_year_ = year;
     mod_active_holidays_.clear();
+    publish_mod_calendar();
     return true;
+}
+
+void TownRuntime::publish_mod_calendar() {
+    acnet::ModCalendarState state;
+    state.revision = mod_calendar_revision_ = advance_revision(mod_calendar_revision_);
+    state.year = static_cast<std::uint16_t>(mod_calendar_year_);
+    state.manifest_digest = mod_registry_.manifest_digest();
+
+    const acnet::TownDate date = acnet::town_date_from_seconds(clock_.state().town_unix_seconds);
+    /* Names are de-duplicated: several holidays commonly share one string, and
+     * the wire cap is on entries rather than bytes. */
+    std::map<std::string, std::uint8_t> string_index;
+    for (const ResolvedHoliday& holiday : mod_calendar_) {
+        if (state.holidays.size() >= acnet::kMaxModHolidayEntries) break;
+        auto found = string_index.find(holiday.name_key);
+        if (found == string_index.end()) {
+            if (state.strings.size() >= acnet::kMaxModStrings) continue;
+            GameString text;
+            std::string detail;
+            /* The name key is what a mod's string table would resolve; until
+             * mod string tables ship, the key itself is transcoded so a client
+             * shows something stable and legible rather than nothing. */
+            if (!transcode_utf8(holiday.name_key, text, detail)) continue;
+            if (text.size() > acnet::kMaxModStringBytes) text.resize(acnet::kMaxModStringBytes);
+            found = string_index.emplace(holiday.name_key,
+                                         static_cast<std::uint8_t>(state.strings.size())).first;
+            state.strings.push_back(std::move(text));
+        }
+        acnet::ModHolidayEntry entry;
+        entry.month = static_cast<std::uint8_t>(holiday.month);
+        entry.day = static_cast<std::uint8_t>(holiday.day);
+        entry.hour_from = static_cast<std::uint8_t>(holiday.hour_from);
+        entry.hour_to = static_cast<std::uint8_t>(holiday.hour_to);
+        entry.flags = static_cast<std::uint8_t>((holiday.marker ? acnet::kModHolidayMarker : 0) |
+                                                (holiday_active_at(holiday, date) ? acnet::kModHolidayLive : 0));
+        entry.name_index = found->second;
+        state.holidays.push_back(entry);
+    }
+
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::ModCalendar;
+    delta.zone = 0;
+    delta.target_account = 0;
+    if (acnet::encode_mod_calendar(state, delta.payload)) deltas_.append(std::move(delta));
 }
 
 void TownRuntime::update_mod_holiday_edges() {

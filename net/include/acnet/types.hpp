@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 22;
+constexpr std::uint16_t kProtocolVersion = 23;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -25,6 +25,20 @@ constexpr std::size_t kMaxPlaintextPayloadBytes = kMaxPayloadBytes - kEncryption
 constexpr std::size_t kMaxPlayersPerZone = 16;
 constexpr std::size_t kReconnectTokenBytes = 32;
 constexpr std::size_t kCustomPatternTextureBytes = 32U * 32U / 2U;
+
+/* Mod-declared calendar. Bounds are wire limits, enforced by the decoder on
+ * arrival -- a town can install any number of mods, but what it may *say* to a
+ * client is capped here. */
+constexpr std::size_t kMaxModHolidayEntries = 64;
+/* At most one distinct name per holiday -- more strings than holidays cannot be
+ * referenced, since each entry names exactly one. */
+constexpr std::size_t kMaxModStrings = kMaxModHolidayEntries;
+constexpr std::size_t kMaxModStringBytes = 128;
+/* The whole resource. It exceeds kMaxPayloadBytes at full occupancy by design:
+ * this is town-wide, slow-moving state sent on the Bulk channel, so it goes
+ * through fragmentation.cpp like any other oversized payload. The cap exists so
+ * a decoder can reject an absurd claim before allocating for it. */
+constexpr std::size_t kMaxModCalendarBytes = 12288;
 
 /* Bounds of the original player state machines, mirrored here so the portable
  * core can reject a presentation field without including a game header:
