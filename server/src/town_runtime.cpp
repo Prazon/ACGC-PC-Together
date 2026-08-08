@@ -1184,6 +1184,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.shop = economy_.shop();
     baseline.museum = economy_.museum();
     baseline.turnips = turnips_;
+    baseline.town_tune = town_tune_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1795,6 +1796,45 @@ bool TownRuntime::dispatch(Connection& connection,
                     !send_baseline(active.second, monotonic_ms, error)) return false;
             }
             return true;
+        }
+        case acnet::MessageType::TownTuneUpdate: {
+            acnet::TownTuneUpdate request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            acnet::TownTuneResult result;
+            result.idempotency = request.idempotency;
+            /* Keyed on the low word alone would collide across accounts; mix
+             * both halves with the account, as the other families do. */
+            const std::uint64_t key = request.idempotency.high ^ (request.idempotency.low * 1099511628211ULL) ^
+                                      (connection.account * 1000003ULL);
+            const auto prior = town_tune_idempotency_.find(key);
+            if (prior != town_tune_idempotency_.end()) {
+                result = prior->second;
+                result.replayed = true;
+            } else if (request.expected_revision != town_tune_.revision) {
+                result.code = acnet::ResultCode::StaleRevision;
+                result.revision = town_tune_.revision;
+                result.notes = town_tune_.notes;
+            } else {
+                town_tune_.notes = request.notes;
+                town_tune_.revision = advance_revision(town_tune_.revision);
+                result.code = acnet::ResultCode::Ok;
+                result.revision = town_tune_.revision;
+                result.notes = town_tune_.notes;
+                town_tune_idempotency_[key] = result;
+                if (!commit_state(124, error) ||
+                    !database_.audit(connection.account, "town-tune", "notes set", wall_unix_seconds(), error))
+                    return false;
+                acnet::ReplicationDelta delta;
+                delta.kind = acnet::ResourceKind::TownTune;
+                delta.zone = 0;
+                delta.target_account = 0;
+                if (acnet::encode_town_tune_delta(town_tune_, delta.payload)) deltas_.append(std::move(delta));
+            }
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) { error = "failed to serialize town tune result"; return false; }
+            return send_payload(connection, acnet::MessageType::TownTuneResult, acnet::Channel::Transactions,
+                                payload, monotonic_ms, error);
         }
         case acnet::MessageType::GyroidRequest: {
             acnet::GyroidOperation request;

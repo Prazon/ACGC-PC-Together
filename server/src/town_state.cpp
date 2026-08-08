@@ -16,8 +16,10 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 12 adds the weekly turnip schedule; an older checkpoint has none and the
  * next Sunday job rolls one.
  * 13 adds each house's music box. An older checkpoint has none and every house
- * starts with an empty stereo. */
-constexpr std::uint16_t kTownStateVersion = 13;
+ * starts with an empty stereo.
+ * 14 adds the town tune; an older checkpoint has none and the town keeps the
+ * default melody until somebody retunes it. */
+constexpr std::uint16_t kTownStateVersion = 14;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -190,6 +192,7 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
 
     for (std::uint16_t price : turnips_.daily_price) if (!writer.u16(price)) return {};
     if (!writer.u8(turnips_.trend) || !writer.u32(turnips_.revision)) return {};
+    if (!writer.u64(town_tune_.notes) || !writer.u32(town_tune_.revision)) return {};
 
     const auto& mail = economy_.mail_records();
     if (mail.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -410,6 +413,11 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         if (!reader.u8(turnips_.trend) || !reader.u32(turnips_.revision) ||
             turnips_.trend >= acnet::kTurnipTrendCount || turnips_.revision == 0) {
             error = "invalid turnip schedule"; return false;
+        }
+    }
+    if (version >= 14) {
+        if (!reader.u64(town_tune_.notes) || !reader.u32(town_tune_.revision) || town_tune_.revision == 0) {
+            error = "invalid town tune"; return false;
         }
     }
 

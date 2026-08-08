@@ -331,6 +331,18 @@ bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& de
            delta.house_id != 0 && delta.original_slot < kOriginalResidentSlots && reader.finished();
 }
 
+bool encode_town_tune_delta(const TownTune& tune, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (tune.revision == 0 || !writer.u64(tune.notes) || !writer.u32(tune.revision)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_town_tune_delta(const std::vector<std::uint8_t>& input, TownTune& tune) {
+    ByteReader reader(input);
+    return reader.u64(tune.notes) && reader.u32(tune.revision) && tune.revision != 0 && reader.finished();
+}
+
 bool encode_turnip_delta(const TurnipMarket& market, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
     if (!encode_turnips(writer, market)) return false;
@@ -402,6 +414,8 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (entry.occupied && (!writer.u64(entry.house_id) || !encode_gyroid(writer, entry.state))) return false;
     }
     if (!encode_turnips(writer, baseline.turnips)) return false;
+    if (baseline.town_tune.revision == 0) return false;
+    if (!writer.u64(baseline.town_tune.notes) || !writer.u32(baseline.town_tune.revision)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -497,6 +511,8 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
                                !decode_gyroid(reader, entry.state))) return false;
     }
     if (!decode_turnips(reader, baseline.turnips)) return false;
+    if (!reader.u64(baseline.town_tune.notes) || !reader.u32(baseline.town_tune.revision) ||
+        baseline.town_tune.revision == 0) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
@@ -738,7 +754,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
         delta.kind == ResourceKind::Resident || delta.kind == ResourceKind::Shop ||
         delta.kind == ResourceKind::Museum ||
         delta.kind == ResourceKind::Gyroid ||
-        delta.kind == ResourceKind::Turnip) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Turnip ||
+        delta.kind == ResourceKind::TownTune) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

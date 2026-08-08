@@ -48,6 +48,44 @@ enum class ResourceKind : std::uint8_t {
      * market, and every player must be quoted the same price for the same
      * turnip on the same day. */
     Turnip,
+    /* The town tune. Town-wide, and audible to everyone: it plays on the hour
+     * and at the gate, so a locally-set one means every player hears a
+     * different town. */
+    TownTune,
+};
+
+/* Save_t::melody -- sixteen notes of four bits each, packed into a u64 exactly
+ * as mMld_TransformMelodyData_u8_2_u64 packs them. Carried opaquely: every one
+ * of the sixteen values a nibble can hold is a note the game will play, so
+ * there is no out-of-range case to reject. */
+struct TownTune {
+    std::uint64_t notes = 0;
+    Revision revision = 1;
+
+    bool operator==(const TownTune& other) const {
+        return notes == other.notes && revision == other.revision;
+    }
+};
+
+bool encode_town_tune_delta(const TownTune& tune, std::vector<std::uint8_t>& output);
+bool decode_town_tune_delta(const std::vector<std::uint8_t>& input, TownTune& tune);
+
+/* Anyone may retune the town at the town hall, so this is contested state: the
+ * request quotes the revision it saw and a stale one is refused, exactly as a
+ * house or gyroid edit is. */
+struct TownTuneUpdate {
+    AccountId account = 0;
+    IdempotencyKey idempotency;
+    Revision expected_revision = 0;
+    std::uint64_t notes = 0;
+};
+
+struct TownTuneResult {
+    ResultCode code = ResultCode::InternalError;
+    IdempotencyKey idempotency;
+    Revision revision = 0;
+    std::uint64_t notes = 0;
+    bool replayed = false;
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -161,6 +199,7 @@ struct ZoneBaseline {
     std::array<GyroidEntry, kOriginalResidentSlots> gyroids{};
     /* Town-wide, like the shelf and the museum. */
     TurnipMarket turnips;
+    TownTune town_tune;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

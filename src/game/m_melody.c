@@ -2,6 +2,7 @@
 
 #include "ac_npc.h"
 #include "m_common_data.h"
+#include "m_net_hooks.h"
 
 extern void mMld_SetDefaultMelody() {
   static u8 melody[mMld_MELODY_LEN] = {
@@ -36,6 +37,18 @@ extern void mMld_GetMelody(u8* dst) {
 }
 
 extern void mMld_SetSaveMelody(u8* melody) {
+  /* One town, one tune. Online the server owns it and
+   * Net_ApplyAuthoritativeTownTune projects it back, so the local write is sent
+   * as a request instead: writing straight into the save would retune the town
+   * for this player alone until the next projection undid it. */
+  if (Net_TownTuneAuthoritative()) {
+    u64 packed = 0;
+
+    mMld_TransformMelodyData_u8_2_u64(&packed, melody);
+    Net_RequestTownTune(packed);
+    return;
+  }
+
   mMld_TransformMelodyData_u8_2_u64(Save_GetPointer(melody), melody);
 }
 

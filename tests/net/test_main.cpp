@@ -1687,6 +1687,58 @@ void shop_tier_is_earned_and_server_owned() {
     CHECK(!acnet::encode_shop_delta(bad, payload));
 }
 
+void town_tune_is_town_state() {
+    /* Sixteen four-bit notes packed as mMld_TransformMelodyData_u8_2_u64 packs
+     * them. Every nibble value is a note the game will play, so the only thing
+     * to validate is the revision. */
+    acnet::TownTune tune;
+    tune.notes = 0x7CF76BF9AEDE3FEEull;
+    tune.revision = 7;
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_town_tune_delta(tune, payload));
+    acnet::TownTune decoded;
+    CHECK(acnet::decode_town_tune_delta(payload, decoded));
+    CHECK(decoded == tune);
+
+    acnet::TownTune unset;
+    unset.revision = 0;
+    CHECK(!acnet::encode_town_tune_delta(unset, payload));
+
+    /* The request quotes what it saw, so two players retuning at once resolve
+     * like any other contested edit. */
+    acnet::TownTuneUpdate update;
+    update.account = 55;
+    update.idempotency = {3, 4};
+    update.expected_revision = 7;
+    update.notes = tune.notes;
+    CHECK(acnet::encode(update, payload));
+    acnet::TownTuneUpdate decoded_update;
+    CHECK(acnet::decode(payload, decoded_update));
+    CHECK(decoded_update.notes == tune.notes);
+    CHECK(decoded_update.expected_revision == 7);
+
+    /* A request that quotes nothing has not observed the town, and one with no
+     * idempotency key cannot be replayed safely. */
+    acnet::TownTuneUpdate stale = update;
+    stale.expected_revision = 0;
+    CHECK(!acnet::encode(stale, payload));
+    acnet::TownTuneUpdate keyless = update;
+    keyless.idempotency = {0, 0};
+    CHECK(!acnet::encode(keyless, payload));
+
+    acnet::TownTuneResult result;
+    result.code = acnet::ResultCode::Ok;
+    result.idempotency = {3, 4};
+    result.revision = 8;
+    result.notes = tune.notes;
+    CHECK(acnet::encode(result, payload));
+    acnet::TownTuneResult decoded_result;
+    CHECK(acnet::decode(payload, decoded_result));
+    CHECK(decoded_result.code == acnet::ResultCode::Ok);
+    CHECK(decoded_result.revision == 8);
+    CHECK(decoded_result.notes == tune.notes);
+}
+
 void turnip_market_is_town_state() {
     /* Every trend, many weeks, from a deterministic stream: the schedule must
      * always be usable, because a zero price is what the economy reads as
@@ -5197,6 +5249,7 @@ int main() {
         {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
         {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
+        {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},
         {"shop shelf replicates town-wide", shop_shelf_replicates_town_wide},
         {"museum collection replicates", museum_collection_replicates_and_refuses_duplicates},

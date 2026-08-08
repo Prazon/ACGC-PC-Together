@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 22;
+constexpr std::uint16_t kProtocolVersion = 23;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -84,6 +84,8 @@ enum class MessageType : std::uint16_t {
     EncounterResult = 33,
     GyroidRequest = 34,
     GyroidResult = 35,
+    TownTuneUpdate = 36,
+    TownTuneResult = 37,
     ZoneTransferRequest = 40,
     ZoneTransferOffer = 41,
     ZoneReady = 42,

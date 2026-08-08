@@ -164,6 +164,8 @@ public:
     std::optional<TransferOffer> take_transfer_offer();
     std::optional<FurnitureResult> take_furniture_result();
     std::optional<HouseUpdateResult> take_house_update_result();
+    std::optional<TownTuneResult> take_town_tune_result();
+    bool request_town_tune(std::uint64_t notes, std::uint64_t now_ms, std::string& error);
     std::optional<EncounterResult> take_encounter_result();
     std::optional<GyroidResult> take_gyroid_result();
     std::optional<TownBootstrapResult> take_town_bootstrap_result();
@@ -255,6 +257,7 @@ private:
     std::optional<TransferOffer> transfer_offer_;
     std::optional<FurnitureResult> furniture_result_;
     std::optional<HouseUpdateResult> house_update_result_;
+    std::optional<TownTuneResult> town_tune_result_;
     std::optional<EncounterResult> encounter_result_;
     std::optional<GyroidResult> gyroid_result_;
     std::optional<TownBootstrapResult> town_bootstrap_result_;

@@ -285,6 +285,10 @@ private:
      * used to roll its own, and because turnips are priced from this rather
      * than from the static tables. */
     acnet::TurnipMarket turnips_;
+    /* The town tune. Anyone may retune it at the town hall, so it carries a
+     * revision and a stale edit is refused. */
+    acnet::TownTune town_tune_;
+    std::unordered_map<std::uint64_t, acnet::TownTuneResult> town_tune_idempotency_;
     /* The fruit this town grows, reported once by the bootstrapping client.
      * Zero until then, which prices every fruit as foreign. */
     std::uint16_t native_fruit_ = 0;

@@ -521,6 +521,14 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     }
                     baseline_.museum = museum;
                 }
+                if (delta.kind == ResourceKind::TownTune && has_baseline_) {
+                    TownTune tune;
+                    if (!decode_town_tune_delta(delta.payload, tune)) {
+                        error = "malformed town tune delta";
+                        return false;
+                    }
+                    if (tune.revision >= baseline_.town_tune.revision) baseline_.town_tune = tune;
+                }
                 if (delta.kind == ResourceKind::Turnip && has_baseline_) {
                     TurnipMarket market;
                     if (!decode_turnip_delta(delta.payload, market)) {
@@ -652,6 +660,15 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             break;
         case MessageType::HouseUpdateResult:
             if (!decode(packet.payload, house_update_result_.emplace())) return false;
+            break;
+        case MessageType::TownTuneResult:
+            if (!decode(packet.payload, town_tune_result_.emplace())) return false;
+            /* The accepted tune is town state, so adopt it immediately rather
+             * than waiting for the broadcast to come back around. */
+            if (town_tune_result_->code == ResultCode::Ok && has_baseline_) {
+                baseline_.town_tune.notes = town_tune_result_->notes;
+                baseline_.town_tune.revision = town_tune_result_->revision;
+            }
             break;
         case MessageType::GyroidResult:
             if (!decode(packet.payload, gyroid_result_.emplace())) return false;
@@ -937,6 +954,20 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+std::optional<TownTuneResult> ClientRuntime::take_town_tune_result() {
+    auto result = std::move(town_tune_result_); town_tune_result_.reset(); return result;
+}
+bool ClientRuntime::request_town_tune(std::uint64_t notes, std::uint64_t now_ms, std::string& error) {
+    if (!has_baseline_) { error = "no baseline yet"; return false; }
+    TownTuneUpdate update;
+    update.account = config_.account;
+    update.idempotency = {random_nonzero_u64(), random_nonzero_u64()};
+    update.expected_revision = baseline_.town_tune.revision;
+    update.notes = notes;
+    std::vector<std::uint8_t> payload;
+    if (!encode(update, payload)) { error = "failed to encode a town tune update"; return false; }
+    return send_payload(MessageType::TownTuneUpdate, Channel::Transactions, payload, now_ms, error);
 }
 std::optional<EncounterResult> ClientRuntime::take_encounter_result() {
     auto result = std::move(encounter_result_); encounter_result_.reset(); return result;

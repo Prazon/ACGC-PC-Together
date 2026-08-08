@@ -1,4 +1,4 @@
-# Dedicated town protocol v22
+# Dedicated town protocol v23
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -128,6 +128,25 @@ shelf.
 
 Client-side `mSP_PlusSales` returns early while connected, and the level and
 total are projected into `Save_t` alongside the shelf.
+
+## The town tune
+
+`Save_t::melody` -- sixteen four-bit notes packed into a u64 exactly as
+`mMld_TransformMelodyData_u8_2_u64` packs them -- is town state, added in v23.
+It rides the `Baseline` after the turnip schedule and a `ResourceKind::TownTune`
+delta keeps it live, town-wide: the tune plays on the hour and at the gate, so a
+locally set one means every player hears a different town.
+
+The notes are carried opaquely. Every one of the sixteen values a nibble can
+hold is a note the game will play, so there is nothing to reject; only a zero
+revision is refused.
+
+`TownTuneUpdate` (36) / `TownTuneResult` (37) ride the Transactions channel.
+Anyone may retune at the town hall, so this is contested: the request quotes the
+revision it observed and carries an idempotency key, a stale one is refused with
+`StaleRevision` and the current tune returned, and a replayed key returns the
+original result rather than retuning twice. `mMld_SetSaveMelody` sends the
+request instead of writing the save while connected.
 
 ## The stalk market
 

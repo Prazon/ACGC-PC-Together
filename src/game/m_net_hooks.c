@@ -1862,6 +1862,31 @@ int Net_GyroidAuthoritative(void) {
     return Net_IsConnected() && acnet_client_gyroid_serial() != 0;
 }
 
+int Net_TownTuneAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_town_tune_revision() != 0;
+}
+
+int Net_RequestTownTune(u64 notes) {
+    if (!Net_TownTuneAuthoritative()) return FALSE;
+    return acnet_client_request_town_tune((uint64_t)notes);
+}
+
+/* The town's tune, projected into the save the original plays from. Also drains
+ * the request result, which matters only for a refusal: a stale-revision
+ * rejection carries the tune that won, and the projection below writes it. */
+void Net_ApplyAuthoritativeTownTune(void) {
+    uint16_t code = 0;
+    uint64_t notes = 0;
+    u64 authoritative;
+
+    if (!Net_IsConnected()) return;
+    while (acnet_client_take_town_tune_result(&code, &notes)) {
+    }
+    if (acnet_client_town_tune_revision() == 0) return;
+    authoritative = (u64)acnet_client_town_tune();
+    if (Save_Get(melody) != authoritative) Save_Set(melody, authoritative);
+}
+
 int Net_TurnipMarketAuthoritative(void) {
     return Net_IsConnected() && acnet_client_has_turnip_market();
 }
@@ -2157,6 +2182,7 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
      * arrives with the first baseline, and there is no separate revision to
      * watch it with. */
     Net_ApplyAuthoritativeTurnipMarket();
+    Net_ApplyAuthoritativeTownTune();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

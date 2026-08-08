@@ -151,6 +151,14 @@ u32 Net_TurnipSellPrice(mActor_name_t item);
 /* Projects the authoritative schedule into the save so Kabu_get_price and the
  * shop dialogue read it without further plumbing. */
 void Net_ApplyAuthoritativeTurnipMarket(void);
+
+/* TRUE once the town has reported its tune. Save_Get(melody) is then a
+ * projection: one town has one tune and everybody hears it on the hour, so a
+ * locally set one would have every player hearing a different town. */
+int Net_TownTuneAuthoritative(void);
+/* Retune the town. The accepted result and the broadcast both settle it. */
+int Net_RequestTownTune(u64 notes);
+void Net_ApplyAuthoritativeTownTune(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -207,6 +215,9 @@ void Net_ApplyAuthoritativeTurnipMarket(void);
 #define Net_TurnipMarketAuthoritative() FALSE
 #define Net_TurnipSellPrice(item) 0
 #define Net_ApplyAuthoritativeTurnipMarket() ((void)0)
+#define Net_TownTuneAuthoritative() FALSE
+#define Net_RequestTownTune(notes) FALSE
+#define Net_ApplyAuthoritativeTownTune() ((void)0)
 #endif
 
 #ifdef __cplusplus

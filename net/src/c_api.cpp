@@ -1013,6 +1013,38 @@ extern "C" int acnet_client_has_turnip_market(void) {
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" uint64_t acnet_client_town_tune(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->town_tune.notes;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_town_tune_revision(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        return client->baseline()->town_tune.revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_town_tune(uint64_t notes) {
+    try {
+        if (!client) return 0;
+        return client->request_town_tune(notes, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_take_town_tune_result(uint16_t* result_code, uint64_t* notes) {
+    try {
+        if (!client) return 0;
+        const auto result = client->take_town_tune_result();
+        if (!result.has_value()) return 0;
+        if (result_code != nullptr) *result_code = static_cast<uint16_t>(result->code);
+        if (notes != nullptr) *notes = result->notes;
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint32_t acnet_client_gyroid_serial(void) {
     return client ? client->gyroid_serial() : 0;
 }

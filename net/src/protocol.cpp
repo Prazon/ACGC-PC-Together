@@ -61,6 +61,8 @@ bool valid_message(std::uint16_t value) {
         case MessageType::EncounterResult:
         case MessageType::GyroidRequest:
         case MessageType::GyroidResult:
+        case MessageType::TownTuneUpdate:
+        case MessageType::TownTuneResult:
         case MessageType::ZoneTransferRequest:
         case MessageType::ZoneTransferOffer:
         case MessageType::ZoneReady:

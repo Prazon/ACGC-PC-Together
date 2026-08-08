@@ -395,6 +395,16 @@ int acnet_client_turnip_schedule(uint16_t out[7]);
 /* TRUE once a schedule has arrived. */
 int acnet_client_has_turnip_market(void);
 
+/* Save_t::melody as the game packs it: sixteen four-bit notes in a u64. The
+ * town tune is town-wide, so this is the only one a connected client may play.
+ * Returns 0 before the first baseline. */
+uint64_t acnet_client_town_tune(void);
+uint32_t acnet_client_town_tune_revision(void);
+/* Retune the town. Quotes the observed revision, so two players retuning at
+ * once resolve the same way a contested house edit does. */
+int acnet_client_request_town_tune(uint64_t notes);
+int acnet_client_take_town_tune_result(uint16_t* result_code, uint64_t* notes);
+
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no
  * registered house or no baseline has arrived yet. */
