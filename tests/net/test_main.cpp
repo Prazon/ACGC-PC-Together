@@ -1393,6 +1393,7 @@ public:
     std::vector<int> weather_requests;
     std::vector<std::pair<std::uint64_t, std::uint16_t>> grants;
     std::vector<std::pair<std::string, std::string>> announcements;
+    std::vector<std::pair<std::uint8_t, std::uint8_t>> song_grants;
     std::map<std::string, std::string> kv;
 
     acnet::TownDate today() const override { return date; }
@@ -1411,6 +1412,10 @@ public:
     }
     void announce(const std::string& mod_id, const std::string& key) override {
         announcements.emplace_back(mod_id, key);
+    }
+    bool grant_song(std::uint8_t house_slot, std::uint8_t song) override {
+        song_grants.emplace_back(house_slot, song);
+        return allow_effects;
     }
     bool store(const std::string& mod_id, const std::string& key, const std::string& value) override {
         if (!allow_effects) return false;
@@ -1986,6 +1991,133 @@ void asset_pack_store_serves_content() {
     acserver::ModPackStore refused;
     CHECK(!refused.build(oversized.root, error));
     CHECK(error.find("per-asset limit") != std::string::npos);
+}
+
+/* Custom songs. The binding constraint is the stereo's 64-bit music_box with
+ * 55 bits already spoken for, so the interesting behaviour is all around what
+ * happens at nine. */
+void mod_music_defines_custom_songs() {
+    const auto mods = modtest::make_mods_dir("music");
+    modtest::write_mod(mods.root, "lantern-night",
+        "slot_a = music.define { id = 'lantern_waltz', name = 'song_a', audio = 'waltz.ogg' }\n"
+        "slot_b = music.define { id = 'lantern_march', name = 'song_b', audio = 'march.ogg' }\n"
+        "function on_hour() end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    modtest::FakeWorld world;
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(!host.quarantined("lantern-night"));
+
+    const std::vector<acserver::CustomSong>& songs = host.music().songs();
+    CHECK(songs.size() == 2);
+    /* Slots start immediately after the vanilla minidisks, in registration
+     * order, so the same mod set yields the same ids every start -- which
+     * matters because the id is what a saved music_box holds. */
+    CHECK(songs[0].slot == acserver::kVanillaSongCount);
+    CHECK(songs[1].slot == acserver::kVanillaSongCount + 1);
+    CHECK(songs[0].id == "lantern-night.lantern_waltz");
+    CHECK(songs[0].audio == "waltz.ogg");
+    CHECK(host.music().remaining() == acserver::kMaxCustomSongs - 2);
+}
+
+/* Nine is the cap, and it comes from the bitfield rather than from this code.
+ * The tenth definition must fail with an error that explains why. */
+void mod_music_respects_the_music_box_limit() {
+    acserver::ModMusicRegistry registry;
+    std::string error;
+
+    for (int i = 0; i < acserver::kMaxCustomSongs; ++i) {
+        const std::string id = "mod.song" + std::to_string(i);
+        CHECK(registry.define(id, "name", "a.ogg", error));
+    }
+    CHECK(registry.songs().size() == acserver::kMaxCustomSongs);
+    CHECK(registry.remaining() == 0);
+    /* The last slot is the top bit of the field. */
+    CHECK(registry.songs().back().slot == acserver::kMusicBoxBits - 1);
+
+    CHECK(!registry.define("mod.overflow", "name", "a.ogg", error));
+    CHECK(error.find("music_box") != std::string::npos);
+
+    /* Duplicate ids and unsafe audio names are refused. */
+    acserver::ModMusicRegistry fresh;
+    CHECK(fresh.define("mod.one", "name", "a.ogg", error));
+    CHECK(!fresh.define("mod.one", "name", "b.ogg", error));
+    CHECK(error.find("duplicate") != std::string::npos);
+    CHECK(!fresh.define("mod.two", "name", "../../etc/passwd", error));
+    CHECK(error.find("bare filename") != std::string::npos);
+    CHECK(!fresh.define("mod.three", "name", "", error));
+}
+
+/* A quarantined mod loses its songs, and the slots it held are NOT handed to
+ * anyone else -- renumbering would make every stereo already holding one play
+ * something different. */
+void mod_music_slots_are_never_reused() {
+    acserver::ModMusicRegistry registry;
+    std::string error;
+
+    CHECK(registry.define("alpha.one", "name", "a.ogg", error));
+    CHECK(registry.define("beta.one", "name", "b.ogg", error));
+    const std::uint8_t beta_slot = registry.songs()[1].slot;
+
+    registry.drop_by_owner("alpha");
+    CHECK(registry.songs().size() == 1);
+    /* beta keeps the bit it was given. */
+    CHECK(registry.songs()[0].id == "beta.one");
+    CHECK(registry.songs()[0].slot == beta_slot);
+
+    /* A song defined afterwards gets a fresh slot, not alpha's. */
+    CHECK(registry.define("gamma.one", "name", "c.ogg", error));
+    CHECK(registry.songs()[1].slot == beta_slot + 1);
+    CHECK(registry.slot_of("alpha.one") == -1);
+}
+
+/* music.grant routes through the same authority the operator command uses. */
+void mod_music_grant_routes_through_the_runtime() {
+    const auto mods = modtest::make_mods_dir("musicgrant");
+    modtest::write_mod(mods.root, "dj",
+        "music.define { id = 'tune', name = 'song', audio = 'tune.ogg' }\n"
+        "function on_hour() music.grant(0, 55) end\n"
+        "function on_day_start() music.grant(9, 55) end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    modtest::FakeWorld world;
+    acserver::ModHost host;
+    host.set_world(&world);
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+
+    CHECK(host.call_hook("dj", "on_hour"));
+    CHECK(world.song_grants.size() == 1);
+    CHECK(world.song_grants[0].first == 0);
+    CHECK(world.song_grants[0].second == 55);
+
+    /* An out-of-range house slot is refused at the binding, before it reaches
+     * the runtime. */
+    CHECK(!host.call_hook("dj", "on_day_start"));
+    CHECK(world.song_grants.size() == 1);
+    CHECK(host.last_error("dj").find("house slot") != std::string::npos);
+
+    /* Registration is load-time only, exactly like calendar.register. */
+    const auto late = modtest::make_mods_dir("musiclate");
+    modtest::write_mod(late.root, "sneaky",
+        "function on_hour()\n"
+        "  music.define { id = 'late', name = 'n', audio = 'a.ogg' }\n"
+        "end\n");
+    acserver::ModRegistry late_registry;
+    CHECK(late_registry.scan(late.root, error));
+    acserver::ModHost late_host;
+    late_host.set_world(&world);
+    CHECK(late_host.load_all(late_registry, acserver::ModLimits{}, error));
+    CHECK(!late_host.call_hook("sneaky", "on_hour"));
+    CHECK(late_host.last_error("sneaky").find("while the mod is loading") != std::string::npos);
+    CHECK(late_host.music().songs().empty());
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -6629,6 +6761,10 @@ int main() {
         {"mod calendar effects route through runtime", mod_calendar_effects_route_through_the_runtime},
         {"mod calendar store round trips", mod_calendar_store_round_trips},
         {"mod registration is load time only", mod_registration_is_load_time_only},
+        {"mod music defines custom songs", mod_music_defines_custom_songs},
+        {"mod music respects the music_box limit", mod_music_respects_the_music_box_limit},
+        {"mod music slots are never reused", mod_music_slots_are_never_reused},
+        {"mod music grant routes through runtime", mod_music_grant_routes_through_the_runtime},
         {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
         {"mod calendar replicates", mod_calendar_replicates},
         {"asset delivery messages round trip", asset_delivery_messages_round_trip},

@@ -301,6 +301,7 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_arena.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_assets.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_cache.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_fetch.c
     src/pc_texture_pack.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_settings.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "acserver/mod_calendar.hpp"
+#include "acserver/mod_music.hpp"
 #include "acserver/mod_registry.hpp"
 
 #include <cstddef>
@@ -54,6 +55,9 @@ public:
     virtual bool set_weather(int kind) = 0;
     virtual bool grant_item(std::uint64_t account, std::uint16_t item) = 0;
     virtual void announce(const std::string& mod_id, const std::string& string_key) = 0;
+    /* Puts a song in a resident house stereo, through the same authority the
+     * operator command uses. */
+    virtual bool grant_song(std::uint8_t house_slot, std::uint8_t song) = 0;
 
     /* Per-mod key/value that survives a restart. Values are small scalars
      * rendered as text; anything larger belongs in the mod's own files. */
@@ -120,6 +124,10 @@ public:
      * once per town day and replicated as plain data. */
     const std::vector<HolidaySpec>& holidays() const { return holidays_; }
 
+    /* Custom songs declared by loaded mods. Like holidays, the set is complete
+     * once load_all returns and never changes again. */
+    const ModMusicRegistry& music() const { return music_; }
+
     /* Holidays declared by a mod that was later quarantined are dropped: a mod
      * that cannot run its hooks should not still be shaping the calendar. */
     void drop_quarantined_holidays();
@@ -132,6 +140,7 @@ private:
     struct Mod;
     std::vector<std::unique_ptr<Mod>> mods_;
     std::vector<HolidaySpec> holidays_;
+    ModMusicRegistry music_;
     ModWorld* world_ = nullptr;
     ModLimits limits_;
     ModMetrics metrics_;

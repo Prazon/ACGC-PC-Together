@@ -1,4 +1,5 @@
 #include "acserver/mod_host.hpp"
+#include "acserver/mod_music.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -129,6 +130,7 @@ namespace {
 struct RegistrationContext {
     std::string mod_id;
     std::vector<HolidaySpec>* sink = nullptr;
+    ModMusicRegistry* music = nullptr;
     std::string error;          /* first failure; registration stops reporting after it */
 };
 
@@ -466,6 +468,51 @@ int calendar_register(lua_State* L) {
  * indirection in Lua rather than holding a registry reference per hook means
  * the host needs no per-mod callback table, and a mod can equivalently just
  * define the global itself. */
+/* music.define{...} -- a custom song for the house stereos.
+ *
+ * Load-time only, like calendar.register, and for the same reason: a song's
+ * slot is a bit in a saved music_box, so the set cannot change once a town has
+ * started handing them out. */
+int music_define(lua_State* L) {
+    auto* ctx = static_cast<RegistrationContext*>(lua_touserdata(L, lua_upvalueindex(1)));
+    if (ctx->music == nullptr) {
+        return luaL_error(L, "music.define may only be called while the mod is loading");
+    }
+    luaL_checktype(L, 1, LUA_TTABLE);
+
+    std::string local_id;
+    std::string name_key;
+    std::string audio;
+    std::string field_error;
+    if (!read_string_field(L, 1, "id", local_id, field_error) ||
+        !read_string_field(L, 1, "name", name_key, field_error) ||
+        !read_string_field(L, 1, "audio", audio, field_error)) {
+        return luaL_error(L, "%s", field_error.c_str());
+    }
+    if (local_id.empty()) return luaL_error(L, "music.define: 'id' is required");
+
+    std::string detail;
+    if (!ctx->music->define(ctx->mod_id + "." + local_id, name_key, audio, detail)) {
+        return luaL_error(L, "%s", detail.c_str());
+    }
+    lua_pushinteger(L, ctx->music->slot_of(ctx->mod_id + "." + local_id));
+    return 1;
+}
+
+/* music.grant(slot, song) -- put a song in a house's stereo. Routed through the
+ * same authority the operator command uses, so it is journaled. */
+int music_grant(lua_State* L) {
+    auto* ctx = static_cast<WorldContext*>(lua_touserdata(L, lua_upvalueindex(1)));
+    const lua_Integer house_slot = luaL_checkinteger(L, 1);
+    const lua_Integer song = luaL_checkinteger(L, 2);
+    if (house_slot < 0 || house_slot > 3) return luaL_error(L, "music.grant: house slot must be 0-3");
+    if (song < 0 || song > 63) return luaL_error(L, "music.grant: song must be 0-63");
+    if (ctx->world == nullptr) return luaL_error(L, "music.grant: the town is not available yet");
+    lua_pushboolean(L, ctx->world->grant_song(static_cast<std::uint8_t>(house_slot),
+                                              static_cast<std::uint8_t>(song)) ? 1 : 0);
+    return 1;
+}
+
 int calendar_on(lua_State* L) {
     const char* event = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
@@ -505,6 +552,15 @@ void install_calendar_api(lua_State* L, RegistrationContext* ctx, WorldContext* 
         lua_setfield(L, -2, entry.name);
     }
     lua_setglobal(L, "calendar");
+
+    lua_newtable(L);
+    lua_pushlightuserdata(L, ctx);
+    lua_pushcclosure(L, music_define, 1);
+    lua_setfield(L, -2, "define");
+    lua_pushlightuserdata(L, world);
+    lua_pushcclosure(L, music_grant, 1);
+    lua_setfield(L, -2, "grant");
+    lua_setglobal(L, "music");
 }
 
 } // namespace
@@ -656,6 +712,7 @@ bool ModHost::load_all(const ModRegistry& registry, const ModLimits& limits, std
         install_sandbox(mod->L, &mod->random_seed);
         mod->registration.mod_id = manifest.id;
         mod->registration.sink = &holidays_;
+        mod->registration.music = &music_;
         mod->world.mod_id = manifest.id;
         mod->world.world = world_;
         install_calendar_api(mod->L, &mod->registration, &mod->world);
@@ -697,6 +754,7 @@ bool ModHost::load_all(const ModRegistry& registry, const ModLimits& limits, std
          * calling calendar.register from a hook gets a clear error rather than
          * mutating a calendar that has already been resolved and replicated. */
         mod->registration.sink = nullptr;
+        mod->registration.music = nullptr;
         metrics_.memory_denials += mod->alloc.denials;
         mods_.push_back(std::move(mod));
     }
@@ -787,6 +845,13 @@ void ModHost::call_holiday_hook(const std::string& holiday_id, bool begin) {
 }
 
 void ModHost::drop_quarantined_holidays() {
+    /* Songs go with the holidays: a mod that can no longer run its hooks should
+     * not still own a stereo slot. Slots are not reclaimed -- see
+     * ModMusicRegistry::drop_by_owner for why renumbering would be worse. */
+    for (const auto& mod : mods_) {
+        if (mod->quarantined) music_.drop_by_owner(mod->id);
+    }
+
     std::vector<HolidaySpec> kept;
     kept.reserve(holidays_.size());
     for (const HolidaySpec& spec : holidays_) {

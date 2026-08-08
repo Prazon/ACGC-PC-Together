@@ -473,6 +473,14 @@ public:
         return runtime_.send_mail(account, item, std::string(), error);
     }
 
+    bool grant_song(std::uint8_t house_slot, std::uint8_t song) override {
+        std::string error;
+        /* Same entry point as the --grant-song operator command, so the state
+         * change is journaled and the house revision bumps exactly as it would
+         * for a player action. */
+        return runtime_.grant_house_song(house_slot, song, error);
+    }
+
     void announce(const std::string& mod_id, const std::string& key) override {
         runtime_.record_event("mod " + mod_id + " announced " + key);
     }

@@ -46,6 +46,7 @@ MOD_SOURCES := \
 	server/src/mod_registry.cpp \
 	server/src/mod_calendar.cpp \
 	server/src/mod_packstore.cpp \
+	server/src/mod_music.cpp \
 	server/src/mod_strings.cpp \
 	server/src/mod_host.cpp
 
@@ -66,11 +67,16 @@ PCASSET_FUZZ_OBJECTS := $(BUILD_DIR)/tests/fuzz/pcasset_fuzz.o $(BUILD_DIR)/pc/s
 # links a strict subset), so it is checked against published vectors rather
 # than assumed correct.
 MOD_CACHE_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_cache_check.o $(BUILD_DIR)/pc/src/pc_mod_cache.o
+# The fetch loop decides what a player waits for and what they never get, and
+# its failure modes are all quiet ones -- an asset silently never requested,
+# progress that cannot reach its total, a corrupted blob accepted.
+MOD_FETCH_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_fetch_check.o $(BUILD_DIR)/pc/src/pc_mod_fetch.o \
+                     $(BUILD_DIR)/pc/src/pc_mod_cache.o
 LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
 
-.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check
+.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check mod-fetch-check
 
 all: $(BUILD_DIR)/netcode_tests $(BUILD_DIR)/AnimalCrossingServer
 
@@ -90,6 +96,11 @@ mod-cache-check: $(BUILD_DIR)/mod_cache_check
 	@rm -rf $(BUILD_DIR)/mod-cache-scratch
 	@mkdir -p $(BUILD_DIR)/mod-cache-scratch
 	cd $(BUILD_DIR)/mod-cache-scratch && $(abspath $(BUILD_DIR))/mod_cache_check
+
+mod-fetch-check: $(BUILD_DIR)/mod_fetch_check
+	@rm -rf $(BUILD_DIR)/mod-fetch-scratch
+	@mkdir -p $(BUILD_DIR)/mod-fetch-scratch
+	cd $(BUILD_DIR)/mod-fetch-scratch && $(abspath $(BUILD_DIR))/mod_fetch_check
 
 load: $(BUILD_DIR)/town_load
 	$(BUILD_DIR)/town_load 8 600
@@ -111,7 +122,7 @@ long-soak: $(BUILD_DIR)/town_load
 client-link: $(NET_OBJECTS)
 	python3 scripts/check_client_link.py $(BUILD_DIR)
 
-check: test client-link fuzz mod-cache-check load chaos month-soak smoke
+check: test client-link fuzz mod-cache-check mod-fetch-check load chaos month-soak smoke
 
 sanitize:
 	$(MAKE) clean BUILD_DIR=build/netcode-sanitize
@@ -132,6 +143,10 @@ $(BUILD_DIR)/AnimalCrossingServer: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) 
 $(BUILD_DIR)/protocol_fuzz: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(FUZZ_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+$(BUILD_DIR)/mod_fetch_check: $(MOD_FETCH_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CC) $^ $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/mod_cache_check: $(MOD_CACHE_OBJECTS)
 	@mkdir -p $(dir $@)
@@ -173,4 +188,4 @@ $(BUILD_DIR)/third_party/lua/%.o: third_party/lua/%.c
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(MOD_CACHE_OBJECTS:.o=.d) $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
+-include $(MOD_FETCH_OBJECTS:.o=.d) $(MOD_CACHE_OBJECTS:.o=.d) $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
