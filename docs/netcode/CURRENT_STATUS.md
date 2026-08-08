@@ -1812,11 +1812,46 @@ the send rate were chosen by reasoning about the tug between local AI and
 authoritative pose, not by watching it. If villagers look jittery or rubber-band
 on a follower, those two numbers are the first thing to try.
 
+### Phases five and six: memories and the special visitor (v29, v30)
+
+**Villager memories are server-owned.** An earlier entry here argued they could
+stay local, because each player having their own friendship with each villager
+is what the original does. That reasoning was right about the mechanism and
+wrong about the destination: the extended-residents plan boots the client from a
+server baseline with *no local save at all*, and an unreplicated memory is then
+a relationship that silently resets every login. It is the only record that a
+player and a villager have a history.
+
+`Anmmem_c` rides as its own 312 bytes, opaque. Account-scoped rather than
+town-wide, so it sits in that account's baseline beside the inventory. The
+account is taken from the connection, never the request: an account may only
+write its own memories. The client submits on content change and only submits a
+memory that already exists -- allocating one would tell the town this player had
+met somebody they had not.
+
+**The special visitor is town state.** Redd, Saharah, Katrina, the designer, the
+artist and the sale were rolled per client, so their contents diverged even
+where the date did not -- two players were offered different paintings, and the
+"already bought" flags were private to each machine. The schedule dates come
+from town-seeded common data so the events lined up, which is why this went
+unnoticed. `kind` is validated because the game indexes a table with it; the
+rest is opaque POD whose size is asserted with `_Static_assert`, so a decomp
+change to any event struct fails the build rather than silently truncating.
+
+**A persistence bug caught while writing it:** the event block first landed
+between the villager-memory count and its records, so a checkpoint would have
+written one order and read another. Found by re-reading the save/load pair, not
+by a test -- the month soak would only have caught it on a restart that happened
+to carry memories.
+
 ### Still open on villagers
-- **Per-player memories.** Account-scoped and currently local, which is
-  *correct* behaviour for a player who always plays from the same machine --
-  each player having their own friendship with each villager is what the
-  original does. The gap is portability between machines, not divergence.
+- **Schedules.** Villagers move under the host client's AI, but *what* they are
+  doing at a given hour (`m_npc_schedule.c`) is still each client's own. In
+  practice the host's positions carry most of it; the gap is the state behind
+  them.
+- **Gulliver, Wisp, K.K. and the holiday set.** The scheduled special visitor is
+  town state now, but the events that spawn from date and local RNG without
+  going through `mEv_special_c` are not.
 
 ## Compatibility note for the protocol version
 
