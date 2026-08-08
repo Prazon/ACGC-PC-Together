@@ -5035,6 +5035,136 @@ void resident_roster_replication() {
     CHECK(visible.deltas[0].kind == acnet::ResourceKind::Resident);
 }
 
+/* The delivery loop against a live server: a client joins, receives the
+ * manifest, pulls every chunk of an asset it does not have, and reassembles a
+ * blob that hashes back to what was advertised. */
+void asset_delivery_serves_a_real_client() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-asset-delivery-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } cleanup{root};
+
+    const std::filesystem::path town = root / "town";
+    std::filesystem::create_directories(town / "mods" / "lantern-set" / "content");
+    /* Deliberately several chunks long, so the windowed pull is exercised
+     * rather than a single-packet special case. */
+    std::string payload_bytes;
+    for (std::size_t i = 0; i < 6000; ++i) payload_bytes.push_back(static_cast<char>('a' + (i % 26)));
+    {
+        std::ofstream out(town / "mods" / "lantern-set" / "content" / "lantern.pcasset",
+                          std::ios::binary);
+        out << payload_bytes;
+    }
+
+    acserver::TownRuntimeConfig config;
+    config.port = 0;
+    config.data_directory = town;
+    config.capacity = 4;
+    config.connection_timeout_ms = 60000;
+    acserver::TownRuntime runtime(config);
+    std::string error;
+    constexpr std::int64_t wall_start = 1700000000;
+    CHECK(runtime.initialize(wall_start, error));
+    CHECK(runtime.mod_packstore().blob_count() == 1);
+
+    acnet::UdpSocket socket;
+    acnet::ReliabilityPeer reliability;
+    CHECK(socket.open(0, error));
+    {
+        acnet::ClientHello hello;
+        hello.town = config.town_id;
+        hello.account = 4242;
+        hello.client_nonce = 77;
+        std::vector<std::uint8_t> encoded;
+        CHECK(acnet::encode(hello, encoded));
+        const acnet::PacketHeader header =
+            reliability.make_header(acnet::MessageType::ClientHello, acnet::Channel::Control, 0);
+        std::vector<std::uint8_t> bytes;
+        CHECK(acnet::encode_packet(header, encoded, bytes, error));
+        CHECK(socket.send("127.0.0.1", runtime.bound_port(), bytes, error));
+    }
+
+    acnet::AssetManifest manifest;
+    /* Bulk messages are session-scoped, so the request has to carry the session
+     * the server handed back -- a header with session 0 is dropped before it
+     * reaches the chunk service. */
+    acnet::SessionId session = 0;
+    bool have_manifest = false;
+    std::map<std::uint32_t, std::vector<std::uint8_t>> received;
+    std::uint32_t total_chunks = 0;
+    bool requested = false;
+
+    const std::uint64_t monotonic_start = acserver::monotonic_milliseconds();
+    for (int frame = 0; frame < 400; ++frame) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        CHECK(runtime.step(monotonic_start + static_cast<std::uint64_t>(frame) * 16, wall_start, error));
+
+        acnet::Datagram datagram;
+        while (socket.receive(datagram, error)) {
+            acnet::DecodedPacket packet;
+            std::string decode_error;
+            if (!acnet::decode_packet(datagram.bytes.data(), datagram.bytes.size(), packet, decode_error))
+                continue;
+
+            if (packet.header.message_type == acnet::MessageType::ServerHello) {
+                acnet::ServerHello hello;
+                if (acnet::decode(packet.payload, hello)) session = hello.session;
+            } else if (packet.header.message_type == acnet::MessageType::AssetManifest) {
+                CHECK(acnet::decode(packet.payload, manifest));
+                CHECK(manifest.entries.size() == 1);
+                have_manifest = true;
+            } else if (packet.header.message_type == acnet::MessageType::AssetChunk) {
+                acnet::AssetChunk chunk;
+                CHECK(acnet::decode(packet.payload, chunk));
+                total_chunks = chunk.total_chunks;
+                received[chunk.index] = chunk.bytes;
+            }
+        }
+
+        /* Ask once the manifest names something we do not have. A real client
+         * would window this; one request covering every chunk is enough to
+         * prove the service answers exactly what was asked. */
+        if (have_manifest && session != 0 && !requested) {
+            acnet::AssetChunkRequest request;
+            request.hash = manifest.entries[0].hash;
+            request.first_chunk = 0;
+            request.chunk_count = static_cast<std::uint16_t>(acnet::kAssetWindowChunks);
+            std::vector<std::uint8_t> encoded;
+            CHECK(acnet::encode(request, encoded));
+            const acnet::PacketHeader header = reliability.make_header(
+                acnet::MessageType::AssetChunkRequest, acnet::Channel::Bulk, session);
+            std::vector<std::uint8_t> out;
+            CHECK(acnet::encode_packet(header, encoded, out, error));
+            CHECK(socket.send("127.0.0.1", runtime.bound_port(), out, error));
+            requested = true;
+        }
+
+        if (total_chunks != 0 && received.size() == total_chunks) break;
+    }
+
+    CHECK(have_manifest);
+    CHECK(total_chunks > 1);              /* a windowed pull, not one packet */
+    CHECK(received.size() == total_chunks);
+
+    std::vector<std::uint8_t> rebuilt;
+    for (std::uint32_t i = 0; i < total_chunks; ++i) {
+        const auto found = received.find(i);
+        CHECK(found != received.end());
+        rebuilt.insert(rebuilt.end(), found->second.begin(), found->second.end());
+    }
+    CHECK(rebuilt.size() == payload_bytes.size());
+    CHECK(std::equal(rebuilt.begin(), rebuilt.end(), payload_bytes.begin()));
+    /* The delivered bytes hash to what the manifest advertised. This is the
+     * whole integrity guarantee: identification and verification are the same
+     * operation, which is why no signature is needed. */
+    CHECK(acnet::sha256(rebuilt.data(), rebuilt.size()) == manifest.entries[0].hash);
+
+    CHECK(runtime.shutdown(error));
+}
+
 void real_runtime_serves_eight_moving_bots() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -6503,6 +6633,7 @@ int main() {
         {"mod calendar replicates", mod_calendar_replicates},
         {"asset delivery messages round trip", asset_delivery_messages_round_trip},
         {"asset pack store serves content", asset_pack_store_serves_content},
+        {"asset delivery serves a real client", asset_delivery_serves_a_real_client},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},

@@ -743,6 +743,10 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
     if (!mod_registry_.scan(config_.data_directory / "mods", error)) return false;
     if (!mod_host_.load_all(mod_registry_, ModLimits{}, error)) return false;
     mod_host_.drop_quarantined_holidays();
+    if (!mod_packstore_.build(config_.data_directory / "mods", error)) return false;
+    if (mod_packstore_.blob_count() > 0) {
+        record_event("serving " + std::to_string(mod_packstore_.blob_count()) + " content asset(s)");
+    }
     if (!mod_registry_.empty()) {
         record_event("loaded " + std::to_string(mod_host_.loaded_ids().size()) + " mod(s)");
     }
@@ -897,6 +901,12 @@ bool TownRuntime::allow_message(Connection& connection, acnet::MessageType type,
          * clothes is a once-in-a-while action, so this is deliberately the
          * tightest bucket on the server. */
         rate = 1.0; burst = 4.0;
+    }
+    else if (type == acnet::MessageType::AssetChunkRequest) {
+        /* One request yields up to kAssetWindowChunks packets, so this is
+         * deliberately tighter than a gameplay request: enough for a steady
+         * pull, not enough to make content delivery crowd out the town. */
+        rate = 8.0; burst = 24.0;
     }
     else if (type == acnet::MessageType::WorldRequest || type == acnet::MessageType::InventoryRequest ||
              type == acnet::MessageType::TradeRequest || type == acnet::MessageType::FurnitureRequest ||
@@ -1436,6 +1446,19 @@ bool TownRuntime::send_baseline(Connection& connection,
     }
     if (!send_payload(connection, acnet::MessageType::Baseline, acnet::Channel::Bulk,
                       payload, monotonic_ms, error)) return false;
+
+    /* The content manifest rides alongside the first baseline. Sent once per
+     * connection, and only when the town actually has content -- a client that
+     * receives nothing simply has nothing to fetch, which is the ordinary case
+     * and must stay free. */
+    if (!connection.sent_asset_manifest && mod_packstore_.blob_count() > 0) {
+        std::vector<std::uint8_t> manifest_payload;
+        if (acnet::encode(mod_packstore_.manifest(), manifest_payload)) {
+            if (!send_payload(connection, acnet::MessageType::AssetManifest, acnet::Channel::Bulk,
+                              manifest_payload, monotonic_ms, error)) return false;
+            connection.sent_asset_manifest = true;
+        }
+    }
     connection.last_delta_revision = deltas_.current_revision();
     return true;
 }
@@ -1878,6 +1901,31 @@ bool TownRuntime::dispatch(Connection& connection,
             if (!acnet::encode(offer, payload)) { error = "failed to serialize transfer offer"; return false; }
             return send_payload(connection, acnet::MessageType::ZoneTransferOffer, acnet::Channel::Transactions,
                                 payload, monotonic_ms, error);
+        }
+        case acnet::MessageType::AssetChunkRequest: {
+            acnet::AssetChunkRequest request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            /* Client-paced: we answer exactly what was asked for and never more.
+             * A request for an unknown blob or a chunk past the end is simply
+             * not answered -- there is no work worth doing for it, and no reply
+             * a well-behaved client would be waiting on. */
+            const std::uint32_t total = mod_packstore_.chunk_count(request.hash);
+            if (total == 0) return true;
+            for (std::uint16_t offset = 0; offset < request.chunk_count; ++offset) {
+                const std::uint32_t index = request.first_chunk + offset;
+                if (index >= total) break;
+                acnet::AssetChunk chunk;
+                chunk.hash = request.hash;
+                chunk.index = index;
+                chunk.total_chunks = total;
+                if (!mod_packstore_.chunk(request.hash, index, chunk.bytes)) break;
+                std::vector<std::uint8_t> payload;
+                if (!acnet::encode(chunk, payload)) break;
+                if (!send_payload(connection, acnet::MessageType::AssetChunk, acnet::Channel::Bulk,
+                                  payload, monotonic_ms, error))
+                    return false;
+            }
+            return true;
         }
         case acnet::MessageType::ZoneReady: {
             acnet::ZoneReadyRequest request;

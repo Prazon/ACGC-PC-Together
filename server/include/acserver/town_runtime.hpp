@@ -21,6 +21,7 @@
 #include "acserver/database.hpp"
 #include "acserver/town_clock.hpp"
 #include "acserver/mod_host.hpp"
+#include "acserver/mod_packstore.hpp"
 #include "acserver/mod_registry.hpp"
 
 #include <cstddef>
@@ -174,6 +175,7 @@ public:
     const ClockState& clock_state() const { return clock_.state(); }
     /* Mod state, for the operator console and tests. */
     const std::vector<ResolvedHoliday>& mod_calendar() const { return mod_calendar_; }
+    const ModPackStore& mod_packstore() const { return mod_packstore_; }
     std::array<std::uint8_t, 32> mod_manifest_digest() const { return mod_registry_.manifest_digest(); }
     std::vector<std::string> loaded_mods() const { return mod_host_.loaded_ids(); }
     std::optional<acnet::Transform> player_transform(acnet::AccountId account) const {
@@ -209,6 +211,7 @@ private:
         std::int16_t baseline_start_x = 0;
         std::int16_t baseline_start_z = 0;
         bool has_exterior_chunk = false;
+        bool sent_asset_manifest = false;
         acnet::SessionKeys session_keys;
         bool encryption_active = false;
         std::unordered_map<std::uint16_t, RateBucket> rate_buckets;
@@ -318,6 +321,7 @@ private:
      * and replicated. `mod_world_` is the adapter that lets Lua reach the same
      * authorities a client request would. */
     ModRegistry mod_registry_;
+    ModPackStore mod_packstore_;
     ModHost mod_host_;
     class ModWorldAdapter;
     std::unique_ptr<ModWorldAdapter> mod_world_;
