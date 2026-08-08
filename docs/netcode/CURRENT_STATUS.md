@@ -1571,9 +1571,22 @@ for the tier ladder (the clamp blocking a tier skip, Nookington's visitor gate,
 saturation instead of wraparound, and an undefined tier rejected at the decoder)
 and the music box crossing the wire to a second client.
 
-Not yet seen on screen: the shop upgrade and the music box. Both need a
-scenario -- spending 25,000 bells, or putting a song in a stereo -- rather than
-a look around.
+Not yet seen on screen: the shop upgrade and the music box. Neither was
+reachable by an operator, which is why the same day added
+`--set-shop-sales AMOUNT [--shop-visitor]` and `--grant-song SLOT=SONG`.
+`--grant-bells` deliberately does not move the shop level -- lifetime sales
+accrue only from committed transactions, and bells sitting in a bank have not
+been spent -- so without the new command, reaching Nookington's meant pushing
+240,000 bells through a five-row shelf. K.K. Slider is not modelled at all, so
+a song had no path.
+
+Both journal before reporting success and write an audit row. `set_shop_sales`
+does not call `commit_transaction`, because a transactions row is keyed by
+account and one town has one store. Finding that out was itself a small fix:
+`record_transaction` rejected account 0 with a bare `return false`, so the
+first version of the command failed with an empty message. It now says what
+was wrong. The console reports the store as well, since a level nothing
+displays is a level nobody can check.
 
 ## Compatibility note for the protocol version
 
