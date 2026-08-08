@@ -135,7 +135,9 @@ unsigned char ftrName_table[] = {
 #endif
 
 #ifdef TARGET_PC
-unsigned char ftrName2_table[0xF20];
+/* 0xF20 stock records loaded from the disc image (pc_assets), plus one 16-byte
+ * record per custom furniture item filled in by pc_custom_furniture_init(). */
+unsigned char ftrName2_table[0xF20 + 5 * 0x10];
 #else
 unsigned char ftrName2_table[] = {
 #include "assets/ftrName2_table.inc"

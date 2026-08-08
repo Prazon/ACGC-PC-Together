@@ -26,6 +26,7 @@
 #include "acserver/town_runtime.hpp"
 #include "pc_network_config.h"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>

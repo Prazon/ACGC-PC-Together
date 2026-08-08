@@ -1265,5 +1265,10 @@ unsigned short ftr_price_table[] = {
     1600,
     1890,
     0,
+    29800, /* FTR_PSX_CONSOLE */
+    29800, /* FTR_PSX_GAME0 */
+    29800, /* FTR_PSX_GAME1 */
+    29800, /* FTR_PSX_GAME2 */
+    29800, /* FTR_PSX_GAME3 */
     -1,
 };

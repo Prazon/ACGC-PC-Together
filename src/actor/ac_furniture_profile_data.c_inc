@@ -1265,4 +1265,9 @@ static aFTR_PROFILE* furniture_quality[] = {
     &iam_tak_noise,
     &iam_tak_stew,
     &iam_dummy,
+    &iam_psx_console,
+    &iam_psx_game0,
+    &iam_psx_game1,
+    &iam_psx_game2,
+    &iam_psx_game3,
 };

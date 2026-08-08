@@ -601,6 +601,11 @@ static mCL_ftr_info_c mCL_furniture_list[] = {
     { 0x0440, 0 },
     { 0x0448, 0 },
     { 0x044D, 0 },
+    { 0x04F2, 0 }, /* FTR_PSX_CONSOLE */
+    { 0x04F3, 0 }, /* FTR_PSX_GAME0 */
+    { 0x04F4, 0 }, /* FTR_PSX_GAME1 */
+    { 0x04F5, 0 }, /* FTR_PSX_GAME2 */
+    { 0x04F6, 0 }, /* FTR_PSX_GAME3 */
 };
 // clang-format on
 

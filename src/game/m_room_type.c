@@ -389,7 +389,12 @@ static u8 mRmTp_ftr_se_type[FTR_NUM] = {
     mRmTp_FTR_SE_NONE,         mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,
     mRmTp_FTR_SE_NONE,         mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,
     mRmTp_FTR_SE_NONE,         mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,       mRmTp_FTR_SE_NONE,
-    mRmTp_FTR_SE_NONE,         mRmTp_FTR_SE_NONE
+    mRmTp_FTR_SE_NONE,         mRmTp_FTR_SE_NONE,
+    mRmTp_FTR_SE_NONE, /* FTR_PSX_CONSOLE */
+    mRmTp_FTR_SE_NONE /* FTR_PSX_GAME0 */,
+    mRmTp_FTR_SE_NONE /* FTR_PSX_GAME1 */,
+    mRmTp_FTR_SE_NONE /* FTR_PSX_GAME2 */,
+    mRmTp_FTR_SE_NONE /* FTR_PSX_GAME3 */
 };
 
 static void mRmTp_InitFtrPlaceInfo(mRmTp_FtrPlaceInfoOne_t* ftr_place_info) {
@@ -1784,6 +1789,11 @@ static u8 mRmTp_birth_type[FTR_NUM] = {
     mRmTp_BIRTH_TYPE_SONCHO,
     mRmTp_BIRTH_TYPE_KAMAKURA,
     mRmTp_BIRTH_TYPE_UNOBTAINABLE,
+    mRmTp_BIRTH_TYPE_EVENT, /* FTR_PSX_CONSOLE */
+    mRmTp_BIRTH_TYPE_EVENT, /* FTR_PSX_GAME0 */
+    mRmTp_BIRTH_TYPE_EVENT, /* FTR_PSX_GAME1 */
+    mRmTp_BIRTH_TYPE_EVENT, /* FTR_PSX_GAME2 */
+    mRmTp_BIRTH_TYPE_EVENT, /* FTR_PSX_GAME3 */
 };
 
 extern u8* mRmTp_CheckFtrBirthInfoTop() {

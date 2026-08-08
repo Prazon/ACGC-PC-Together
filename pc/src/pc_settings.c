@@ -21,6 +21,11 @@ PCSettings g_pc_settings = {
     .stick_deadzone = 12,
     .cstick_deadzone = 12,
     .discord_client_id = "",
+    .psx_core = "cores/swanstation_libretro.dll",
+    .psx_roms_dir = "psx_roms",
+    .psx_bios_dir = "bios",
+    .psx_game = "",
+    .psx_games = "",
 };
 
 static const char* SETTINGS_FILE = "settings.ini";
@@ -75,7 +80,20 @@ static const char* DEFAULT_SETTINGS =
     "[Discord]\n"
     "# Discord Rich Presence: paste your Application's Client ID from\n"
     "# https://discord.com/developers/applications to enable (leave blank to disable)\n"
-    "discord_client_id = \n";
+    "discord_client_id = \n"
+    "\n"
+    "[PSX]\n"
+    "# PlayStation furniture item emulation (libretro core, e.g. SwanStation)\n"
+    "psx_core = cores/swanstation_libretro.dll\n"
+    "# Folder scanned for PS1 disc images (.cue/.chd/.iso)\n"
+    "psx_roms_dir = psx_roms\n"
+    "# Folder containing PS1 BIOS files (scph5501.bin etc.)\n"
+    "psx_bios_dir = bios\n"
+    "# Legacy single-disc selection; superseded by psx_games below\n"
+    "psx_game = \n"
+    "# The shelf: '|'-separated disc filenames offered by the PlayStation furniture.\n"
+    "# Leave blank to list everything in psx_roms_dir instead.\n"
+    "psx_games = \n";
 
 static const char* skip_ws(const char* s) {
     while (*s == ' ' || *s == '\t') s++;
@@ -129,6 +147,21 @@ static void apply_setting(const char* key, const char* value) {
     } else if (strcmp(key, "discord_client_id") == 0) {
         strncpy(g_pc_settings.discord_client_id, value, sizeof(g_pc_settings.discord_client_id) - 1);
         g_pc_settings.discord_client_id[sizeof(g_pc_settings.discord_client_id) - 1] = '\0';
+    } else if (strcmp(key, "psx_core") == 0) {
+        strncpy(g_pc_settings.psx_core, value, sizeof(g_pc_settings.psx_core) - 1);
+        g_pc_settings.psx_core[sizeof(g_pc_settings.psx_core) - 1] = '\0';
+    } else if (strcmp(key, "psx_roms_dir") == 0) {
+        strncpy(g_pc_settings.psx_roms_dir, value, sizeof(g_pc_settings.psx_roms_dir) - 1);
+        g_pc_settings.psx_roms_dir[sizeof(g_pc_settings.psx_roms_dir) - 1] = '\0';
+    } else if (strcmp(key, "psx_bios_dir") == 0) {
+        strncpy(g_pc_settings.psx_bios_dir, value, sizeof(g_pc_settings.psx_bios_dir) - 1);
+        g_pc_settings.psx_bios_dir[sizeof(g_pc_settings.psx_bios_dir) - 1] = '\0';
+    } else if (strcmp(key, "psx_game") == 0) {
+        strncpy(g_pc_settings.psx_game, value, sizeof(g_pc_settings.psx_game) - 1);
+        g_pc_settings.psx_game[sizeof(g_pc_settings.psx_game) - 1] = '\0';
+    } else if (strcmp(key, "psx_games") == 0) {
+        strncpy(g_pc_settings.psx_games, value, sizeof(g_pc_settings.psx_games) - 1);
+        g_pc_settings.psx_games[sizeof(g_pc_settings.psx_games) - 1] = '\0';
     }
 }
 
@@ -215,6 +248,19 @@ void pc_settings_save(void) {
     fprintf(f, "# Discord Rich Presence: paste your Application's Client ID from\n");
     fprintf(f, "# https://discord.com/developers/applications to enable (leave blank to disable)\n");
     fprintf(f, "discord_client_id = %s\n", g_pc_settings.discord_client_id);
+    fprintf(f, "\n");
+    fprintf(f, "[PSX]\n");
+    fprintf(f, "# PlayStation furniture item emulation (libretro core, e.g. SwanStation)\n");
+    fprintf(f, "psx_core = %s\n", g_pc_settings.psx_core);
+    fprintf(f, "# Folder scanned for PS1 disc images (.cue/.chd/.iso)\n");
+    fprintf(f, "psx_roms_dir = %s\n", g_pc_settings.psx_roms_dir);
+    fprintf(f, "# Folder containing PS1 BIOS files (scph5501.bin etc.)\n");
+    fprintf(f, "psx_bios_dir = %s\n", g_pc_settings.psx_bios_dir);
+    fprintf(f, "# Legacy single-disc selection; superseded by psx_games below\n");
+    fprintf(f, "psx_game = %s\n", g_pc_settings.psx_game);
+    fprintf(f, "# The shelf: '|'-separated disc filenames offered by the PlayStation furniture.\n");
+    fprintf(f, "# Leave blank to list everything in psx_roms_dir instead.\n");
+    fprintf(f, "psx_games = %s\n", g_pc_settings.psx_games);
     fclose(f);
     printf("[Settings] Saved %s\n", SETTINGS_FILE);
 }
@@ -374,7 +420,9 @@ void pc_settings_load(void) {
         return;
     }
 
-    char line[256];
+    /* Wide enough for the longest value (psx_games) plus its key and padding;
+     * a shorter buffer would split a long line and corrupt it on the next save. */
+    char line[1280];
     while (fgets(line, sizeof(line), f)) {
         const char* p = skip_ws(line);
 

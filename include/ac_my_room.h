@@ -201,8 +201,14 @@ typedef struct emu_info_s {
     s16 external_rom;
 #ifdef TARGET_PC
     f32 save_msg_timer_accum;
+    /* Which emulator the pending request belongs to (aMR_EMU_LIST_*), so the
+     * shared famicom picker can list PSX discs too. */
+    int list_source;
 #endif
 } aMR_emu_info_c;
+
+#define aMR_EMU_LIST_NES 0
+#define aMR_EMU_LIST_PSX 1
 
 typedef void (*aMR_GOKI_CT_PROC)(ACTOR*, GAME*);
 
