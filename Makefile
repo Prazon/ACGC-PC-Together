@@ -48,7 +48,7 @@ LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
 
-.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize
+.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link
 
 all: $(BUILD_DIR)/netcode_tests $(BUILD_DIR)/AnimalCrossingServer
 
@@ -77,7 +77,13 @@ soak: month-soak
 long-soak: $(BUILD_DIR)/town_load
 	$(BUILD_DIR)/town_load 16 216000
 
-check: test fuzz load chaos month-soak smoke
+# The client links a strict subset of NET_SOURCES (pc/CMakeLists.txt), so a
+# call into a server-only translation unit builds clean here and fails only in
+# build_pc.bat. This links exactly what the client is made of.
+client-link: $(NET_OBJECTS)
+	python3 scripts/check_client_link.py $(BUILD_DIR)
+
+check: test client-link fuzz load chaos month-soak smoke
 
 sanitize:
 	$(MAKE) clean BUILD_DIR=build/netcode-sanitize

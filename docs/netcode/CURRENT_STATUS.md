@@ -1581,13 +1581,8 @@ The earlier 2026-08-06 release gate completed successfully:
 
 ## Next recommended task
 
-**`make check` cannot catch a client/server link split.** Found the hard way on
-2026-08-08: `c_api.cpp` called `turnip_sell_price`, which lives in `shop.cpp`,
-which the CMake `acnet_client` target does not include. The root `Makefile`
-links one flat source list, so the whole gate passed while the real client
-would not link -- only `build_pc.bat` failed. The fix was to split the code
-out, but nothing stops the next one. A cheap link check over the
-`acnet_client` source list belongs in `make check`.
+*(The client/server link-split gap is closed -- `make client-link` is in
+`make check` as of 2026-08-08. See "Delivered systems".)*
 
 
 Nook's counter, the museum, and the shelf are wired end to end. What is left is
