@@ -160,6 +160,10 @@ bool encode(const VillagerMemoryUpdate& value, std::vector<std::uint8_t>& output
 bool decode(const std::vector<std::uint8_t>& input, VillagerMemoryUpdate& value);
 bool encode(const VillagerMemoryResult& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, VillagerMemoryResult& value);
+bool encode(const SpecialEventUpdate& value, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, SpecialEventUpdate& value);
+bool encode(const SpecialEventResult& value, std::vector<std::uint8_t>& output);
+bool decode(const std::vector<std::uint8_t>& input, SpecialEventResult& value);
 bool encode(const EncounterRequest& value, std::vector<std::uint8_t>& output);
 bool decode(const std::vector<std::uint8_t>& input, EncounterRequest& value);
 bool encode(const EncounterResult& value, std::vector<std::uint8_t>& output);

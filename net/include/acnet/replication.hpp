@@ -63,6 +63,9 @@ enum class ResourceKind : std::uint8_t {
 bool encode_villager_memories_payload(const VillagerMemories& memories, std::vector<std::uint8_t>& output);
 bool decode_villager_memories_payload(const std::vector<std::uint8_t>& input, VillagerMemories& memories);
 
+bool encode_special_event_delta(const SpecialEvent& event, std::vector<std::uint8_t>& output);
+bool decode_special_event_delta(const std::vector<std::uint8_t>& input, SpecialEvent& event);
+
 bool encode_villager_delta(const VillagerRoster& roster, std::vector<std::uint8_t>& output);
 bool decode_villager_delta(const std::vector<std::uint8_t>& input, VillagerRoster& roster);
 
@@ -266,6 +269,8 @@ struct ZoneBaseline {
     /* This account's own history with each villager. Account-scoped, like the
      * inventory and the mailbox, rather than town-wide. */
     VillagerMemories villager_memories;
+    /* Town-wide: one town has one visiting special NPC. */
+    SpecialEvent special_event;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

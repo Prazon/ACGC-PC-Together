@@ -439,6 +439,35 @@ static bool decode_villager_memories(ByteReader& reader, VillagerMemories& memor
     return true;
 }
 
+static bool encode_special_event(ByteWriter& writer, const SpecialEvent& event) {
+    if (event.revision == 0) return false;
+    /* The game indexes special_events[] with this, so a kind it does not define
+     * cannot be allowed to reach a viewer. */
+    if (event.kind != kNoSpecialEvent && event.kind > kMaximumSpecialEventKind) return false;
+    return writer.u32(event.kind) && writer.u32(event.revision) &&
+           writer.bytes(event.scheduled.data(), event.scheduled.size()) &&
+           writer.bytes(event.payload.data(), event.payload.size());
+}
+
+static bool decode_special_event(ByteReader& reader, SpecialEvent& event) {
+    if (!reader.u32(event.kind) || !reader.u32(event.revision) ||
+        !reader.bytes(event.scheduled.data(), event.scheduled.size()) ||
+        !reader.bytes(event.payload.data(), event.payload.size()) || event.revision == 0) return false;
+    return event.kind == kNoSpecialEvent || event.kind <= kMaximumSpecialEventKind;
+}
+
+bool encode_special_event_delta(const SpecialEvent& event, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(256);
+    if (!encode_special_event(writer, event)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_special_event_delta(const std::vector<std::uint8_t>& input, SpecialEvent& event) {
+    ByteReader reader(input);
+    return decode_special_event(reader, event) && reader.finished();
+}
+
 bool encode_villager_memories_payload(const VillagerMemories& memories, std::vector<std::uint8_t>& output) {
     ByteWriter writer(kMaximumBaselineBytes);
     if (!encode_villager_memories(writer, memories)) return false;
@@ -564,6 +593,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (!encode_villagers(writer, baseline.villagers)) return false;
     if (!writer.u64(baseline.npc_simulation_host)) return false;
     if (!encode_villager_memories(writer, baseline.villager_memories)) return false;
+    if (!encode_special_event(writer, baseline.special_event)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -666,6 +696,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     if (!decode_villagers(reader, baseline.villagers)) return false;
     if (!reader.u64(baseline.npc_simulation_host)) return false;
     if (!decode_villager_memories(reader, baseline.villager_memories)) return false;
+    if (!decode_special_event(reader, baseline.special_event)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
@@ -915,7 +946,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
         delta.kind == ResourceKind::Turnip ||
         delta.kind == ResourceKind::TownTune ||
         delta.kind == ResourceKind::Notice ||
-        delta.kind == ResourceKind::Villager) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Villager ||
+        delta.kind == ResourceKind::Event) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

@@ -521,6 +521,14 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     }
                     baseline_.museum = museum;
                 }
+                if (delta.kind == ResourceKind::Event && has_baseline_) {
+                    SpecialEvent event;
+                    if (!decode_special_event_delta(delta.payload, event)) {
+                        error = "malformed special event delta";
+                        return false;
+                    }
+                    if (event.revision >= baseline_.special_event.revision) baseline_.special_event = event;
+                }
                 if (delta.kind == ResourceKind::Villager && has_baseline_) {
                     VillagerRoster roster;
                     if (!decode_villager_delta(delta.payload, roster)) {
@@ -694,6 +702,11 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             ++npc_pose_serial_;
             break;
         }
+        case MessageType::SpecialEventResult:
+            if (!decode(packet.payload, special_event_result_.emplace())) return false;
+            if (special_event_result_->code == ResultCode::Ok && has_baseline_)
+                baseline_.special_event.revision = special_event_result_->revision;
+            break;
         case MessageType::VillagerMemoryResult:
             if (!decode(packet.payload, villager_memory_result_.emplace())) return false;
             /* The accepted revision is what the next submit must quote, and the
@@ -1000,6 +1013,20 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+std::optional<SpecialEventResult> ClientRuntime::take_special_event_result() {
+    auto result = std::move(special_event_result_); special_event_result_.reset(); return result;
+}
+bool ClientRuntime::submit_special_event(const SpecialEvent& event, std::uint64_t now_ms, std::string& error) {
+    if (!has_baseline_) { error = "no baseline yet"; return false; }
+    SpecialEventUpdate update;
+    update.account = config_.account;
+    update.idempotency = {random_nonzero_u64(), random_nonzero_u64()};
+    update.expected_revision = baseline_.special_event.revision;
+    update.event = event;
+    std::vector<std::uint8_t> payload;
+    if (!encode(update, payload)) { error = "failed to encode the special event"; return false; }
+    return send_payload(MessageType::SpecialEventUpdate, Channel::Transactions, payload, now_ms, error);
 }
 std::optional<VillagerMemoryResult> ClientRuntime::take_villager_memory_result() {
     auto result = std::move(villager_memory_result_); villager_memory_result_.reset(); return result;

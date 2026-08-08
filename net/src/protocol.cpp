@@ -70,6 +70,8 @@ bool valid_message(std::uint16_t value) {
         case MessageType::NpcPoseUpdate:
         case MessageType::VillagerMemoryUpdate:
         case MessageType::VillagerMemoryResult:
+        case MessageType::SpecialEventUpdate:
+        case MessageType::SpecialEventResult:
         case MessageType::ZoneTransferRequest:
         case MessageType::ZoneTransferOffer:
         case MessageType::ZoneReady:

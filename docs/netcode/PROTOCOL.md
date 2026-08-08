@@ -1,4 +1,4 @@
-# Dedicated town protocol v29
+# Dedicated town protocol v30
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,25 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### The special visitor (v30)
+
+The town's scheduled special NPC — Redd, Saharah, Katrina, the designer, the
+artist, the sale — is `mEv_special_c`, town state as of v30. `kind` is validated
+(the game indexes `special_events[]` with it, and `0xFFFFFFFF` means none
+scheduled); the schedule time and the per-event union ride as opaque bytes, the
+game's own POD, sized with `_Static_assert` on the client so a decomp change to
+any event struct cannot silently truncate the visitor.
+
+Every client used to roll its own, so the *contents* diverged even where the
+date did not: two players walked into Redd's tent and were offered different
+paintings, and the flags recording who had already bought were private to each
+machine. The schedule dates come from town-seeded common data, so the events
+themselves lined up — which is exactly why this went unnoticed.
+
+`SpecialEventUpdate` (53) / `SpecialEventResult` (54) replace the block and
+quote the observed revision; `ResourceKind::Event` deltas carry it town-wide.
+The client submits on content change rather than on a timer.
 
 ### Villager memories (v29)
 

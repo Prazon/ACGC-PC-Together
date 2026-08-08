@@ -169,6 +169,8 @@ public:
     std::optional<VillagerResult> take_villager_result();
     bool send_npc_poses(const NpcPoseUpdate& update, std::uint64_t now_ms, std::string& error);
     std::optional<VillagerMemoryResult> take_villager_memory_result();
+    std::optional<SpecialEventResult> take_special_event_result();
+    bool submit_special_event(const SpecialEvent& event, std::uint64_t now_ms, std::string& error);
     bool submit_villager_memories(const VillagerMemories& memories, std::uint64_t now_ms, std::string& error);
     std::uint32_t npc_pose_serial() const { return npc_pose_serial_; }
     bool request_villager(const VillagerRequest& request, std::uint64_t now_ms, std::string& error);
@@ -270,6 +272,7 @@ private:
     std::optional<VillagerResult> villager_result_;
     std::uint32_t npc_pose_serial_ = 0;
     std::optional<VillagerMemoryResult> villager_memory_result_;
+    std::optional<SpecialEventResult> special_event_result_;
     std::optional<EncounterResult> encounter_result_;
     std::optional<GyroidResult> gyroid_result_;
     std::optional<TownBootstrapResult> town_bootstrap_result_;

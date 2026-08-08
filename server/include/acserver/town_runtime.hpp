@@ -329,6 +329,9 @@ private:
     /* Each account's own history with each villager. Account-scoped, so it
      * lives beside the ledgers rather than in the town-wide roster. */
     std::unordered_map<acnet::AccountId, acnet::VillagerMemories> villager_memories_;
+    /* The town's scheduled special visitor. Town-wide: one town has one. */
+    acnet::SpecialEvent special_event_;
+    std::unordered_map<std::uint64_t, acnet::SpecialEventResult> special_event_idempotency_;
     std::unordered_map<std::uint64_t, acnet::VillagerMemoryResult> villager_memory_idempotency_;
     /* Registers one NpcState per occupied roster slot so villagers are real
      * server entities -- which is what conversation leases address. */

@@ -212,6 +212,12 @@ void Net_FlushVillagerPoses(void);
 int Net_VillagerMemoriesAuthoritative(void);
 void Net_ApplyAuthoritativeVillagerMemories(void);
 void Net_SubmitVillagerMemoriesIfChanged(void);
+/* The town's scheduled special visitor -- Redd, Saharah, Katrina, the designer,
+ * the artist, the sale. Server-owned: every client rolled its own contents, so
+ * two players walked into Redd's tent and were offered different paintings. */
+int Net_SpecialEventAuthoritative(void);
+void Net_ApplyAuthoritativeSpecialEvent(void);
+void Net_SubmitSpecialEventIfChanged(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -288,6 +294,9 @@ void Net_SubmitVillagerMemoriesIfChanged(void);
 #define Net_VillagerMemoriesAuthoritative() FALSE
 #define Net_ApplyAuthoritativeVillagerMemories() ((void)0)
 #define Net_SubmitVillagerMemoriesIfChanged() ((void)0)
+#define Net_SpecialEventAuthoritative() FALSE
+#define Net_ApplyAuthoritativeSpecialEvent() ((void)0)
+#define Net_SubmitSpecialEventIfChanged() ((void)0)
 #endif
 
 #ifdef __cplusplus

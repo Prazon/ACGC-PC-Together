@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 29;
+constexpr std::uint16_t kProtocolVersion = 30;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -98,6 +98,8 @@ enum class MessageType : std::uint16_t {
     VillagerMemoryResult = 48,
     AdminCommand = 50,
     AdminResult = 51,
+    SpecialEventUpdate = 53,
+    SpecialEventResult = 54,
 };
 
 enum PacketFlags : std::uint8_t {

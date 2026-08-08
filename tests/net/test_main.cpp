@@ -1756,6 +1756,53 @@ void villager_roster_is_town_state() {
     CHECK(decoded_bootstrap.villagers == roster);
 }
 
+void special_event_is_town_state() {
+    acnet::SpecialEvent event;
+    event.kind = 2; /* mEv_SPNPC_BROKER -- Redd */
+    event.revision = 3;
+    event.scheduled[0] = 0x07;
+    event.payload[0] = 0x42;
+    event.payload[acnet::kSpecialEventPayloadBytes - 1] = 0x99;
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_special_event_delta(event, payload));
+    acnet::SpecialEvent decoded;
+    CHECK(acnet::decode_special_event_delta(payload, decoded));
+    CHECK(decoded == event);
+
+    /* No visitor scheduled is a legal value, not an absent one. */
+    acnet::SpecialEvent none;
+    none.revision = 1;
+    CHECK(none.kind == acnet::kNoSpecialEvent);
+    CHECK(acnet::encode_special_event_delta(none, payload));
+    CHECK(acnet::decode_special_event_delta(payload, decoded));
+    CHECK(decoded.kind == acnet::kNoSpecialEvent);
+
+    /* The game indexes special_events[] with the kind, so one it does not
+     * define must not survive the decoder. */
+    acnet::SpecialEvent impossible = event;
+    impossible.kind = acnet::kMaximumSpecialEventKind + 1;
+    CHECK(!acnet::encode_special_event_delta(impossible, payload));
+
+    acnet::SpecialEvent unset = event;
+    unset.revision = 0;
+    CHECK(!acnet::encode_special_event_delta(unset, payload));
+
+    acnet::SpecialEventUpdate update;
+    update.account = 8;
+    update.idempotency = {9, 10};
+    update.expected_revision = 3;
+    update.event = event;
+    CHECK(acnet::encode(update, payload));
+    acnet::SpecialEventUpdate decoded_update;
+    CHECK(acnet::decode(payload, decoded_update));
+    CHECK(decoded_update.event == event);
+
+    acnet::SpecialEventUpdate unversioned = update;
+    unversioned.expected_revision = 0;
+    CHECK(!acnet::encode(unversioned, payload));
+}
+
 void villager_memories_are_account_state() {
     /* A villager's memory of one player: the only record that the two have a
      * history. Carried as the game's own Anmmem_c, opaque. */
@@ -5551,6 +5598,7 @@ int main() {
         {"villager move in and out", villager_move_in_and_out_are_server_decisions},
         {"villager poses come from one client", villager_poses_come_from_one_client},
         {"villager memories are account state", villager_memories_are_account_state},
+        {"special event is town state", special_event_is_town_state},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

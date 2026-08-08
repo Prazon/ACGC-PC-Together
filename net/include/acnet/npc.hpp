@@ -285,6 +285,50 @@ struct NpcPoseUpdate {
  * resets every login. */
 constexpr std::size_t kVillagerMemoryBytes = 312; // sizeof(Anmmem_c)
 
+/* The town's scheduled special visitor -- Redd, Saharah, Katrina, the designer,
+ * the artist, the sale -- as mEv_special_c.
+ *
+ * Every client rolled its own, so the *contents* diverged even when the date
+ * did not: two players walked into Redd's tent and were offered different
+ * paintings, and the flags recording who had already used him were private to
+ * each machine. The schedule dates come from town-seeded common data so the
+ * events themselves lined up, which is exactly why this went unnoticed.
+ *
+ * `kind` is validated because the game indexes a table with it; the rest is
+ * carried opaquely, like mail text -- it is the game's own POD and the server
+ * has no reason to understand which painting is a forgery. */
+constexpr std::size_t kSpecialEventPayloadBytes = 128; // >= sizeof(mEv_special_u)
+constexpr std::size_t kSpecialEventTimeBytes = 8;      // sizeof(lbRTC_time_c)
+/* mEv_SPNPC_END: the last special-NPC event. 0xFFFFFFFF means none scheduled. */
+constexpr std::uint32_t kMaximumSpecialEventKind = 6;
+constexpr std::uint32_t kNoSpecialEvent = 0xFFFFFFFFu;
+
+struct SpecialEvent {
+    std::uint32_t kind = kNoSpecialEvent;
+    std::array<std::uint8_t, kSpecialEventTimeBytes> scheduled{};
+    std::array<std::uint8_t, kSpecialEventPayloadBytes> payload{};
+    Revision revision = 1;
+
+    bool operator==(const SpecialEvent& other) const {
+        return kind == other.kind && scheduled == other.scheduled && payload == other.payload &&
+               revision == other.revision;
+    }
+};
+
+struct SpecialEventUpdate {
+    AccountId account = 0;
+    IdempotencyKey idempotency;
+    Revision expected_revision = 0;
+    SpecialEvent event;
+};
+
+struct SpecialEventResult {
+    ResultCode code = ResultCode::InternalError;
+    IdempotencyKey idempotency;
+    Revision revision = 0;
+    bool replayed = false;
+};
+
 struct VillagerMemory {
     bool present = false;
     std::array<std::uint8_t, kVillagerMemoryBytes> data{};

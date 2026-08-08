@@ -12,6 +12,7 @@
 #include "m_kankyo.h"
 #include "m_name_table.h"
 #include "m_notice.h"
+#include "m_event.h"
 #include "m_npc.h"
 #include "m_time.h"
 #include "m_collision_bg.h"
@@ -1988,6 +1989,73 @@ static int Net_VillagerMemoryIndex(Animal_c* animal) {
     return -1;
 }
 
+/* mEv_special_c crosses the wire as its two interpreted fields plus an opaque
+ * payload for the union. The sizes are asserted rather than assumed: a decomp
+ * change to any event struct would otherwise silently truncate the visitor. */
+_Static_assert(sizeof(lbRTC_time_c) == ACNET_SPECIAL_EVENT_TIME_BYTES,
+               "special event schedule size changed");
+_Static_assert(sizeof(mEv_special_u) <= ACNET_SPECIAL_EVENT_PAYLOAD_BYTES,
+               "special event payload no longer fits the wire field");
+
+int Net_SpecialEventAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_special_event_revision() != 0;
+}
+
+void Net_ApplyAuthoritativeSpecialEvent(void) {
+    static u32 last_event_revision = 0;
+    u8 scheduled[ACNET_SPECIAL_EVENT_TIME_BYTES];
+    u8 payload[ACNET_SPECIAL_EVENT_PAYLOAD_BYTES];
+    uint32_t kind = 0;
+    u32 revision;
+
+    if (!Net_SpecialEventAuthoritative()) return;
+    revision = acnet_client_special_event_revision();
+    if (revision == last_event_revision) return;
+    if (!acnet_client_special_event(&kind, scheduled, payload)) return;
+
+    {
+        mEv_special_c* special = &Save_Get(event_save_data).special;
+        special->kind = kind;
+        memcpy(&special->scheduled, scheduled, sizeof(special->scheduled));
+        memcpy(&special->event, payload, sizeof(special->event));
+    }
+    last_event_revision = revision;
+}
+
+/* Submitted when the local block changes, which is what rolling a new visitor
+ * does. Compared by content: the schedule turns over rarely, so a hash is far
+ * cheaper than sending it speculatively. */
+void Net_SubmitSpecialEventIfChanged(void) {
+    static u64 last_submitted_hash = 0;
+    static int submit_pending = FALSE;
+    u8 payload[ACNET_SPECIAL_EVENT_PAYLOAD_BYTES];
+    u64 hash = 1469598103934665603ULL;
+    uint16_t code = 0;
+    mEv_special_c* special;
+
+    if (!Net_IsConnected()) return;
+    while (acnet_client_take_special_event_result(&code)) {
+        submit_pending = FALSE;
+        if (code != 0) last_submitted_hash = 0;
+    }
+    if (submit_pending || acnet_client_special_event_revision() == 0) return;
+
+    special = &Save_Get(event_save_data).special;
+    /* A kind the game does not define would be refused by the encoder and take
+     * the whole submit with it. */
+    if (special->kind != ACNET_NO_SPECIAL_EVENT && special->kind > mEv_SPNPC_END) return;
+    memset(payload, 0, sizeof(payload));
+    memcpy(payload, &special->event, sizeof(special->event));
+    hash = Net_HashBytes(hash, &special->kind, sizeof(special->kind));
+    hash = Net_HashBytes(hash, &special->scheduled, sizeof(special->scheduled));
+    hash = Net_HashBytes(hash, payload, sizeof(payload));
+    if (hash == last_submitted_hash) return;
+    if (acnet_client_submit_special_event((uint32_t)special->kind, (const u8*)&special->scheduled, payload)) {
+        last_submitted_hash = hash;
+        submit_pending = TRUE;
+    }
+}
+
 int Net_VillagerMemoriesAuthoritative(void) {
     return Net_IsConnected() && acnet_client_villager_memory_revision() != 0;
 }
@@ -2631,6 +2699,8 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
      * actually holds rather than against a stale local copy. */
     Net_ApplyAuthoritativeVillagerMemories();
     Net_SubmitVillagerMemoriesIfChanged();
+    Net_ApplyAuthoritativeSpecialEvent();
+    Net_SubmitSpecialEventIfChanged();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

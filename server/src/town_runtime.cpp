@@ -1215,6 +1215,7 @@ bool TownRuntime::send_baseline(Connection& connection,
         const auto memories = villager_memories_.find(connection.account);
         if (memories != villager_memories_.end()) baseline.villager_memories = memories->second;
     }
+    baseline.special_event = special_event_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1877,6 +1878,48 @@ bool TownRuntime::dispatch(Connection& connection,
                                   payload, monotonic_ms, error)) return false;
             }
             return true;
+        }
+        case acnet::MessageType::SpecialEventUpdate: {
+            acnet::SpecialEventUpdate request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            acnet::SpecialEventResult result;
+            result.idempotency = request.idempotency;
+            const std::uint64_t key = request.idempotency.high ^ (request.idempotency.low * 1099511628211ULL) ^
+                                      (connection.account * 1000003ULL);
+            const auto prior = special_event_idempotency_.find(key);
+            if (prior != special_event_idempotency_.end()) {
+                result = prior->second;
+                result.replayed = true;
+            } else if (request.expected_revision != special_event_.revision) {
+                result.code = acnet::ResultCode::StaleRevision;
+                result.revision = special_event_.revision;
+            } else {
+                const acnet::Revision next = advance_revision(special_event_.revision);
+                special_event_ = request.event;
+                special_event_.revision = next;
+                result.code = acnet::ResultCode::Ok;
+                result.revision = special_event_.revision;
+                special_event_idempotency_[key] = result;
+                if (!commit_state(129, error) ||
+                    !database_.audit(connection.account, "special-event",
+                                     "kind=" + std::to_string(special_event_.kind),
+                                     wall_unix_seconds(), error)) return false;
+                acnet::ReplicationDelta delta;
+                delta.kind = acnet::ResourceKind::Event;
+                delta.zone = 0;
+                delta.target_account = 0;
+                if (acnet::encode_special_event_delta(special_event_, delta.payload))
+                    deltas_.append(std::move(delta));
+                record_event("Special visitor scheduled (kind " + std::to_string(special_event_.kind) + ")");
+            }
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) {
+                error = "failed to serialize special event result";
+                return false;
+            }
+            return send_payload(connection, acnet::MessageType::SpecialEventResult,
+                                acnet::Channel::Transactions, payload, monotonic_ms, error);
         }
         case acnet::MessageType::VillagerMemoryUpdate: {
             acnet::VillagerMemoryUpdate request;

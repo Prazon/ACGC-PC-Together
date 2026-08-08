@@ -505,6 +505,19 @@ uint32_t acnet_client_villager_memory_revision(void);
  * slot; `data` is ACNET_VILLAGER_SLOTS * ACNET_VILLAGER_MEMORY_BYTES. */
 int acnet_client_submit_villager_memories(const uint8_t* present, const uint8_t* data);
 int acnet_client_take_villager_memory_result(uint16_t* result_code);
+
+/* The town's scheduled special visitor -- Redd, Saharah, Katrina, the designer,
+ * the artist, the sale -- as mEv_special_c. `kind` is validated because the
+ * game indexes a table with it; the rest is the game's own POD, carried
+ * opaquely. Town-wide: one town has one visitor. */
+#define ACNET_SPECIAL_EVENT_PAYLOAD_BYTES 128
+#define ACNET_SPECIAL_EVENT_TIME_BYTES 8
+#define ACNET_NO_SPECIAL_EVENT 0xFFFFFFFFu
+
+int acnet_client_special_event(uint32_t* kind, uint8_t* scheduled, uint8_t* payload);
+uint32_t acnet_client_special_event_revision(void);
+int acnet_client_submit_special_event(uint32_t kind, const uint8_t* scheduled, const uint8_t* payload);
+int acnet_client_take_special_event_result(uint16_t* result_code);
 /* Who is holding villager `slot` in conversation, or 0 for nobody. Answered
  * from the last replicated NPC state, so it costs no round trip -- the check
  * happens the instant a player presses A, and a request that had to wait for an

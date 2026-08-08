@@ -26,6 +26,7 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 17 extends the roster with the pending move-in and the town's move-in clock.
  * 18 adds each account's villager memories -- their history with each
  * neighbour, which is the only record that a player and a villager have one.
+ * 19 adds the town's scheduled special visitor.
  *
  * The roster is stored through the *wire* codec so the checkpoint and the
  * baseline cannot disagree about its shape -- which is worth having, but means
@@ -34,7 +35,7 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * than rejected, leaving it uninitialized for the next bootstrap to re-adopt.
  * A checkpoint is not worth failing to load over a roster that one login
  * restores. */
-constexpr std::uint16_t kTownStateVersion = 18;
+constexpr std::uint16_t kTownStateVersion = 19;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -223,6 +224,15 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
             roster.size() > std::numeric_limits<std::uint16_t>::max() ||
             !writer.u16(static_cast<std::uint16_t>(roster.size())) ||
             !writer.bytes(roster.data(), roster.size())) return {};
+    }
+    /* Written before the memory table, matching the read order below: the
+     * memory count and its records have to stay adjacent, so nothing may be
+     * inserted between them. */
+    {
+        std::vector<std::uint8_t> event;
+        if (!acnet::encode_special_event_delta(special_event_, event) ||
+            !writer.u16(static_cast<std::uint16_t>(event.size())) ||
+            !writer.bytes(event.data(), event.size())) return {};
     }
     if (villager_memories_.size() > std::numeric_limits<std::uint32_t>::max() ||
         !writer.u32(static_cast<std::uint32_t>(villager_memories_.size()))) return {};
@@ -488,6 +498,17 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
              * the bytes were consumed by the length prefix, and the next
              * bootstrap re-adopts a roster from a client. */
             villagers_ = {};
+        }
+    }
+    if (version >= 19) {
+        std::uint16_t event_size = 0;
+        if (!reader.u16(event_size) || event_size > 1024) {
+            error = "invalid special event"; return false;
+        }
+        std::vector<std::uint8_t> event(event_size);
+        if ((event_size != 0 && !reader.bytes(event.data(), event.size())) ||
+            !acnet::decode_special_event_delta(event, special_event_)) {
+            error = "invalid special event"; return false;
         }
     }
     if (version >= 18) {
