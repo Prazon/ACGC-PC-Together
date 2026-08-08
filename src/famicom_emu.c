@@ -14,6 +14,7 @@
 #include "m_debug.h"
 #include "m_malloc.h"
 #include "m_scene.h"
+#include "psx_emu.h"
 
 static int famicom_done = FALSE;
 static int famicom_done_countdown = 0;
@@ -137,6 +138,15 @@ extern void famicom_emu_init(GAME* game) {
     int debug;
     void* manager;
     const GXRenderModeObj* render;
+
+#ifdef TARGET_PC
+    /* rom ids >= PSX_EMU_ROM_BASE belong to the PS1 furniture item — same
+     * dialog/fade flow, different emulator scene. */
+    if (Common_Get(current_famicom_rom) >= PSX_EMU_ROM_BASE) {
+        psx_emu_boot(game);
+        return;
+    }
+#endif
 
 #ifdef TARGET_PC
     { extern int g_pc_nes_active; g_pc_nes_active = 1; }

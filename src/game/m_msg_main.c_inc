@@ -414,6 +414,37 @@ static int mMsg_LoadMsgData(mMsg_Data_c* msg_data, int index, int cut) {
                     }
                 }
             }
+
+            /* PlayStation furniture: the shared emulator quit-instructions
+             * text (0x17B5) says "NES" — swap in "PlayStation" when the PS1
+             * item requested the emulator. AC's charset is ASCII-compatible
+             * for letters, so a byte-level word replace with tail shift is
+             * safe; the buffer holds mMsg_MSG_BUF_SIZE with slack. */
+            {
+                extern int g_pc_psx_msg_flavor;
+                if (index == 0x17B5 && g_pc_psx_msg_flavor) {
+                    static const u8 repl[11] = "PlayStation";
+                    u8* p = msg_data->text_buf.data;
+                    int msg_size = (int)size;
+                    int j = 0;
+                    while (j + 3 <= msg_size) {
+                        if (p[j] == 'N' && p[j + 1] == 'E' && p[j + 2] == 'S' &&
+                            msg_size + 8 <= mMsg_MSG_BUF_MAX) {
+                            int k;
+                            for (k = msg_size - 1; k >= j + 3; k--) {
+                                p[k + 8] = p[k];
+                            }
+                            for (k = 0; k < 11; k++) {
+                                p[j + k] = repl[k];
+                            }
+                            msg_size += 8;
+                            j += 11;
+                        } else {
+                            j++;
+                        }
+                    }
+                }
+            }
 #endif
 
             msg_data->msg_no = index;

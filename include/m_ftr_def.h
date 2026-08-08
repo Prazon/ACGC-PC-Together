@@ -1273,6 +1273,13 @@ enum ftr_name {
     FTR_TAK_STEW,
     FTR_DUMMY,
 
+    /* PC-only custom furniture, appended after FTR_DUMMY so stock indices stay stable */
+    FTR_PSX_CONSOLE,
+    FTR_PSX_GAME0,
+    FTR_PSX_GAME1,
+    FTR_PSX_GAME2,
+    FTR_PSX_GAME3,
+
     FTR_NUM
 };
 

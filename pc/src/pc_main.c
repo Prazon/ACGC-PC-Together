@@ -13,6 +13,7 @@
 #include "pc_mouse.h"
 #include "pc_assets.h"
 #include "pc_disc.h"
+#include "pc_custom_furniture.h"
 #include "pc_typing.h"
 #include "pc_pause_menu.h"
 #include "pc_settings_menu.h"
@@ -35,6 +36,7 @@ SDL_Window*   g_pc_window = NULL;
 SDL_GLContext  g_pc_gl_context = NULL;
 int           g_pc_running = 1;
 int           g_pc_no_framelimit = 0;
+int           g_pc_auto_start_frame = 0; /* --auto-start N: inject Start presses from frame N (testing) */
 int           g_pc_fast_forward = 0;
 int           g_pc_verbose = 0;
 int           g_pc_time_override = -1; /* -1=system clock, 0-23=override hour */
@@ -640,6 +642,8 @@ int main(int argc, char* argv[]) {
             }
         } else if (strcmp(argv[i], "--no-framelimit") == 0) {
             g_pc_no_framelimit = 1;
+        } else if (strcmp(argv[i], "--auto-start") == 0 && i + 1 < argc) {
+            g_pc_auto_start_frame = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--uber-shader") == 0) {
             extern int g_pc_uber_shader_only;
             g_pc_uber_shader_only = 1;
@@ -816,6 +820,7 @@ int main(int argc, char* argv[]) {
         pc_platform_shutdown();
         return 1;
     }
+    pc_custom_furniture_init();
 
 #ifdef NETCODE_ENABLED
     if (g_pc_verbose && g_pc_online_enabled) {
