@@ -1,5 +1,7 @@
 #include "m_all_grow.h"
 
+#include "m_net_hooks.h"
+
 #include "libultra/libultra.h"
 #include "m_field_info.h"
 #include "m_field_make.h"
@@ -284,6 +286,27 @@ extern void mAGrw_SetXmasTree() {
 extern void mAGrw_RenewalFgItem(lbRTC_time_c* time) {
   if (Save_Get(scene_no) == SCENE_FG) {
     int haniwa_scheduled = Save_Get(haniwa_scheduled);
+
+    /* The server owns the town field. Every effect this has lands either in
+     * Save_Get(fg[][]) -- which the authoritative projection rewrites the
+     * moment the player walks two tiles, and wholesale after the server's own
+     * daily job -- or in the pockets, which the inventory projection rewrites
+     * just as fast. So online this never survived; it only produced weeds and
+     * fossils that appeared and then vanished, and burned a full field walk
+     * doing it.
+     *
+     * The timestamp still advances. Leaving it stale would tell the game no
+     * renewal had happened since the town was made, so the first offline boot
+     * after a long online session would try to catch up months at once, and
+     * mAGrw_CheckKabuPeddler would misjudge the turnip seller in the meantime.
+     *
+     * This is not the same as the server doing the regeneration -- it does not
+     * yet, beyond advancing planted tiles. See docs/netcode/CURRENT_STATUS.md
+     * for why that is blocked on terrain attributes the server has no copy of. */
+    if (Net_IsConnected()) {
+      lbRTC_TimeCopy(Save_GetPointer(all_grow_renew_time), time);
+      return;
+    }
 
     mAGrw_RenewalFgItem_ovl(time, &haniwa_scheduled);
     Save_Set(haniwa_scheduled, haniwa_scheduled);

@@ -94,10 +94,14 @@ delivery came off this list with the economy work; the turnip market came off
 2026-08-07 — it is now server-owned town state, and it was worse than
 divergence: turnips could not be sold online at all. See CURRENT_STATUS.md.)*
 
-**8. Daily world regeneration runs on every client independently.**
-`m_all_grow.c`, `m_random_field.c`, `m_field_make.c` — weeds, flower growth and
-wilting, tree growth, fossil and gyroid burial, money rock — none hooked, while
-the server runs its own daily renewal. The two never reconcile.
+**8. Daily world regeneration.** *(Half-resolved 2026-08-08.)* The client no
+longer runs `mAGrw_RenewalFgItem` while connected — it never survived the
+authoritative projection anyway, so this stopped churn rather than removing a
+feature. The server still does not perform the regeneration itself, and that is
+**blocked on a design decision, not on effort**: weed, fossil and money-rock
+placement all read per-tile collision attributes (`mCoBG_Attribute2CheckPlant`)
+that the asset-free server has no copy of. The town bootstrap would have to
+carry an attribute mask first. See CURRENT_STATUS.md.
 
 **9. The server persists almost nothing per player.** `server/src/gci.cpp`
 covers 15 pocket slots plus conditions, wallet, debt, and bank balance. Not

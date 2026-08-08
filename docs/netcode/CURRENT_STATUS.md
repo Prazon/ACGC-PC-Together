@@ -1588,6 +1588,57 @@ first version of the command failed with an empty message. It now says what
 was wrong. The console reports the store as well, since a level nothing
 displays is a level nobody can check.
 
+## The town tune, and why regeneration is blocked (2026-08-08)
+
+### The town tune is town state (protocol v23)
+
+`Save_t::melody` was local, so every player heard a different town on the hour
+and at the gate, and retuning at the town hall reached nobody. It now rides the
+baseline and a town-wide delta, with the same contested-edit treatment a house
+or gyroid gets: the request quotes the revision it saw, a stale one is refused
+with the current tune returned, and a replayed key returns the original result.
+`mMld_SetSaveMelody` sends the request rather than writing the save.
+
+### Local daily regeneration no longer runs online
+
+`mAGrw_RenewalFgItem` is skipped while connected. This is not a feature being
+removed -- it is dead work being stopped. Every effect it has lands either in
+`Save_Get(fg[][])`, which the authoritative projection rewrites as soon as the
+player walks two tiles (`refresh_interest_chunk`) and wholesale after the
+server's daily job clears `has_exterior_chunk`, or in the pockets, which the
+inventory projection rewrites just as fast. Online it never survived; it only
+produced weeds and fossils that appeared and then vanished.
+
+The timestamp still advances. Leaving `all_grow_renew_time` stale would tell the
+game no renewal had happened since the town was founded, so the first offline
+boot after a long online session would try to catch up months at once, and
+`mAGrw_CheckKabuPeddler` would misjudge the turnip seller meanwhile.
+
+### Why the server cannot yet do the regeneration itself -- read before trying
+
+This is the blocking finding, and it is worth stating precisely because the
+obvious plan does not work.
+
+Porting `m_all_grow_ovl.c` (3158 lines: weeds, flowers, trees, fossils, gyroid
+burial, money rock, the dump, snowmen, turnip spoiling) to the server fails on
+its first input, not its last. Weed placement calls
+`mCoBG_Attribute2CheckPlant(col->data.unit_attribute, &wpos)` and fossil and
+money-rock placement call the equivalent flat-ground tests. **These read the
+town's per-tile collision attributes, and the server has no copy of them** --
+`grep unit_attribute net/ server/` returns nothing, and it cannot get them from
+assets it is forbidden to hold. `TileState` carries item, condition, terrain,
+buried and placed_furniture; none of that says whether a cell is plantable or
+diggable.
+
+So server-side regeneration needs a decision first: extend the town bootstrap
+to carry a per-tile attribute mask (the client already sends the tile grid and
+the buried flags, so this is the natural place), and settle how that mask stays
+correct when terrain is edited. Only then is the port itself worth starting.
+
+Until that lands the town does not regenerate online -- no new weeds, fossils,
+gyroids or money rock -- which is a real missing feature, but a visible and
+consistent one rather than the silent per-client drift it replaced.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as
