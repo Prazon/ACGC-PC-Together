@@ -507,6 +507,11 @@ static void aNPC_check_feel_demoCode(ACTOR* actorx) {
 static void aNPC_setup_talk_start(NPC_ACTOR* nactorx, GAME* game) {
     ACTOR* playerx = GET_PLAYER_ACTOR_GAME_ACTOR(game);
 
+    /* Claim the villager for this player. Optimistic: the conversation starts
+     * now and does not wait for the answer, so a lost or refused lease costs
+     * nothing beyond the double-talk the gate above already makes rare. */
+    Net_BeginVillagerTalk(Net_VillagerSlotOf(nactorx->npc_info.animal));
+
     nactorx->palActor = playerx;
     if (nactorx->talk_info.turn == aNPC_TALK_TURN_NORMAL) {
         aNPC_set_dst_pos(nactorx, playerx->world.position.x, playerx->world.position.z);
@@ -520,6 +525,8 @@ static void aNPC_setup_talk_start(NPC_ACTOR* nactorx, GAME* game) {
 }
 
 static void aNPC_setup_talk_end(NPC_ACTOR* nactorx) {
+    Net_EndVillagerTalk(Net_VillagerSlotOf(nactorx->npc_info.animal));
+
     nactorx->palActor = NULL;
     if (nactorx->palActorIgnoreTimer >= 0) {
         nactorx->palActorIgnoreTimer = 600;
@@ -573,6 +580,17 @@ static void aNPC_talk_request_event_npc(ACTOR* actorx, GAME* game) {
 static int aNPC_normal_talk_request(ACTOR* actorx, GAME* game) {
     NPC_ACTOR* nactorx = (NPC_ACTOR*)actorx;
     int ret = FALSE;
+
+    /* A villager already talking to somebody else simply does not respond,
+     * rather than holding two conversations at once. Refusing here, before
+     * anything has begun, is why this is safe: the caller already treats FALSE
+     * as "not now" and nothing has been half-started to unwind. The answer
+     * comes from the last replicated NPC state, so pressing A costs no round
+     * trip. Two players who press within one trip both still get a
+     * conversation -- which is what happened before any of this existed. */
+    if (Net_VillagerBusy(Net_VillagerSlotOf(nactorx->npc_info.animal))) {
+        return FALSE;
+    }
 
     if (CLIP(quest_manager_clip)->talk_request_proc != NULL &&
         CLIP(quest_manager_clip)->talk_request_proc(actorx) == TRUE) {

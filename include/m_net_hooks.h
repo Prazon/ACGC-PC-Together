@@ -184,6 +184,19 @@ int Net_VillagerMoveInPending(u8* slot, u32* seed);
 /* Offer the villager the local roll just generated into `local_index` for the
  * published opening `slot`. */
 int Net_OfferVillagerMoveIn(int slot, int local_index);
+/* Which roster slot this villager occupies, or -1 if they are not a resident
+ * villager (a special or event NPC, or an unregistered one). */
+int Net_VillagerSlotOf(const void* animal);
+/* TRUE when somebody *else* is already holding this villager in conversation.
+ * Answered from the last replicated NPC state, so it costs no round trip: the
+ * check happens the instant the player presses A. */
+int Net_VillagerBusy(int slot);
+/* Take and release the conversation lease. Both are optimistic -- the talk
+ * proceeds without waiting -- so the worst a lost result costs is that two
+ * players who pressed A within one round trip both get a conversation, which
+ * is what happened before any of this existed. */
+void Net_BeginVillagerTalk(int slot);
+void Net_EndVillagerTalk(int slot);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -250,6 +263,10 @@ int Net_OfferVillagerMoveIn(int slot, int local_index);
 #define Net_ApplyAuthoritativeVillagers() ((void)0)
 #define Net_VillagerMoveInPending(slot, seed) FALSE
 #define Net_OfferVillagerMoveIn(slot, local_index) FALSE
+#define Net_VillagerSlotOf(animal) (-1)
+#define Net_VillagerBusy(slot) FALSE
+#define Net_BeginVillagerTalk(slot) ((void)0)
+#define Net_EndVillagerTalk(slot) ((void)0)
 #endif
 
 #ifdef __cplusplus

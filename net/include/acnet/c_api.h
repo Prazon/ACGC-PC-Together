@@ -479,6 +479,18 @@ int acnet_client_request_villager_move_in(uint8_t slot, const AcNetVillager* vil
  * emptied by the server at the next daily turnover, not here. */
 int acnet_client_request_villager_move_out(uint8_t slot);
 int acnet_client_take_villager_result(uint16_t* result_code);
+/* Who is holding villager `slot` in conversation, or 0 for nobody. Answered
+ * from the last replicated NPC state, so it costs no round trip -- the check
+ * happens the instant a player presses A, and a request that had to wait for an
+ * answer would either stall the interaction or start a conversation it then had
+ * to unwind. */
+/* Drains conversation results so a release knows which lease it holds. Pump
+ * once a frame. */
+void acnet_client_pump_conversations(void);
+uint64_t acnet_client_villager_conversation_owner(uint8_t slot);
+/* Take and release the conversation lease on villager `slot`. */
+int acnet_client_begin_villager_conversation(uint8_t slot);
+int acnet_client_end_villager_conversation(uint8_t slot);
 
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no

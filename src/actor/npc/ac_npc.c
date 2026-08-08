@@ -1,3 +1,4 @@
+#include "m_net_hooks.h"
 #include "ac_npc.h"
 
 #include "libultra/libultra.h"

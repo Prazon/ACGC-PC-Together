@@ -548,7 +548,8 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     for (const NpcState& npc : baseline.npcs) {
         if (!writer.u64(npc.entity) || !writer.u32(npc.zone) || !writer.u32(npc.revision) ||
             !writer.u16(npc.schedule_state) || !writer.u16(npc.animation) || !writer.u16(npc.emotion) ||
-            !writer.u64(npc.destination) || !encode_transform(writer, npc.transform)) return false;
+            !writer.u64(npc.destination) || !encode_transform(writer, npc.transform) ||
+        !writer.u64(npc.conversation_owner)) return false;
     }
     output = writer.data();
     return true;
@@ -672,7 +673,8 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         NpcState npc;
         if (!reader.u64(npc.entity) || !reader.u32(npc.zone) || !reader.u32(npc.revision) ||
             !reader.u16(npc.schedule_state) || !reader.u16(npc.animation) || !reader.u16(npc.emotion) ||
-            !reader.u64(npc.destination) || !decode_transform(reader, npc.transform) || npc.entity == 0 ||
+            !reader.u64(npc.destination) || !decode_transform(reader, npc.transform) ||
+        !reader.u64(npc.conversation_owner) || npc.entity == 0 ||
             npc.zone != baseline.zone || npc.revision == 0) return false;
         baseline.npcs.push_back(npc);
     }
@@ -756,10 +758,13 @@ bool decode_museum_delta(const std::vector<std::uint8_t>& input, MuseumState& mu
 bool encode_npc_delta(const NpcState& npc, std::vector<std::uint8_t>& output) {
     if (npc.entity == 0 || npc.zone == 0 || npc.revision == 0 || !finite(npc.transform.position) ||
         !finite(npc.transform.velocity)) return false;
-    ByteWriter writer(64);
+    /* 66 bytes as encoded below; the slack absorbs the next field without a
+     * silent truncation of the one after it. */
+    ByteWriter writer(96);
     if (!writer.u64(npc.entity) || !writer.u32(npc.zone) || !writer.u32(npc.revision) ||
         !writer.u16(npc.schedule_state) || !writer.u16(npc.animation) || !writer.u16(npc.emotion) ||
-        !writer.u64(npc.destination) || !encode_transform(writer, npc.transform)) return false;
+        !writer.u64(npc.destination) || !encode_transform(writer, npc.transform) ||
+        !writer.u64(npc.conversation_owner)) return false;
     output = writer.data();
     return true;
 }
@@ -768,7 +773,8 @@ bool decode_npc_delta(const std::vector<std::uint8_t>& input, NpcState& npc) {
     ByteReader reader(input);
     if (!reader.u64(npc.entity) || !reader.u32(npc.zone) || !reader.u32(npc.revision) ||
         !reader.u16(npc.schedule_state) || !reader.u16(npc.animation) || !reader.u16(npc.emotion) ||
-        !reader.u64(npc.destination) || !decode_transform(reader, npc.transform) || npc.entity == 0 ||
+        !reader.u64(npc.destination) || !decode_transform(reader, npc.transform) ||
+        !reader.u64(npc.conversation_owner) || npc.entity == 0 ||
         npc.zone == 0 || npc.revision == 0) return false;
     return reader.finished();
 }

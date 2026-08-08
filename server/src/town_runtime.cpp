@@ -743,7 +743,17 @@ void TownRuntime::deactivate_player(acnet::AccountId account, acnet::Tick tick) 
         stored->second.zone = player->zone;
         stored->second.transform = player->transform;
     }
+    /* A player who walks out mid-conversation must not leave the villager
+     * looking busy forever, so anything their disconnect freed is republished.
+     * release_player reports how many leases it dropped but not which, so the
+     * cheap and certain thing is to republish the ones this player held --
+     * tracked here rather than inferred. */
+    for (const acnet::EntityId held : npcs_.leases_held_by(account)) {
+        if (const acnet::NpcState* npc = npcs_.npc(held)) pending_npc_republish_.push_back(*npc);
+    }
     npcs_.release_player(account);
+    for (const acnet::NpcState& npc : pending_npc_republish_) publish_npc_change(npc);
+    pending_npc_republish_.clear();
     zones_.leave(account, tick);
     movement_.remove_player(account);
     players_.remove(account);
@@ -1078,12 +1088,19 @@ void TownRuntime::publish_presentation(const acnet::PlayerView& player) {
 /* The hand is inventory state, so the presentation mirror is refreshed from the
  * authority rather than tracked alongside it. */
 void TownRuntime::publish_npc_change(const acnet::NpcState& npc) {
+    acnet::NpcState published = npc;
+    /* The lease lives beside the NPC rather than in it, so it is stamped on at
+     * publication -- a viewer needs it to tell that a villager is already busy
+     * before offering a conversation. */
+    if (const acnet::ConversationState* talk = npcs_.conversation(npc.entity)) {
+        published.conversation_owner = talk->active ? talk->lease.owner : 0;
+    }
     acnet::ReplicationDelta delta;
     delta.kind = acnet::ResourceKind::Npc;
-    delta.zone = npc.zone;
+    delta.zone = published.zone;
     delta.has_position = true;
-    delta.position = npc.transform.position;
-    if (acnet::encode_npc_delta(npc, delta.payload)) deltas_.append(std::move(delta));
+    delta.position = published.transform.position;
+    if (acnet::encode_npc_delta(published, delta.payload)) deltas_.append(std::move(delta));
 }
 
 void TownRuntime::refresh_equipped_item(acnet::AccountId account) {
@@ -2226,7 +2243,14 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
         }
     }
     zones_.update_sleep_states(movement_.current_tick());
+    /* Same for a lease that simply timed out: the viewer's copy would otherwise
+     * stay busy until something else touched that villager. */
+    for (const acnet::EntityId held : npcs_.expiring_leases(movement_.current_tick())) {
+        if (const acnet::NpcState* npc = npcs_.npc(held)) pending_npc_republish_.push_back(*npc);
+    }
     npcs_.expire(movement_.current_tick());
+    for (const acnet::NpcState& npc : pending_npc_republish_) publish_npc_change(npc);
+    pending_npc_republish_.clear();
     const std::uint32_t interval = std::max<std::uint32_t>(1, config_.tick_rate / config_.snapshot_rate);
     if ((movement_.current_tick() % interval) == 0 && !send_snapshots(monotonic_ms, error)) return false;
     for (auto& item : connections_) {

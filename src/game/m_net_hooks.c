@@ -1933,6 +1933,40 @@ static int Net_VillagerToWire(const Animal_c* animal, AcNetVillager* wire) {
     return TRUE;
 }
 
+/* The roster slot an Animal_c occupies, by its address inside Save_t.animals[].
+ * The NPC actor holds a pointer into that array, so the slot is derivable
+ * without a lookup or an added field. */
+int Net_VillagerSlotOf(const void* animal) {
+    const Animal_c* base = &Save_Get(animals[0]);
+    const Animal_c* target = (const Animal_c*)animal;
+    ptrdiff_t index;
+
+    if (animal == NULL) return -1;
+    index = target - base;
+    if (index < 0 || index >= ANIMAL_NUM_MAX) return -1;
+    return (int)index;
+}
+
+int Net_VillagerBusy(int slot) {
+    u64 owner;
+
+    if (!Net_VillagersAuthoritative() || slot < 0 || slot >= ACNET_VILLAGER_SLOTS) return FALSE;
+    owner = (u64)acnet_client_villager_conversation_owner((uint8_t)slot);
+    /* Our own lease is not busy -- the original re-enters the talk state for a
+     * continued conversation, and refusing that would end it a line in. */
+    return owner != 0 && owner != (u64)acnet_client_account();
+}
+
+void Net_BeginVillagerTalk(int slot) {
+    if (!Net_VillagersAuthoritative() || slot < 0 || slot >= ACNET_VILLAGER_SLOTS) return;
+    (void)acnet_client_begin_villager_conversation((uint8_t)slot);
+}
+
+void Net_EndVillagerTalk(int slot) {
+    if (!Net_VillagersAuthoritative() || slot < 0 || slot >= ACNET_VILLAGER_SLOTS) return;
+    (void)acnet_client_end_villager_conversation((uint8_t)slot);
+}
+
 int Net_VillagerMoveInPending(u8* slot, u32* seed) {
     uint8_t wire_slot = 0;
     uint32_t wire_seed = 0;
@@ -2015,15 +2049,23 @@ void Net_ApplyAuthoritativeVillagers(void) {
 
     for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
         Animal_c* animal = &Save_Get(animals[i]);
+        const mActor_name_t incoming = wire[i].occupied ? (mActor_name_t)wire[i].npc_id : EMPTY_NO;
 
-        if (!wire[i].occupied) {
-            /* Vacating a slot clears the identity and nothing else, so a
-             * villager who moves out does not take a player's memories of the
-             * one who replaces them with a stale name. */
-            memset(&animal->id, 0, sizeof(animal->id));
-            animal->id.looks = mNpc_LOOKS_UNSET;
-            continue;
+        /* A different character in this slot means the previous occupant is
+         * gone. Everything else in the entry -- the memories of who has spoken
+         * to them, the contest quest, the stored mail -- belongs to *them*, not
+         * to whoever moves in next, so it goes with them. mNpc_ClearAnimalInfo
+         * is what the original calls for exactly this, and using it keeps the
+         * cleared state identical to a local move-out rather than an
+         * approximation of one.
+         *
+         * Only on a change: doing it every projection would wipe a player's
+         * relationships every time any villager anywhere altered the roster. */
+        if (animal->id.npc_id != incoming) {
+            mNpc_ClearAnimalInfo(animal);
         }
+        if (!wire[i].occupied) continue;
+
         animal->id.npc_id = (mActor_name_t)wire[i].npc_id;
         animal->id.land_id = wire[i].land_id;
         memcpy(animal->id.land_name, wire[i].land_name, LAND_NAME_SIZE);
@@ -2413,6 +2455,7 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
      * adding to rather than a stale one. Cheap: it returns immediately unless
      * the server has actually published an opening. */
     mNpc_NetOfferMoveIn();
+    acnet_client_pump_conversations();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

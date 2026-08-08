@@ -299,6 +299,7 @@ private:
     std::unordered_map<std::uint64_t, acnet::TownTuneResult> town_tune_idempotency_;
     /* The noticeboard. The server owns the FIFO eviction, which is the part two
      * simultaneous posters contend over. */
+    std::vector<acnet::NpcState> pending_npc_republish_;
     acnet::VillagerRoster villagers_;
     /* Registers one NpcState per occupied roster slot so villagers are real
      * server entities -- which is what conversation leases address. */

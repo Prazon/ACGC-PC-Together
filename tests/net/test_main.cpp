@@ -2283,6 +2283,9 @@ void npc_state_replicates_between_baselines() {
     npc.destination = 77;
     npc.transform.position = {30.0F, 0.0F, 45.0F};
     npc.transform.yaw = 4096;
+    /* Replicated so a viewer can tell a villager is busy without a round trip
+     * -- the check happens the instant a player presses A. */
+    npc.conversation_owner = 4242;
 
     std::vector<std::uint8_t> payload;
     CHECK(acnet::encode_npc_delta(npc, payload));
@@ -2293,6 +2296,7 @@ void npc_state_replicates_between_baselines() {
     CHECK(decoded.revision == npc.revision);
     CHECK(decoded.schedule_state == npc.schedule_state);
     CHECK(decoded.animation == npc.animation);
+    CHECK(decoded.conversation_owner == npc.conversation_owner);
     CHECK(decoded.emotion == npc.emotion);
     CHECK(decoded.destination == npc.destination);
     CHECK(decoded.transform.position.z == npc.transform.position.z);

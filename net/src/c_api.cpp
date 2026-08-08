@@ -4,6 +4,7 @@
 #include "acnet/entity_registry.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <exception>
 #include <iterator>
@@ -690,6 +691,54 @@ extern "C" int acnet_client_take_villager_result(uint16_t* result_code) {
         if (result_code != nullptr) *result_code = static_cast<uint16_t>(result->code);
         return 1;
     } catch (...) { capture_exception(); return 0; }
+}
+
+namespace {
+/* The lease this client holds on each villager. NpcAuthority::release_conversation
+ * matches the lease id exactly, so a release that had forgotten it would fail
+ * and leave the villager looking busy to everyone until the lease timed out. */
+std::array<std::uint32_t, acnet::kVillagerSlots> villager_leases{};
+} // namespace
+
+extern "C" void acnet_client_pump_conversations(void) {
+    try {
+        if (!client) return;
+        while (const auto result = client->take_conversation_result()) {
+            if (result->npc < acnet::kVillagerEntityBase) continue;
+            const std::size_t slot = static_cast<std::size_t>(result->npc - acnet::kVillagerEntityBase);
+            if (slot >= villager_leases.size()) continue;
+            if (result->code != acnet::ResultCode::Ok) continue;
+            /* A completed conversation is a released one. */
+            villager_leases[slot] = result->completed ? 0 : result->lease_id;
+        }
+    } catch (...) { capture_exception(); }
+}
+
+extern "C" uint64_t acnet_client_villager_conversation_owner(uint8_t slot) {
+    try {
+        if (!client || client->baseline() == nullptr || slot >= acnet::kVillagerSlots) return 0;
+        const acnet::EntityId entity = acnet::villager_entity(slot);
+        for (const acnet::NpcState& npc : client->baseline()->npcs) {
+            if (npc.entity == entity) return npc.conversation_owner;
+        }
+        return 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_begin_villager_conversation(uint8_t slot) {
+    if (slot >= acnet::kVillagerSlots) return 0;
+    return acnet_client_request_conversation(0, acnet::villager_entity(slot), 0, 0);
+}
+
+extern "C" int acnet_client_end_villager_conversation(uint8_t slot) {
+    if (slot >= acnet::kVillagerSlots) return 0;
+    const std::uint32_t lease = villager_leases[slot];
+    /* Nothing held means nothing to release -- the Begin was refused, or its
+     * result has not landed yet. Sending a release with no lease would just be
+     * refused, and the server frees it on timeout or disconnect regardless. */
+    if (lease == 0) return 0;
+    villager_leases[slot] = 0;
+    return acnet_client_request_conversation(2, acnet::villager_entity(slot), lease, 0);
 }
 
 extern "C" uint32_t acnet_client_villager_revision(void) {

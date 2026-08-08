@@ -23,6 +23,12 @@ struct NpcState {
     std::uint16_t emotion = 0;
     EntityId destination = 0;
     Revision revision = 1;
+    /* Who is currently holding this NPC in conversation, or 0 for nobody.
+     * Replicated so a viewer can tell that a villager is busy *without* a round
+     * trip: the check happens when a player presses A, and a request that had
+     * to wait for an answer would either stall the interaction or start a
+     * conversation it then had to unwind. */
+    AccountId conversation_owner = 0;
 };
 
 struct NpcInteractionLease {
@@ -85,6 +91,11 @@ public:
                                              Tick tick);
     bool release_conversation(AccountId account, EntityId npc, std::uint32_t lease_id);
     std::size_t release_player(AccountId account);
+    /* Which NPCs this account currently holds, so a caller can republish them
+     * after releasing -- release_player reports a count, not the identities. */
+    std::vector<EntityId> leases_held_by(AccountId account) const;
+    /* Which leases `tick` is about to expire, for the same reason. */
+    std::vector<EntityId> expiring_leases(Tick tick) const;
     std::size_t expire(Tick tick);
 
     bool acquire_event(std::uint32_t event_id, AccountId account, Tick tick, Tick duration);

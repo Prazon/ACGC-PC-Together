@@ -229,6 +229,22 @@ const PlayerView* NpcAuthority::nearest_player(EntityId npc_id, float radius) co
                : players_->nearest(npc_value->transform.position, npc_value->zone, radius);
 }
 
+std::vector<EntityId> NpcAuthority::leases_held_by(AccountId account) const {
+    std::vector<EntityId> held;
+    for (const auto& entry : conversations_) {
+        if (entry.second.active && entry.second.lease.owner == account) held.push_back(entry.first);
+    }
+    return held;
+}
+
+std::vector<EntityId> NpcAuthority::expiring_leases(Tick tick) const {
+    std::vector<EntityId> expiring;
+    for (const auto& entry : conversations_) {
+        if (entry.second.active && entry.second.lease.expires_tick <= tick) expiring.push_back(entry.first);
+    }
+    return expiring;
+}
+
 bool valid_villager_slot(const VillagerSlot& slot) {
     const VillagerIdentity& villager = slot.villager;
     if (!slot.occupied) {

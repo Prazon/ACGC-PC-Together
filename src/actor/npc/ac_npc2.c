@@ -1,4 +1,5 @@
 #define aNPC_NPC2
+#include "m_net_hooks.h"
 #include "ac_npc2.h"
 #include "ac_npc.h"
 

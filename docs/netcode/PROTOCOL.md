@@ -1,4 +1,4 @@
-# Dedicated town protocol v26
+# Dedicated town protocol v27
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,31 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### Conversation leases (v27)
+
+`NpcState` carries `conversation_owner` — the account currently holding this
+NPC in conversation, or 0. It is replicated so a viewer can tell that a villager
+is busy **without a round trip**: the check happens the instant a player presses
+A, and a request that had to wait for an answer would either stall the
+interaction or start a conversation it then had to unwind.
+
+`aNPC_normal_talk_request` refuses when somebody else holds the villager. That
+gate is safe precisely because of where it sits: the caller already treats
+`FALSE` as "not now", and nothing has been half-started to unwind. The client's
+own lease does not count as busy — the original re-enters the talk state for a
+continued conversation, and refusing that would end it a line in.
+
+Taking and releasing are optimistic: `aNPC_setup_talk_start` claims the villager
+and the conversation begins without waiting. Two players who press A within one
+round trip both still get a conversation, which is what happened before any of
+this existed; what the gate removes is the common case of walking up to somebody
+already mid-conversation. The client tracks the lease id per slot because
+`release_conversation` matches it exactly — a release that had forgotten it
+would fail and leave the villager looking busy until the lease timed out.
+
+A lease dropped by a disconnect or a timeout republishes the NPC, so a player
+walking out mid-conversation does not leave a villager busy forever.
 
 ### Move-ins and move-outs (v26)
 
