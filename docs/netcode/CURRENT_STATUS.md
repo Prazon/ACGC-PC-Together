@@ -1150,6 +1150,39 @@ the GCI on disk still held ~540 trees and ~36 rocks throughout. A player who
 saves while the world is wiped would persist the damage, so the fix wants to
 land before any long online session.
 
+## Actor-backed tiles are not projected (2026-08-07)
+
+Follow-up to the blank-town fix: once the server actually had a foreground,
+walking around produced heavy hitches and duplicated actors -- a second gyroid
+on a house was the visible case.
+
+**Duplicates.** Houses, boards, props and misc actors live in the foreground
+grid only as spawn records: `ac_birth_control` reads the name, spawns the
+actor, and clears the cell to `RSV_NO` or `EMPTY_NO` until the actor is deleted
+(`actor->restore_fg` puts the name back). The server's copy holds the names --
+it was bootstrapped from a save -- and no server transaction ever changes them.
+The projection wrote them back while the actors were alive, so birth control
+spawned duplicates. Enough duplicates exhaust the fixed structure slot pool,
+and a failed spawn leaves `setup_actor_flag` set, which reruns the entire
+delete-and-spawn scan every frame -- the freeze.
+
+**Hitches.** The baseline chunk follows the player, and the projection set
+`mFI_SetFGUpData()` whenever a baseline arrived, rebuilding the draw and
+collision tables on every re-baseline even when nothing had changed.
+
+`Net_TileProjectable` now rejects `RSV_NO` in either direction and every
+actor-backed name family (`STRUCT`, `PROPS`, `ITEM2`, `ACTOR`) in both the
+baseline and delta paths, and both paths only write -- and only set the update
+flag -- when the item or the buried bit actually differs from the field.
+
+Verified by the reporter: the freezes are gone on the repaired test town.
+`make test` 50/50, Windows client and server build clean.
+
+**Known issue found in the same session:** grabbing your own equipped fishing
+rod duplicates it into the inventory (two rods after the grab). Not yet
+investigated; likely the equipment/inventory reconciliation racing a hold
+request. Next session should start here.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as

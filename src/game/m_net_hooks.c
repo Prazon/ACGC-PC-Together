@@ -1695,6 +1695,33 @@ void Net_ApplyAuthoritativeShopStock(void) {
     Save_Set(shop.rare_item, (mActor_name_t)acnet_client_shop_rare_item());
 }
 
+/* Whether a server tile may be written into the local field.
+ *
+ * Houses, boards, gyroids, props and misc actors live in the foreground grid
+ * only as spawn records: ac_birth_control reads the name, spawns the actor, and
+ * clears the cell to RSV_NO or EMPTY_NO until the actor is deleted
+ * (actor->restore_fg puts the name back). The server's copy holds the names --
+ * it was bootstrapped from a save -- and it has no transaction that ever
+ * changes them. Writing one back while the actor is alive makes birth control
+ * spawn a duplicate; enough duplicates exhaust the fixed structure slot pool,
+ * and a failed spawn leaves setup_actor_flag set so the whole scan reruns every
+ * frame. That was the doubled house gyroids and the hitching.
+ *
+ * RSV_NO itself is local bookkeeping (multi-tile reserves and actor claims),
+ * never an authoritative state, in either direction. */
+static int Net_TileProjectable(const mActor_name_t* local_cell, u16 incoming) {
+    if (incoming == RSV_NO) return FALSE;
+    if (local_cell != NULL && *local_cell == RSV_NO) return FALSE;
+    switch (ITEM_NAME_GET_TYPE((mActor_name_t)incoming)) {
+        case NAME_TYPE_STRUCT:
+        case NAME_TYPE_PROPS:
+        case NAME_TYPE_ITEM2:
+        case NAME_TYPE_ACTOR:
+            return FALSE;
+    }
+    return TRUE;
+}
+
 static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     AcNetItemSlot slots[15];
     u32 baseline_serial;
@@ -1726,16 +1753,32 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     if (outdoor && baseline_serial != 0 &&
         (baseline_serial != last_baseline_serial || acnet_client_tile_changes_overflowed())) {
         count = acnet_client_baseline_tiles(net_baseline_tiles, ARRAY_COUNT(net_baseline_tiles));
+        dirty = FALSE;
         for (i = 0; i < count; ++i) {
+            mActor_name_t* cell;
             if (net_baseline_tiles[i].zone_id != tile_zone) continue;
             if (Net_TileClaimed(net_baseline_tiles[i].zone_id, net_baseline_tiles[i].x,
                                 net_baseline_tiles[i].z)) continue;
-            mFI_UtNumtoFGSet_common(net_baseline_tiles[i].item, net_baseline_tiles[i].x,
-                                    net_baseline_tiles[i].z, FALSE);
-            if (net_baseline_tiles[i].buried) mFI_UtNum2DepositON(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
-            else mFI_UtNum2DepositOFF(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
+            cell = mFI_UtNum2UtFG(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
+            if (!Net_TileProjectable(cell, net_baseline_tiles[i].item)) continue;
+            /* The baseline follows the player, so most of it repeats what the
+             * field already shows. Only a real change may set the update flag:
+             * it rebuilds the draw and collision tables, and doing that on
+             * every re-baseline made walking hitch. */
+            if (cell == NULL || *cell != (mActor_name_t)net_baseline_tiles[i].item) {
+                mFI_UtNumtoFGSet_common(net_baseline_tiles[i].item, net_baseline_tiles[i].x,
+                                        net_baseline_tiles[i].z, FALSE);
+                dirty = TRUE;
+            }
+            if ((net_baseline_tiles[i].buried != 0) !=
+                (mFI_UtNum2DepositGet(net_baseline_tiles[i].x, net_baseline_tiles[i].z) != 0)) {
+                if (net_baseline_tiles[i].buried) mFI_UtNum2DepositON(net_baseline_tiles[i].x,
+                                                                      net_baseline_tiles[i].z);
+                else mFI_UtNum2DepositOFF(net_baseline_tiles[i].x, net_baseline_tiles[i].z);
+                dirty = TRUE;
+            }
         }
-        if (count != 0) mFI_SetFGUpData();
+        if (dirty) mFI_SetFGUpData();
         last_baseline_serial = baseline_serial;
         /* The drain both clears the overflow flag and discards changes the
          * reprojection just superseded. */
@@ -1749,12 +1792,22 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
             if (Net_TileClaimed(net_tile_changes[i].tile.zone_id, net_tile_changes[i].tile.x,
                                 net_tile_changes[i].tile.z)) continue;
             if (Net_AnimateTileChange(play, &net_tile_changes[i])) continue;
-            mFI_UtNumtoFGSet_common(net_tile_changes[i].tile.item, net_tile_changes[i].tile.x,
-                                    net_tile_changes[i].tile.z, FALSE);
-            if (net_tile_changes[i].tile.buried) mFI_UtNum2DepositON(net_tile_changes[i].tile.x,
-                                                                    net_tile_changes[i].tile.z);
-            else mFI_UtNum2DepositOFF(net_tile_changes[i].tile.x, net_tile_changes[i].tile.z);
-            dirty = TRUE;
+            {
+                mActor_name_t* cell = mFI_UtNum2UtFG(net_tile_changes[i].tile.x, net_tile_changes[i].tile.z);
+                if (!Net_TileProjectable(cell, net_tile_changes[i].tile.item)) continue;
+                if (cell == NULL || *cell != (mActor_name_t)net_tile_changes[i].tile.item) {
+                    mFI_UtNumtoFGSet_common(net_tile_changes[i].tile.item, net_tile_changes[i].tile.x,
+                                            net_tile_changes[i].tile.z, FALSE);
+                    dirty = TRUE;
+                }
+            }
+            if ((net_tile_changes[i].tile.buried != 0) !=
+                (mFI_UtNum2DepositGet(net_tile_changes[i].tile.x, net_tile_changes[i].tile.z) != 0)) {
+                if (net_tile_changes[i].tile.buried) mFI_UtNum2DepositON(net_tile_changes[i].tile.x,
+                                                                         net_tile_changes[i].tile.z);
+                else mFI_UtNum2DepositOFF(net_tile_changes[i].tile.x, net_tile_changes[i].tile.z);
+                dirty = TRUE;
+            }
         }
         if (dirty) mFI_SetFGUpData();
     }
