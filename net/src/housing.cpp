@@ -372,6 +372,7 @@ HouseUpdateResult HousingAuthority::replace_contents(const HouseUpdate& update) 
     house.music_tracks = update.music_tracks;
     house.furniture_switches = update.furniture_switches;
     house.surfaces = update.surfaces;
+    house.music_box = update.music_box;
     house.furniture = update.furniture;
     house.initialized = true;
     house.revision = next_revision(house.revision);

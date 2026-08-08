@@ -104,6 +104,9 @@ typedef struct AcNetHouseState {
     uint8_t ordered_exterior_palette;
     uint8_t next_exterior_palette;
     uint8_t door_design;
+    /* mHm_hs_c::music_box -- which K.K. songs the house stereo holds, as the
+     * save's two u32s. */
+    uint32_t music_box[2];
 } AcNetHouseState;
 
 /* The same block on the way up, so the submit call does not grow seven more
@@ -116,6 +119,7 @@ typedef struct AcNetHouseSurfaces {
     uint8_t ordered_exterior_palette;
     uint8_t next_exterior_palette;
     uint8_t door_design;
+    uint32_t music_box[2];
 } AcNetHouseSurfaces;
 
 typedef struct AcNetHouseFurniture {

@@ -108,6 +108,15 @@ public:
      * audit path a player transaction uses, so a gift survives a restart and is
      * attributable afterwards. */
     bool grant_bank_bells(acnet::AccountId account, std::uint64_t amount, std::string& error);
+    /* Set the town's lifetime shop sales and re-derive Nook's level from them.
+     * Granting bells cannot do this: sales accumulate only from committed Buy
+     * and Sell transactions, so reaching Nookington's by shopping means
+     * spending 240,000 bells through a five-row shelf. `visitor` sets the
+     * outside-shopper flag Nookington's additionally requires. */
+    bool set_shop_sales(std::uint32_t sales, bool visitor, std::string& error);
+    /* Put a K.K. song in a house's stereo. `slot` is the original resident slot
+     * 0-3; `song` is a bit index into the 64-bit music_box bitfield. */
+    bool grant_house_song(std::uint8_t slot, std::uint8_t song, std::string& error);
     bool send_mail(acnet::AccountId recipient,
                    std::uint16_t attachment,
                    const std::string& text,
@@ -129,6 +138,8 @@ public:
     std::size_t villager_count() const { return npcs_.all_npcs().size(); }
     /* The town's weekly stalk market, for the operator console. */
     const acnet::TurnipMarket& turnip_market() const { return turnips_; }
+    std::uint8_t shop_tier() const { return static_cast<std::uint8_t>(shop_stock_.tier); }
+    std::uint32_t shop_sales_sum() const { return shop_stock_.sales_sum; }
     /* 0 = Sunday, matching the schedule's own indexing. */
     int town_weekday() const {
         return acnet::town_date_from_seconds(clock_.state().town_unix_seconds).weekday;

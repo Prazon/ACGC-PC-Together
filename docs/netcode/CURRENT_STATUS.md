@@ -1506,6 +1506,88 @@ Not covered by that pass, because they need a scenario rather than a look: a
 bee-stung face, a tanned face, an umbrella opening, and a mid-pickup item are
 all transient states nobody was necessarily in.
 
+## Three quick wins: the gate, Nook's level, the music box (2026-08-08)
+
+Protocol 20 -> 22, checkpoints 12 -> 13.
+
+### `make check` now catches a client/server link split
+
+The root Makefile builds one flat list of every net/ and server/ source, so a
+symbol only server code defines still resolves and the whole gate passes. The
+shipped client does not link that list -- `pc/CMakeLists.txt` gives
+`acnet_client` a strict subset -- so a call from `c_api.cpp` into a server-only
+translation unit built clean under `make check` and failed only in
+`build_pc.bat`. That is exactly how `turnip_sell_price` got through.
+
+`make client-link` links the object files CMake's client target is made of and
+nothing else. Linking them directly rather than through an archive is what makes
+it strict: an archive member is only pulled in if something already references
+it, whereas a direct link must resolve every reference in every object. The
+source list is parsed out of `pc/CMakeLists.txt` rather than copied, so it
+cannot drift from the target it checks, and a source the client needs that the
+Makefile never compiles is reported separately -- that case is worse, since
+`make check` would not be building it at all.
+
+Verified by reintroducing the bug: dropping `turnip.cpp` from the target
+reproduces the same undefined reference the Windows link produced. It reuses
+objects the suite already compiled, so it costs a fraction of a second.
+
+### Nook's upgrade level is server-owned (protocol v21)
+
+`tier` and `sales_sum` were persisted and drove the shelf, but nothing advanced
+them: `mSP_PlusSales` was a local call, so online the store never upgraded and
+Nook's Cranny never unlocked the net, rod or axe. Each client also accumulated
+its own total, which would have upgraded the store for that player alone.
+
+The server now adds to the total on every accepted `Buy` and `Sell` -- full
+price for a purchase, half the payout for a sale, the two `mSP_PlusSales` call
+sites -- and clamps at the next tier's threshold, which is what stops one large
+transaction skipping a tier. Nookington's additionally needs `visitor_shopped`,
+this town's equivalent of the original's `visitor_flag`: an account holding no
+resident slot has shopped. Both fields ride the shelf, so a viewer learns about
+an upgrade; a `Sell` republishes the shelf only when the tier actually moved.
+
+Client-side `mSP_PlusSales` returns early while connected and the level is
+projected into `Save_t`. `mSP_RenewShopLevel` is deliberately not called: it
+recomputes the level from the local total, which is the derivation the server
+now owns.
+
+### Each house's music box (protocol v22)
+
+The last field missing from `AcNetHouseState`. It rides the whole-room submit
+like the furniture and the surfaces; the island cabin keeps its own.
+
+The finding's other outstanding item, the mailbox, was stale when written -- a
+house mailbox's letters have been server-owned through the mail family and their
+own `MailboxState` revision since that work landed. Corrected in the audit
+rather than left to send the next reader hunting a bug that is not there.
+
+### Verification
+
+`make check` and `make sanitize` green at every commit, and `make check` was
+re-run from a clean tree, a forced full rebuild, and an incremental one to be
+sure the new link step behaves in all three. 53/53 tests, including new cases
+for the tier ladder (the clamp blocking a tier skip, Nookington's visitor gate,
+saturation instead of wraparound, and an undefined tier rejected at the decoder)
+and the music box crossing the wire to a second client.
+
+Not yet seen on screen: the shop upgrade and the music box. Neither was
+reachable by an operator, which is why the same day added
+`--set-shop-sales AMOUNT [--shop-visitor]` and `--grant-song SLOT=SONG`.
+`--grant-bells` deliberately does not move the shop level -- lifetime sales
+accrue only from committed transactions, and bells sitting in a bank have not
+been spent -- so without the new command, reaching Nookington's meant pushing
+240,000 bells through a five-row shelf. K.K. Slider is not modelled at all, so
+a song had no path.
+
+Both journal before reporting success and write an audit row. `set_shop_sales`
+does not call `commit_transaction`, because a transactions row is keyed by
+account and one town has one store. Finding that out was itself a small fix:
+`record_transaction` rejected account 0 with a bare `return false`, so the
+first version of the command failed with an empty message. It now says what
+was wrong. The console reports the store as well, since a level nothing
+displays is a level nobody can check.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as

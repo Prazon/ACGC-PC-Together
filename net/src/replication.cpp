@@ -76,6 +76,9 @@ bool encode_house(ByteWriter& writer, const HouseState& house) {
         if (!writer.u64(switches)) return false;
     }
     if (!encode_house_surfaces(writer, house.surfaces)) return false;
+    for (std::uint32_t songs : house.music_box) {
+        if (!writer.u32(songs)) return false;
+    }
     std::vector<std::pair<FurnitureAddress, ItemSlot>> furniture(house.furniture.begin(), house.furniture.end());
     std::sort(furniture.begin(), furniture.end(), [](const auto& left, const auto& right) {
         if (left.first.floor != right.first.floor) return left.first.floor < right.first.floor;
@@ -111,6 +114,9 @@ bool decode_house(ByteReader& reader, HouseState& house) {
         if (!reader.u64(switches)) return false;
     }
     if (!decode_house_surfaces(reader, house.surfaces)) return false;
+    for (std::uint32_t& songs : house.music_box) {
+        if (!reader.u32(songs)) return false;
+    }
     house.shared = house.original_slot == kSharedHouseSlot;
     if (!reader.u16(count) || count > kMaximumHouseFurniture || house.house_id == 0 ||
         !valid_house_ownership(house) || house.zone == 0 ||

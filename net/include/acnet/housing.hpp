@@ -176,6 +176,11 @@ struct HouseState {
     std::array<std::int16_t, kHouseFloorCount> music_tracks{{-1, -1, -1}};
     std::array<std::uint64_t, kHouseFloorCount * kHouseLayerCount> furniture_switches{};
     HouseSurfaces surfaces;
+    /* mHm_hs_c::music_box: a 64-bit bitfield of which K.K. songs the house's
+     * stereo holds, in two u32s exactly as the save stores it. Persistent
+     * per-house state that only the owner changes, so it rides the same
+     * whole-room submit the furniture does. */
+    std::array<std::uint32_t, 2> music_box{};
     /* item is the canonical pocket item ID; condition stores the original
      * room-facing direction (0..3). Reserved footprint cells use their
      * original 0xFxxx value with condition zero. */
@@ -195,6 +200,11 @@ struct HouseUpdate {
     std::array<std::int16_t, kHouseFloorCount> music_tracks{{-1, -1, -1}};
     std::array<std::uint64_t, kHouseFloorCount * kHouseLayerCount> furniture_switches{};
     HouseSurfaces surfaces;
+    /* mHm_hs_c::music_box: a 64-bit bitfield of which K.K. songs the house's
+     * stereo holds, in two u32s exactly as the save stores it. Persistent
+     * per-house state that only the owner changes, so it rides the same
+     * whole-room submit the furniture does. */
+    std::array<std::uint32_t, 2> music_box{};
     std::unordered_map<FurnitureAddress, ItemSlot, FurnitureAddressHash> furniture;
 };
 

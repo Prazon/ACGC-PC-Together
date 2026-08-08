@@ -346,6 +346,8 @@ extern "C" int acnet_client_house(AcNetHouseState* output) {
         output->ordered_exterior_palette = house.surfaces.ordered_exterior_palette;
         output->next_exterior_palette = house.surfaces.next_exterior_palette;
         output->door_design = house.surfaces.door_design;
+        output->music_box[0] = house.music_box[0];
+        output->music_box[1] = house.music_box[1];
         return 1;
     } catch (...) { capture_exception(); return 0; }
 }
@@ -969,6 +971,8 @@ extern "C" int acnet_client_submit_house_update(uint64_t house_id,
         update.surfaces.ordered_exterior_palette = surfaces->ordered_exterior_palette;
         update.surfaces.next_exterior_palette = surfaces->next_exterior_palette;
         update.surfaces.door_design = surfaces->door_design;
+        update.music_box[0] = surfaces->music_box[0];
+        update.music_box[1] = surfaces->music_box[1];
         for (std::size_t i = 0; i < furniture_count; ++i) {
             acnet::FurnitureAddress address{furniture[i].x, furniture[i].z, furniture[i].floor, furniture[i].layer};
             acnet::ItemSlot item{furniture[i].item, furniture[i].condition};

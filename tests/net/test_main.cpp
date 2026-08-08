@@ -233,6 +233,8 @@ void transaction_messages_round_trip() {
     house.surfaces.ordered_exterior_palette = 6;
     house.surfaces.next_exterior_palette = 7;
     house.surfaces.door_design = 9;
+    house.music_box[0] = 0xDEADBEEFu;
+    house.music_box[1] = 0x0BADF00Du;
     CHECK(acnet::encode(house, bytes));
     acnet::HouseUpdate decoded_house;
     CHECK(acnet::decode(bytes, decoded_house));
@@ -243,6 +245,7 @@ void transaction_messages_round_trip() {
     CHECK(decoded_house.furniture_switches[1] == 0x1122334455667788ULL);
     CHECK(decoded_house.furniture.at({4, 5, 2, 1}).item == 0x3001);
     CHECK(decoded_house.surfaces == house.surfaces);
+    CHECK(decoded_house.music_box == house.music_box);
 
     /* A pattern_bits byte outside the two flags mHm_fllot_bit_c defines is not
      * clamped into range, it is a decode failure -- otherwise a peer could hand
@@ -4921,6 +4924,7 @@ void production_clients_connect_move_and_render_each_other() {
     house_update.surfaces.pattern_bits[0] = 2;
     house_update.surfaces.exterior_palette = 3;
     house_update.surfaces.door_design = 4;
+    house_update.music_box[0] = 0x1234u;
     CHECK(first.request(house_update, ++transaction_now, error));
     std::optional<acnet::HouseUpdateResult> house_result;
     bool house_converged = false;
@@ -4955,6 +4959,7 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(second.baseline()->house.surfaces.exterior_palette == 3);
     CHECK(second.baseline()->house.surfaces.door_design == 4);
     CHECK(second.baseline()->house.surfaces == first.baseline()->house.surfaces);
+    CHECK(second.baseline()->house.music_box[0] == 0x1234u);
 
     const std::int64_t before_exit_time = first.estimated_town_time(transaction_now);
     transfer_both(200, 1);
