@@ -1,3 +1,5 @@
+#include "m_ftr_tables.h"
+
 unsigned short ftr_price_table[] = {
     41240,
     2560,
@@ -1267,3 +1269,7 @@ unsigned short ftr_price_table[] = {
     0,
     -1,
 };
+
+/* Length is FTR_NUM furniture entries plus the trailing -1 sentinel that
+ * mSP_CountPriceTableElement walks to. */
+FTR_TABLE_ASSERT_SENTINEL(ftr_price_table);

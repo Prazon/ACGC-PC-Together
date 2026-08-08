@@ -1266,3 +1266,7 @@ static aFTR_PROFILE* furniture_quality[] = {
     &iam_tak_stew,
     &iam_dummy,
 };
+
+/* Indexed without a bounds check (m_catalog_ovl.c:170), so a missing entry is
+ * a wild pointer dereference rather than a missing item. */
+FTR_TABLE_ASSERT(furniture_quality);

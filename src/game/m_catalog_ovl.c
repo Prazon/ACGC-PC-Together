@@ -47,6 +47,7 @@ typedef struct {
     Gfx* sel_gfx1;
 } mCL_win_data_c;
 
+#include "m_ftr_tables.h"
 #include "../src/actor/ac_furniture_profile_data.c_inc" /* furniture quality */
 #include "../src/game/m_catalog_ovl_paper_data.c_inc"
 #include "../src/game/m_catalog_ovl_data.c_inc"
