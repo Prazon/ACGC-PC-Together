@@ -10,8 +10,8 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P2** calendar API, holidays, runtime wiring, persistence | **done** |
 | **P3** `ModCalendar` replication | **done** (server, wire and client) |
 | **P4** T1 asset override | **done** |
-| **P5** arena, `.pcasset`, model compiler | **container + parser done** (fuzzed); arena and model compiler outstanding |
-| **P6** table growth, registry, placeholder | not started |
+| **P5** arena, `.pcasset`, model compiler | **container, parser and arena done**; model compiler outstanding |
+| **P6** table growth, registry, placeholder | **blocked** — attempted and reverted, see below |
 | **P7** delivery, server side | **done** (wire format, pack store, chunk service) |
 | **P8** client cache, fetch, loading UI | **cache done**; fetch loop and UI outstanding |
 | **P9** custom songs and discs | not started |
@@ -121,6 +121,26 @@ separately survived 200k iterations under ASan + UBSan.
 
 **Still missing for a player to see content:** the client fetch loop that drives the cache from a
 manifest, the mod arena and model compiler (P5), and the registry and table growth (P6).
+
+## P6 is blocked, and why it matters
+
+Growing the furniture tables at load (`MODLOADER_PLAN.md` §7.5 Option A) was attempted and
+reverted. `ac_furniture_profile_data.c_inc` is included into **two** translation units, so each
+currently gets a private `static` copy. Making the symbol a non-static pointer — the whole
+mechanism Option A depends on — produces two definitions of one global, which is a
+**duplicate-symbol link error**.
+
+It nearly slipped through: `-fsyntax-only` passes, and both read sites compile unchanged, which is
+exactly what Option A promises. The failure is only visible at link, and there is no linkable
+client build in this environment.
+
+**Consequence:** P6 needs each table made single-definition first (extern in a header, defined in
+one TU). That is a larger decomp change than the plan assumed, and everything downstream —
+runtime-added items, and therefore the model compiler and the client fetch loop having anything to
+bind to — sits behind it.
+
+**Verify with a link, not a syntax check**, and count the parent TUs of every other `.c_inc` table
+before growing it.
 
 ## Corrections made while building
 
