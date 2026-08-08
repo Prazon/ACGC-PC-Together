@@ -521,6 +521,16 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     }
                     baseline_.museum = museum;
                 }
+                if (delta.kind == ResourceKind::Turnip && has_baseline_) {
+                    TurnipMarket market;
+                    if (!decode_turnip_delta(delta.payload, market)) {
+                        error = "malformed turnip delta";
+                        return false;
+                    }
+                    /* Sunday's roll can arrive out of order behind a retry, and
+                     * the revision decides which week is current. */
+                    if (market.revision >= baseline_.turnips.revision) baseline_.turnips = market;
+                }
                 if (delta.kind == ResourceKind::Resident) {
                     ResidentRoster roster;
                     if (!decode_resident_delta(delta.payload, roster)) {

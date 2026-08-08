@@ -1606,6 +1606,73 @@ void selling_pays_the_generated_price() {
 
 /* The shelf is town-wide state: a purchase has to reach everyone, and the index
  * a Buy names has to mean the same row on both sides. */
+void turnip_market_is_town_state() {
+    /* Every trend, many weeks, from a deterministic stream: the schedule must
+     * always be usable, because a zero price is what the economy reads as
+     * "unsellable" and is exactly the bug this replaces. */
+    std::mt19937_64 rng(20260807);
+    const auto unit = [&rng]() -> double {
+        return static_cast<double>(rng() >> 11) / 9007199254740992.0;
+    };
+    acnet::TurnipMarket market;
+    bool saw_spike = false;
+    bool saw_falling = false;
+    for (int week = 0; week < 400; ++week) {
+        acnet::roll_turnip_week(market, unit);
+        CHECK(market.trend < acnet::kTurnipTrendCount);
+        /* Kabu_decide_price_sunday: [0.7, 1.3) * 100. */
+        CHECK(market.daily_price[0] >= 70 && market.daily_price[0] < 130);
+        for (std::uint16_t price : market.daily_price) {
+            CHECK(price != 0);
+            CHECK(price <= acnet::kTurnipPriceMaximum);
+        }
+        if (market.trend == 0) saw_spike = true;
+        if (market.trend == 2) saw_falling = true;
+    }
+    /* The trend walk must actually reach every branch, or the odds table is
+     * transcribed wrong in a way no single roll would show. */
+    CHECK(saw_spike);
+    CHECK(saw_falling);
+
+    /* aNSC_kabu_sum {10, 50, 100, 0}, multiplied by the day's price and *not*
+     * divided by the sell/buy ratio -- turnips bypass it in the original. */
+    acnet::TurnipMarket fixed;
+    fixed.daily_price = {{100, 111, 122, 133, 144, 155, 166}};
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F00, 1) == 1110);
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F01, 1) == 5550);
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F02, 3) == 13300);
+    /* A spoiled turnip is worth nothing, on any day. */
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F03, 3) == 0);
+    /* Not a turnip, and an out-of-range weekday. */
+    CHECK(acnet::turnip_sell_price(fixed, 0x1000, 1) == 0);
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F00, 7) == 0);
+    CHECK(acnet::turnip_sell_price(fixed, 0x2F00, -1) == 0);
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_turnip_delta(fixed, payload));
+    acnet::TurnipMarket decoded;
+    CHECK(acnet::decode_turnip_delta(payload, decoded));
+    CHECK(decoded == fixed);
+
+    /* A trend the game does not define, and a price beyond Kabu_PRICE_MAX, are
+     * both decode failures rather than values a viewer has to sanity-check. */
+    acnet::TurnipMarket bad = fixed;
+    bad.trend = acnet::kTurnipTrendCount;
+    CHECK(!acnet::encode_turnip_delta(bad, payload));
+    bad = fixed;
+    bad.daily_price[2] = acnet::kTurnipPriceMaximum + 1;
+    CHECK(!acnet::encode_turnip_delta(bad, payload));
+
+    /* Sunday is weekday 0, matching lbRTC_SUNDAY -- 1970-01-01 was a Thursday,
+     * and 2026-08-09 is a Sunday. */
+    CHECK(acnet::town_date_from_seconds(0).weekday == 4);
+    CHECK(acnet::town_date_from_seconds(1786233600).weekday == 0); // 2026-08-09
+    CHECK(acnet::town_date_from_seconds(1786060800).weekday == 5); // 2026-08-07
+    /* Before the epoch the day division has to floor, not truncate toward
+     * zero, or the weekday walks backwards by one for every negative day. */
+    CHECK(acnet::town_date_from_seconds(-86400).weekday == 3); // 1969-12-31, a Wednesday
+}
+
 void shop_shelf_replicates_town_wide() {
     acnet::ShopState shop;
     shop.revision = 9;
@@ -5046,6 +5113,7 @@ int main() {
         {"selling pays the generated price", selling_pays_the_generated_price},
         {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
+        {"turnip market is town state", turnip_market_is_town_state},
         {"shop shelf replicates town-wide", shop_shelf_replicates_town_wide},
         {"museum collection replicates", museum_collection_replicates_and_refuses_duplicates},
         {"NPC state replicates", npc_state_replicates_between_baselines},

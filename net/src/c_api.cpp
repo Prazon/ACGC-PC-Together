@@ -934,6 +934,34 @@ extern "C" int acnet_client_submit_house_update(uint64_t house_id,
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" uint32_t acnet_client_turnip_price(uint16_t item) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const acnet::TurnipMarket& market = client->baseline()->turnips;
+        const acnet::TownDate date = acnet::town_date_from_seconds(client->baseline()->town_unix_seconds);
+        return acnet::turnip_sell_price(market, item, date.weekday);
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_turnip_schedule(uint16_t out[7]) {
+    try {
+        if (!client || client->baseline() == nullptr || out == nullptr) return 0;
+        const acnet::TurnipMarket& market = client->baseline()->turnips;
+        if (market.daily_price[0] == 0) return 0;
+        for (std::size_t i = 0; i < acnet::kTurnipWeekdays; ++i) out[i] = market.daily_price[i];
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_has_turnip_market(void) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        /* Every rolled schedule has a non-zero Sunday price, so a zero one is
+         * a town that has not rolled yet rather than a free turnip. */
+        return client->baseline()->turnips.daily_price[0] != 0 ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint32_t acnet_client_gyroid_serial(void) {
     return client ? client->gyroid_serial() : 0;
 }

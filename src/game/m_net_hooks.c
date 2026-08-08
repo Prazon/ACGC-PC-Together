@@ -1798,6 +1798,34 @@ int Net_GyroidAuthoritative(void) {
     return Net_IsConnected() && acnet_client_gyroid_serial() != 0;
 }
 
+int Net_TurnipMarketAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_has_turnip_market();
+}
+
+u32 Net_TurnipSellPrice(mActor_name_t item) {
+    if (!Net_TurnipMarketAuthoritative()) return 0;
+    return acnet_client_turnip_price((uint16_t)item);
+}
+
+/* The town's stalk market, projected into the save the original reads through.
+ * Kabu_get_price indexes daily_price by today's weekday, and the shop dialogue
+ * quotes Sunday's entry when Joan is selling, so writing the whole week here
+ * means neither has to learn about the network.
+ *
+ * Only the prices are projected. trade_market is the server's business -- it
+ * decides next week's trend from this week's -- and update_time exists to tell
+ * a local roller whether a reroll is due, which is precisely what must not
+ * happen while connected. */
+void Net_ApplyAuthoritativeTurnipMarket(void) {
+    uint16_t schedule[7];
+    int day;
+
+    if (!Net_IsConnected() || !acnet_client_turnip_schedule(schedule)) return;
+    for (day = 0; day < lbRTC_WEEKDAYS_MAX && day < 7; ++day) {
+        Save_Set(kabu_price_schedule.daily_price[day], schedule[day]);
+    }
+}
+
 /* A guest takes display slot `item_slot` from house `house_idx`'s gyroid,
  * paying its price if it is for sale. The submenu's local mutation runs
  * optimistically; forcing both projections makes the server's verdict land
@@ -2060,6 +2088,11 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
         Net_ApplyAuthoritativeShopStock();
         last_shop_revision = shop_revision;
     }
+    /* Cheap and idempotent: seven u16 compared against the projection the
+     * client already holds. The schedule only moves on Sunday, but it also
+     * arrives with the first baseline, and there is no separate revision to
+     * watch it with. */
+    Net_ApplyAuthoritativeTurnipMarket();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

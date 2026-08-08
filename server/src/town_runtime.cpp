@@ -466,6 +466,12 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
         acnet::shop_randomise_priorities(shop_stock_, draw);
         shop.stock = acnet::roll_shop_stock(shop_stock_, draw);
         shop.rare_item = shop_stock_.rare_item;
+        /* The stalk market gets its opening week from the same seed, for the
+         * same reason: a brand-new town is reproducible until its first
+         * checkpoint, after which the stored schedule wins. */
+        acnet::roll_turnip_week(turnips_, [&shop_random]() -> double {
+            return static_cast<double>(shop_random() >> 11) / 9007199254740992.0;
+        });
     }
     if (!npcs_.add_npc(shopkeeper)) {
         error = "failed to initialize public interior";
@@ -527,6 +533,12 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
      * prices move: fruit depends on which one this town grows, and the new
      * year's grab bag is worth the year it is sold in. */
     economy_.set_sell_price_resolver([this](std::uint16_t item) {
+        /* Turnips are priced from the town's weekly schedule, not from the
+         * static tables -- they are absent from those entirely, which is why a
+         * turnip sale used to resolve to zero and be refused. */
+        const std::uint32_t turnip = acnet::turnip_sell_price(
+            turnips_, item, acnet::town_date_from_seconds(clock_.state().town_unix_seconds).weekday);
+        if (turnip != 0) return turnip;
         return acnet::shop_sell_price(item, native_fruit_, town_year());
     });
     /* Collecting gyroid proceeds obeys the same wallet-overflow rule as a sale
@@ -606,6 +618,26 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
                 shop_delta.zone = 0;
                 shop_delta.target_account = 0;
                 if (acnet::encode_shop_delta(shop, shop_delta.payload)) deltas_.append(std::move(shop_delta));
+            }
+            /* The stalk market turns over on Sunday, as Kabu_manager does: a
+             * new buy price, a new trend chosen from the old one's odds, and
+             * the six selling days that follow. Everyone is quoted the same
+             * schedule, which is the whole point of owning it here. */
+            if (acnet::town_date_from_seconds(clock_.state().town_unix_seconds).weekday == 0) {
+                std::uint64_t turnip_entropy = 0;
+                if (!acnet::secure_random(reinterpret_cast<std::uint8_t*>(&turnip_entropy), sizeof(turnip_entropy)))
+                    turnip_entropy = static_cast<std::uint64_t>(turnips_.revision) * 6364136223846793005ULL;
+                std::mt19937_64 turnip_random(turnip_entropy);
+                acnet::roll_turnip_week(turnips_, [&turnip_random]() -> double {
+                    return static_cast<double>(turnip_random() >> 11) / 9007199254740992.0;
+                });
+                turnips_.revision = advance_revision(turnips_.revision);
+                acnet::ReplicationDelta turnip_delta;
+                turnip_delta.kind = acnet::ResourceKind::Turnip;
+                turnip_delta.zone = 0;
+                turnip_delta.target_account = 0;
+                if (acnet::encode_turnip_delta(turnips_, turnip_delta.payload))
+                    deltas_.append(std::move(turnip_delta));
             }
             const auto tiles = world_.tiles_in_zone(1);
             for (const auto& entry : tiles) {
@@ -1146,6 +1178,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.mail = economy_.mail_for(connection.account);
     baseline.shop = economy_.shop();
     baseline.museum = economy_.museum();
+    baseline.turnips = turnips_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;

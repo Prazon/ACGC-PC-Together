@@ -2,6 +2,7 @@
 
 #include "lb_rtc.h"
 #include "m_common_data.h"
+#include "m_net_hooks.h"
 #include "libc64/qrand.h"
 
 #define TRADE_MARKET_ODDS_NUM (Kabu_TRADE_MARKET_TYPE_NUM - 1)
@@ -194,6 +195,14 @@ static void Kabu_decide_price_schedule_without_sunday() {
  * @brief Generates a new Stalk Market Sunday buy price, Stalk Market trend, sell prices, & sets the update time.
  **/
 extern void Kabu_decide_price_schedule() {
+  /* One town has one stalk market. Online the server owns the weekly schedule
+   * and Net_ApplyAuthoritativeTurnipMarket projects it into the save; rolling
+   * here as well would quote this player a price nobody else sees, and a price
+   * the server will not honour when the turnips are actually sold. */
+  if (Net_TurnipMarketAuthoritative()) {
+    return;
+  }
+
   Kabu_decide_price_sunday();
   Kabu_decide_price_schedule_without_sunday();
 }
@@ -217,7 +226,14 @@ extern u16 Kabu_get_price() {
 extern void Kabu_manager() {
   lbRTC_time_c* rtc_time = Common_GetPointer(time.rtc_time);
   lbRTC_time_c* kabu_update_time = Save_GetPointer(kabu_price_schedule.update_time);
-  
+
+  /* Server-owned online: the town's daily job turns the market over on Sunday
+   * and broadcasts it. Deciding locally whether a reroll is due would either
+   * overwrite the authoritative week or race it. */
+  if (Net_TurnipMarketAuthoritative()) {
+    return;
+  }
+
   /* Check if being called on the Sunday where the Stalk Market has already been set */
   if (lbRTC_IsEqualDate(
       rtc_time->year, rtc_time->month, rtc_time->day,

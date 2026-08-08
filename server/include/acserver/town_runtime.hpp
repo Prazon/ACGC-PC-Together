@@ -260,6 +260,10 @@ private:
      * shelf itself lives in EconomyAuthority's ShopState; this is the state the
      * daily roll needs to reproduce it. */
     acnet::ShopStockState shop_stock_;
+    /* The town's weekly turnip schedule. Server-owned because every client
+     * used to roll its own, and because turnips are priced from this rather
+     * than from the static tables. */
+    acnet::TurnipMarket turnips_;
     /* The fruit this town grows, reported once by the bootstrapping client.
      * Zero until then, which prices every fruit as foreign. */
     std::uint16_t native_fruit_ = 0;

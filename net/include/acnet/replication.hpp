@@ -4,6 +4,7 @@
 #include "acnet/housing.hpp"
 #include "acnet/npc.hpp"
 #include "acnet/player_query.hpp"
+#include "acnet/shop.hpp"
 #include "acnet/types.hpp"
 #include "acnet/world.hpp"
 
@@ -43,6 +44,10 @@ enum class ResourceKind : std::uint8_t {
      * where every player can browse them, not inside the house whose baseline
      * would otherwise carry them. */
     Gyroid,
+    /* The town's weekly turnip schedule. Town-wide: one town has one stalk
+     * market, and every player must be quoted the same price for the same
+     * turnip on the same day. */
+    Turnip,
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -111,6 +116,11 @@ struct GyroidDelta {
     GyroidState state;
 };
 
+/* The whole weekly schedule, which is 18 bytes -- small enough that there is
+ * no reason to encode a single day and leave readers to merge. */
+bool encode_turnip_delta(const TurnipMarket& market, std::vector<std::uint8_t>& output);
+bool decode_turnip_delta(const std::vector<std::uint8_t>& input, TurnipMarket& market);
+
 bool encode_gyroid_delta(const GyroidDelta& delta, std::vector<std::uint8_t>& output);
 bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& delta);
 
@@ -149,6 +159,8 @@ struct ZoneBaseline {
         GyroidState state;
     };
     std::array<GyroidEntry, kOriginalResidentSlots> gyroids{};
+    /* Town-wide, like the shelf and the museum. */
+    TurnipMarket turnips;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

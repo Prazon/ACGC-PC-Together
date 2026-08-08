@@ -1,4 +1,4 @@
-# Dedicated town protocol v18
+# Dedicated town protocol v19
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -82,6 +82,30 @@ house's interior zone does not authorize its exterior gyroid. After an accepted
 operation the server broadcasts the gyroid delta and re-baselines the acting
 connection, because a diffed update or an overflow bag cannot be mirrored from
 the result alone.
+
+## The stalk market
+
+The town's weekly turnip schedule is server state, added in v19: seven u16
+per-turnip prices indexed by weekday with Sunday at 0 (matching
+`Kabu_price_c::daily_price`), the trend (u8, `Kabu_TRADE_MARKET_TYPE_*`), and a
+revision. Sunday's entry is what Joan charges; the other six are what Nook pays.
+A price above `Kabu_PRICE_MAX` or a trend outside the three the game defines is
+a decode failure.
+
+It rides the `Baseline` after the gyroids, and `ResourceKind::Turnip` deltas
+keep it live — town-wide, like `Shop` and `Museum`, since one town has one
+market. The server rolls a fresh week in the daily job whenever the town date
+lands on a Sunday, reproducing `Kabu_decide_price_schedule`: a new buy price in
+[70, 130), a new trend drawn from the previous one's odds, and the six selling
+days that follow from it.
+
+This is not only a consistency fix. Turnips are absent from the generated price
+tables, because the original prices them from this schedule rather than from
+`mSP_ItemNo2ItemPrice`, so before v19 a turnip sale resolved to a price of zero
+and `Sell` refused it outright — turnips could not be sold online at all. The
+sell resolver now consults the schedule first, multiplying by the bundle sizes
+`{10, 50, 100, 0}` and deliberately *not* dividing by the sell/buy ratio, which
+is what the original does. A spoiled turnip is worth nothing.
 
 ## Encounters
 

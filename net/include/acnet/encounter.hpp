@@ -52,6 +52,9 @@ struct TownDate {
     int month = 1; // 1-12
     int day = 1;   // 1-31
     int hour = 0;  // 0-23
+    /* 0 = Sunday, matching lbRTC_SUNDAY and the game's own weekday indexing --
+     * which is also how the turnip schedule is indexed. */
+    int weekday = 4; // 1970-01-01 was a Thursday
 };
 
 TownDate town_date_from_seconds(std::int64_t town_unix_seconds);

@@ -357,6 +357,19 @@ int acnet_client_house(AcNetHouseState* output);
 size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);
 /* Bumps whenever any resident gyroid changes -- by baseline or by delta -- and
  * is zero until the first baseline, so a viewer reprojects only on change. */
+/* What Nook pays today for one turnip stack of `item` (ITM_KABU_*), or 0 when
+ * the town has reported no schedule yet or the item is not a turnip. The town's
+ * weekly schedule is server-owned, so this is the only price a connected client
+ * may quote -- every client used to roll its own. */
+uint32_t acnet_client_turnip_price(uint16_t item);
+/* The whole week's per-turnip prices, Sunday first, matching the weekday
+ * indexing of Kabu_price_c::daily_price. Sunday's entry is what Joan charges;
+ * the other six are what Nook pays per turnip. Returns 0 and writes nothing
+ * when no schedule has arrived. */
+int acnet_client_turnip_schedule(uint16_t out[7]);
+/* TRUE once a schedule has arrived. */
+int acnet_client_has_turnip_market(void);
+
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no
  * registered house or no baseline has arrived yet. */

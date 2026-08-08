@@ -139,6 +139,18 @@ int Net_GyroidAuthoritative(void);
 int Net_RequestGyroidTake(int house_idx, int item_slot, mActor_name_t item);
 /* The owner empties the gyroid's sale proceeds into their wallet. */
 int Net_RequestGyroidCollect(int house_idx);
+
+/* TRUE once the town has reported a turnip schedule. Save_Get(kabu_price_schedule)
+ * is then a projection of it and must not be rolled locally: one town has one
+ * stalk market, and a locally rolled week quotes every player a different price
+ * for the same turnip. */
+int Net_TurnipMarketAuthoritative(void);
+/* Today's authoritative price for one turnip stack, matching what the server
+ * will actually pay for it. 0 when there is no schedule. */
+u32 Net_TurnipSellPrice(mActor_name_t item);
+/* Projects the authoritative schedule into the save so Kabu_get_price and the
+ * shop dialogue read it without further plumbing. */
+void Net_ApplyAuthoritativeTurnipMarket(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -192,6 +204,9 @@ int Net_RequestGyroidCollect(int house_idx);
 #define Net_GyroidAuthoritative() FALSE
 #define Net_RequestGyroidTake(house_idx, item_slot, item) FALSE
 #define Net_RequestGyroidCollect(house_idx) FALSE
+#define Net_TurnipMarketAuthoritative() FALSE
+#define Net_TurnipSellPrice(item) 0
+#define Net_ApplyAuthoritativeTurnipMarket() ((void)0)
 #endif
 
 #ifdef __cplusplus

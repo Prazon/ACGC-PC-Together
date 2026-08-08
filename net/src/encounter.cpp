@@ -69,6 +69,9 @@ TownDate town_date_from_seconds(std::int64_t town_unix_seconds) {
         rem += 86400;
         --days;
     }
+    /* Before the epoch shift, `days` is still days-since-1970, whose day zero
+     * was a Thursday -- hence the +4 to land Sunday on 0. */
+    const std::int64_t weekday = ((days % 7) + 7 + 4) % 7;
     days += 719468;
     const std::int64_t era = (days >= 0 ? days : days - 146096) / 146097;
     const std::int64_t doe = days - era * 146097;
@@ -80,6 +83,7 @@ TownDate town_date_from_seconds(std::int64_t town_unix_seconds) {
     date.month = static_cast<int>(mp < 10 ? mp + 3 : mp - 9);
     date.year = static_cast<int>(yoe + era * 400 + (date.month <= 2 ? 1 : 0));
     date.hour = static_cast<int>(rem / 3600);
+    date.weekday = static_cast<int>(weekday);
     return date;
 }
 

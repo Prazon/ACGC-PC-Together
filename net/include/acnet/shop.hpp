@@ -89,6 +89,43 @@ WalletOverflowRule shop_wallet_overflow_rule();
 /* Randomise the per-category A/B/C rarity permutation for a new town. */
 void shop_randomise_priorities(ShopStockState& state, const std::function<std::uint64_t()>& random);
 
+/* The stalk market. One town has one weekly schedule, and it has to be server
+ * state for two independent reasons: every client used to roll its own, so no
+ * two players were quoted the same price for the same turnip; and turnips are
+ * absent from the static price tables, because the original prices them from
+ * this schedule rather than from mSP_ItemNo2ItemPrice, so a sale priced through
+ * shop_sell_price came back as zero and the economy refused it outright.
+ *
+ * daily_price is indexed by weekday with Sunday at 0, exactly as
+ * Kabu_price_c::daily_price is. Sunday's entry is the price Joan sells at; the
+ * other six are what Nook pays. */
+constexpr std::size_t kTurnipWeekdays = 7;
+constexpr std::uint16_t kTurnipPriceMaximum = 2000; // Kabu_PRICE_MAX
+/* Kabu_TRADE_MARKET_TYPE_NUM: A spike, B random, C falling. */
+constexpr std::uint8_t kTurnipTrendCount = 3;
+
+struct TurnipMarket {
+    std::array<std::uint16_t, kTurnipWeekdays> daily_price{};
+    std::uint8_t trend = 0;
+    Revision revision = 1;
+
+    bool operator==(const TurnipMarket& other) const {
+        return daily_price == other.daily_price && trend == other.trend && revision == other.revision;
+    }
+};
+
+/* Reproduces Kabu_decide_price_schedule: a new Sunday price, a new trend chosen
+ * from the old one's odds, and the six selling days that follow from it.
+ * `unit_random` returns [0, 1), standing in for the original's fqrand(). */
+void roll_turnip_week(TurnipMarket& market, const std::function<double()>& unit_random);
+
+/* What Nook pays for one turnip stack today, or 0 if `item` is not a turnip.
+ * The bundle sizes are aNSC_kabu_sum {10, 50, 100, 0} -- a spoiled turnip is
+ * worth nothing and stays worth nothing. Turnips deliberately bypass
+ * kShopSellBuyRatio: the original multiplies the schedule price by the bundle
+ * size and does not divide. */
+std::uint32_t turnip_sell_price(const TurnipMarket& market, std::uint16_t item, int weekday);
+
 /* Roll one day of stock. `random` supplies uniform 64-bit values; the caller
  * owns the source so the server can stay reproducible under test and use its
  * secure generator in production.

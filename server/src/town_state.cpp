@@ -12,8 +12,10 @@ namespace {
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
 /* 11 adds HouseState::surfaces -- wallpaper, flooring, pattern flags, exterior
  * palette and door design. An older checkpoint simply has none, and every field
- * defaults to the index-zero surface the game itself falls back to. */
-constexpr std::uint16_t kTownStateVersion = 11;
+ * defaults to the index-zero surface the game itself falls back to.
+ * 12 adds the weekly turnip schedule; an older checkpoint has none and the
+ * next Sunday job rolls one. */
+constexpr std::uint16_t kTownStateVersion = 12;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -183,6 +185,9 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
     std::vector<std::uint16_t> donated(museum.donated_items.begin(), museum.donated_items.end());
     std::sort(donated.begin(), donated.end());
     for (std::uint16_t item : donated) if (!writer.u16(item)) return {};
+
+    for (std::uint16_t price : turnips_.daily_price) if (!writer.u16(price)) return {};
+    if (!writer.u8(turnips_.trend) || !writer.u32(turnips_.revision)) return {};
 
     const auto& mail = economy_.mail_records();
     if (mail.size() > std::numeric_limits<std::uint32_t>::max() ||
@@ -393,6 +398,17 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         museum.donated_items.insert(item);
     }
     economy_.set_museum(museum);
+    if (version >= 12) {
+        for (std::uint16_t& price : turnips_.daily_price) {
+            if (!reader.u16(price) || price > acnet::kTurnipPriceMaximum) {
+                error = "invalid turnip schedule"; return false;
+            }
+        }
+        if (!reader.u8(turnips_.trend) || !reader.u32(turnips_.revision) ||
+            turnips_.trend >= acnet::kTurnipTrendCount || turnips_.revision == 0) {
+            error = "invalid turnip schedule"; return false;
+        }
+    }
 
     std::uint32_t mail_count;
     if (!reader.u32(mail_count) || mail_count > 100000) { error = "invalid mail count"; return false; }

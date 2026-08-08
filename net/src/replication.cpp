@@ -277,6 +277,22 @@ bool decode_player_delta(const std::vector<std::uint8_t>& input, PlayerPresentat
            reader.finished();
 }
 
+static bool encode_turnips(ByteWriter& writer, const TurnipMarket& market) {
+    if (market.trend >= kTurnipTrendCount || market.revision == 0) return false;
+    for (std::uint16_t price : market.daily_price) {
+        if (price > kTurnipPriceMaximum || !writer.u16(price)) return false;
+    }
+    return writer.u8(market.trend) && writer.u32(market.revision);
+}
+
+static bool decode_turnips(ByteReader& reader, TurnipMarket& market) {
+    for (std::uint16_t& price : market.daily_price) {
+        if (!reader.u16(price) || price > kTurnipPriceMaximum) return false;
+    }
+    return reader.u8(market.trend) && reader.u32(market.revision) && market.trend < kTurnipTrendCount &&
+           market.revision != 0;
+}
+
 bool encode_gyroid_delta(const GyroidDelta& delta, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
     if (delta.house_id == 0 || delta.original_slot >= kOriginalResidentSlots ||
@@ -290,6 +306,18 @@ bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& de
     ByteReader reader(input);
     return reader.u64(delta.house_id) && reader.u8(delta.original_slot) && decode_gyroid(reader, delta.state) &&
            delta.house_id != 0 && delta.original_slot < kOriginalResidentSlots && reader.finished();
+}
+
+bool encode_turnip_delta(const TurnipMarket& market, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!encode_turnips(writer, market)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_turnip_delta(const std::vector<std::uint8_t>& input, TurnipMarket& market) {
+    ByteReader reader(input);
+    return decode_turnips(reader, market) && reader.finished();
 }
 
 bool ResidentRoster::operator==(const ResidentRoster& other) const {
@@ -348,6 +376,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (!writer.u8(entry.occupied ? 1 : 0)) return false;
         if (entry.occupied && (!writer.u64(entry.house_id) || !encode_gyroid(writer, entry.state))) return false;
     }
+    if (!encode_turnips(writer, baseline.turnips)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -439,6 +468,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         if (entry.occupied && (!reader.u64(entry.house_id) || entry.house_id == 0 ||
                                !decode_gyroid(reader, entry.state))) return false;
     }
+    if (!decode_turnips(reader, baseline.turnips)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
@@ -675,7 +705,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
         delta.kind == ResourceKind::Town ||
         delta.kind == ResourceKind::Resident || delta.kind == ResourceKind::Shop ||
         delta.kind == ResourceKind::Museum ||
-        delta.kind == ResourceKind::Gyroid) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Gyroid ||
+        delta.kind == ResourceKind::Turnip) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;
