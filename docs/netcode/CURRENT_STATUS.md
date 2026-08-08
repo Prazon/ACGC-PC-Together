@@ -1493,12 +1493,18 @@ client receives the surfaces, 400 weeks of turnip rolls across all three trends
 asserting no zero price ever appears, and a decoder case for every bound the
 appearance bits added.
 
-**None of the visual work in this cycle has been seen on screen.** That now
-covers the shadow, the lean, the shared surfaces, the face resources and the
-umbrella, stacked on top of the equally unverified remote presentation work from
-2026-08-06. `VISUAL_REPLICATION_AUDIT.md` warned against exactly this stacking.
-A `scripts/smoke_online_windows.ps1` pass with a real disc is the single highest
--value next action, and bisecting any visual bug gets harder with each addition.
+**Seen on screen 2026-08-08.** The maintainer ran the four-client launcher
+against a real disc and reported the visuals correct. That clears the backlog
+this page had been accumulating: the shadow, the run lean, the shared room
+surfaces, the face resource bits and the umbrella, plus the remote presentation
+work from 2026-08-06 that had been sitting unverified underneath them. The
+report was a blanket "it all looked right" rather than a per-feature checklist,
+so treat it as "nothing was visibly broken in a live four-client session"
+rather than as targeted confirmation of each item.
+
+Not covered by that pass, because they need a scenario rather than a look: a
+bee-stung face, a tanned face, an umbrella opening, and a mid-pickup item are
+all transient states nobody was necessarily in.
 
 ## Compatibility note for the protocol version
 
@@ -1575,13 +1581,13 @@ The earlier 2026-08-06 release gate completed successfully:
 
 ## Next recommended task
 
-**Blocking everything visual: run the client.** Five cycles of remote
-presentation work -- faces, tools, locomotion speed, shadows, lean, the shared
-room surfaces, the face resource bits and the umbrella -- are built, unit-tested
-where the portable core can reach them, and have never been drawn. Every further
-addition to `ac_net_remote_player.c` makes bisecting the first visual bug
-harder. `scripts/smoke_online_windows.ps1` with a legitimate disc, then the
-rest of this list.
+**`make check` cannot catch a client/server link split.** Found the hard way on
+2026-08-08: `c_api.cpp` called `turnip_sell_price`, which lives in `shop.cpp`,
+which the CMake `acnet_client` target does not include. The root `Makefile`
+links one flat source list, so the whole gate passed while the real client
+would not link -- only `build_pc.bat` failed. The fix was to split the code
+out, but nothing stops the next one. A cheap link check over the
+`acnet_client` source list belongs in `make check`.
 
 
 Nook's counter, the museum, and the shelf are wired end to end. What is left is

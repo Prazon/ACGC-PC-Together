@@ -102,7 +102,12 @@ transition".
    change is much cheaper than three separate strict-negotiation breaks. Settle
    the appearance-vs-presentation question above before writing any of it.
 
-Nothing on this page should be written before the delivered work in
-`CURRENT_STATUS.md` has been seen on screen with a real disc. It is all layered
-on the same remote presentation actor, and stacking unverified changes on
-unverified changes makes any eventual visual bug much harder to bisect.
+This warning has been honoured: everything delivered up to 2026-08-07 was run
+on screen against a real disc on 2026-08-08 and reported correct. The rule
+still stands for whatever comes next -- it is all layered on the same remote
+presentation actor, and stacking unverified changes on unverified changes makes
+any eventual visual bug much harder to bisect.
+
+What that pass could *not* cover is the transient states: a bee sting, a tan, an
+umbrella opening, a mid-pickup item. Those need somebody to be in the state, not
+just present.
