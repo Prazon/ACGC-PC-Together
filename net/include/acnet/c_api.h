@@ -424,6 +424,50 @@ uint32_t acnet_client_notice_revision(void);
 int acnet_client_request_notice_post(const AcNetNoticePost* post);
 int acnet_client_take_notice_result(uint16_t* result_code);
 
+/* The town's villagers. Server-owned: without this every client evolves its own
+ * roster from the second boot onward and they stop agreeing about who lives
+ * here. Field order matches Animal_c; `occupied` 0 means the slot is
+ * authoritatively empty. Already bounds-checked by the decoder, so `looks` may
+ * index the game's personality tables directly. */
+#define ACNET_VILLAGER_SLOTS 15
+#define ACNET_VILLAGER_NAME_BYTES 8
+#define ACNET_VILLAGER_CATCHPHRASE_BYTES 10
+
+typedef struct AcNetVillager {
+    uint8_t occupied;
+    uint16_t npc_id;
+    uint16_t land_id;
+    uint8_t land_name[ACNET_VILLAGER_NAME_BYTES];
+    uint8_t name_id;
+    uint8_t looks;
+    uint8_t home_block_x;
+    uint8_t home_block_z;
+    uint8_t home_ut_x;
+    uint8_t home_ut_z;
+    uint8_t catchphrase[ACNET_VILLAGER_CATCHPHRASE_BYTES];
+    uint16_t cloth;
+    uint16_t present_cloth;
+    uint8_t cloth_original_id;
+    uint8_t umbrella_id;
+    uint8_t mood;
+    uint8_t mood_time;
+    uint8_t is_home;
+    uint8_t moved_in;
+    uint8_t removing;
+    uint16_t previous_land_id;
+    uint8_t previous_land_name[ACNET_VILLAGER_NAME_BYTES];
+    uint8_t parent_name[ACNET_VILLAGER_NAME_BYTES];
+    uint8_t relations[ACNET_VILLAGER_SLOTS];
+} AcNetVillager;
+
+/* Writes ACNET_VILLAGER_SLOTS entries. Returns 0 until the town has a roster,
+ * in which case nothing is written and the client keeps its own. */
+int acnet_client_villagers(AcNetVillager* output);
+uint32_t acnet_client_villager_revision(void);
+/* Hand the locally generated roster to a town that has none yet. Ignored once
+ * the server owns one. */
+int acnet_client_submit_villagers(const AcNetVillager* villagers);
+
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no
  * registered house or no baseline has arrived yet. */

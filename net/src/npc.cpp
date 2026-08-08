@@ -229,5 +229,16 @@ const PlayerView* NpcAuthority::nearest_player(EntityId npc_id, float radius) co
                : players_->nearest(npc_value->transform.position, npc_value->zone, radius);
 }
 
+bool valid_villager_slot(const VillagerSlot& slot) {
+    const VillagerIdentity& villager = slot.villager;
+    if (!slot.occupied) {
+        /* Nothing may ride along on a vacant slot. */
+        return villager == VillagerIdentity{};
+    }
+    /* npc_id 0 is EMPTY_NO -- there is no such character -- and a personality
+     * past mNpc_LOOKS_UNSET would index off the end of the game's own tables. */
+    return villager.npc_id != 0 && villager.looks <= kVillagerLooksUnset;
+}
+
 } // namespace acnet
 

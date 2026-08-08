@@ -3,6 +3,7 @@
 #include "acnet/player_query.hpp"
 #include "acnet/types.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -105,5 +106,102 @@ private:
     std::optional<EventLease> event_;
     std::uint32_t lease_counter_ = 0;
 };
+
+
+/* ---------------------------------------------------------------------------
+ * Villagers.
+ *
+ * Save_t.animals[] was entirely client-local, and that is the single largest
+ * source of permanent divergence in a shared town: mSDI_OnlineTownGenerationBegin
+ * seeds the roll from the town seed, so a *fresh* save on every machine
+ * generates the same fifteen villagers -- and from the next boot onward each
+ * client evolves its own copy alone. mNpc_Grow moves somebody in behind a local
+ * RANDOM(100), move-outs are chosen from local dialogue, and clothes, mood and
+ * catchphrases drift independently. Two players in the same town stop agreeing
+ * about who lives there.
+ *
+ * This carries the roster: who lives here, what they look like, where their
+ * house is, what they are wearing and how they feel. It deliberately does not
+ * carry Animal_c::memories -- the per-player relationship records, which are
+ * 7/8ths of the struct's 0x988 bytes and are account-scoped rather than
+ * town-scoped. Those are a separate phase; see CURRENT_STATUS.md.
+ * ------------------------------------------------------------------------ */
+constexpr std::size_t kVillagerSlots = 15;      // ANIMAL_NUM_MAX
+constexpr std::size_t kVillagerNameBytes = 8;   // LAND_NAME_SIZE / PLAYER_NAME_LEN
+constexpr std::size_t kVillagerCatchphraseBytes = 10; // ANIMAL_CATCHPHRASE_LEN
+/* mNpc_LOOKS_NUM: the personality count. mNpc_LOOKS_UNSET is the last value and
+ * marks a slot with no villager, so it is accepted as well. */
+constexpr std::uint8_t kVillagerLooksUnset = 6;
+
+struct VillagerIdentity {
+    /* AnmPersonalID_c: which character this is, and which town they came from.
+     * npc_id is the species/character; looks is the personality. */
+    std::uint16_t npc_id = 0;
+    std::uint16_t land_id = 0;
+    std::array<std::uint8_t, kVillagerNameBytes> land_name{};
+    std::uint8_t name_id = 0;
+    std::uint8_t looks = kVillagerLooksUnset;
+    /* Anmhome_c: the acre and unit their house stands on. */
+    std::uint8_t home_block_x = 0;
+    std::uint8_t home_block_z = 0;
+    std::uint8_t home_ut_x = 0;
+    std::uint8_t home_ut_z = 0;
+    /* Opaque bytes in the game's own font encoding, like mail text. */
+    std::array<std::uint8_t, kVillagerCatchphraseBytes> catchphrase{};
+    std::uint16_t cloth = 0;
+    std::uint16_t present_cloth = 0;
+    std::uint8_t cloth_original_id = 0xFF;
+    std::uint8_t umbrella_id = 0xFF;
+    std::uint8_t mood = 0;
+    std::uint8_t mood_time = 0;
+    std::uint8_t is_home = 0;
+    std::uint8_t moved_in = 0;
+    std::uint8_t removing = 0;
+    std::uint16_t previous_land_id = 0;
+    std::array<std::uint8_t, kVillagerNameBytes> previous_land_name{};
+    std::array<std::uint8_t, kVillagerNameBytes> parent_name{};
+    /* How this villager feels about each of the others, 128 being neutral. */
+    std::array<std::uint8_t, kVillagerSlots> relations{};
+
+    bool operator==(const VillagerIdentity& other) const {
+        return npc_id == other.npc_id && land_id == other.land_id && land_name == other.land_name &&
+               name_id == other.name_id && looks == other.looks && home_block_x == other.home_block_x &&
+               home_block_z == other.home_block_z && home_ut_x == other.home_ut_x &&
+               home_ut_z == other.home_ut_z && catchphrase == other.catchphrase && cloth == other.cloth &&
+               present_cloth == other.present_cloth && cloth_original_id == other.cloth_original_id &&
+               umbrella_id == other.umbrella_id && mood == other.mood && mood_time == other.mood_time &&
+               is_home == other.is_home && moved_in == other.moved_in && removing == other.removing &&
+               previous_land_id == other.previous_land_id && previous_land_name == other.previous_land_name &&
+               parent_name == other.parent_name && relations == other.relations;
+    }
+};
+
+struct VillagerSlot {
+    bool occupied = false;
+    VillagerIdentity villager;
+
+    bool operator==(const VillagerSlot& other) const {
+        return occupied == other.occupied && (!occupied || villager == other.villager);
+    }
+};
+
+struct VillagerRoster {
+    std::array<VillagerSlot, kVillagerSlots> slots{};
+    Revision revision = 1;
+    /* False until a client has handed over a generated roster. The server does
+     * not invent villagers: it has no name, species or personality tables and
+     * is not allowed to hold them, so the first resident's town generation is
+     * the source and the server owns it from then on. */
+    bool initialized = false;
+
+    bool operator==(const VillagerRoster& other) const {
+        return slots == other.slots && revision == other.revision && initialized == other.initialized;
+    }
+};
+
+/* An occupied slot must name a villager; a vacant one must be entirely zero, so
+ * a peer cannot smuggle an identity past a reader that only consults the flag.
+ * The same rule the resident roster follows. */
+bool valid_villager_slot(const VillagerSlot& slot);
 
 } // namespace acnet

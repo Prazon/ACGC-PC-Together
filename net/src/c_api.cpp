@@ -548,6 +548,112 @@ extern "C" size_t acnet_client_residents(AcNetResident* output, size_t capacity)
     }
 }
 
+namespace {
+
+acnet::VillagerRoster pending_villagers;
+
+void villager_from_c(const AcNetVillager& source, acnet::VillagerSlot& slot) {
+    slot = {};
+    slot.occupied = source.occupied != 0;
+    if (!slot.occupied) return;
+    acnet::VillagerIdentity& v = slot.villager;
+    v.npc_id = source.npc_id;
+    v.land_id = source.land_id;
+    std::copy(std::begin(source.land_name), std::end(source.land_name), v.land_name.begin());
+    v.name_id = source.name_id;
+    v.looks = source.looks;
+    v.home_block_x = source.home_block_x;
+    v.home_block_z = source.home_block_z;
+    v.home_ut_x = source.home_ut_x;
+    v.home_ut_z = source.home_ut_z;
+    std::copy(std::begin(source.catchphrase), std::end(source.catchphrase), v.catchphrase.begin());
+    v.cloth = source.cloth;
+    v.present_cloth = source.present_cloth;
+    v.cloth_original_id = source.cloth_original_id;
+    v.umbrella_id = source.umbrella_id;
+    v.mood = source.mood;
+    v.mood_time = source.mood_time;
+    v.is_home = source.is_home;
+    v.moved_in = source.moved_in;
+    v.removing = source.removing;
+    v.previous_land_id = source.previous_land_id;
+    std::copy(std::begin(source.previous_land_name), std::end(source.previous_land_name),
+              v.previous_land_name.begin());
+    std::copy(std::begin(source.parent_name), std::end(source.parent_name), v.parent_name.begin());
+    std::copy(std::begin(source.relations), std::end(source.relations), v.relations.begin());
+    /* A slot the game left half-filled would be refused by the encoder and take
+     * the whole bootstrap with it, so drop it here instead. */
+    if (!acnet::valid_villager_slot(slot)) slot = {};
+}
+
+void villager_to_c(const acnet::VillagerSlot& slot, AcNetVillager& output) {
+    output = {};
+    output.occupied = slot.occupied ? 1 : 0;
+    if (!slot.occupied) return;
+    const acnet::VillagerIdentity& v = slot.villager;
+    output.npc_id = v.npc_id;
+    output.land_id = v.land_id;
+    std::copy(v.land_name.begin(), v.land_name.end(), output.land_name);
+    output.name_id = v.name_id;
+    output.looks = v.looks;
+    output.home_block_x = v.home_block_x;
+    output.home_block_z = v.home_block_z;
+    output.home_ut_x = v.home_ut_x;
+    output.home_ut_z = v.home_ut_z;
+    std::copy(v.catchphrase.begin(), v.catchphrase.end(), output.catchphrase);
+    output.cloth = v.cloth;
+    output.present_cloth = v.present_cloth;
+    output.cloth_original_id = v.cloth_original_id;
+    output.umbrella_id = v.umbrella_id;
+    output.mood = v.mood;
+    output.mood_time = v.mood_time;
+    output.is_home = v.is_home;
+    output.moved_in = v.moved_in;
+    output.removing = v.removing;
+    output.previous_land_id = v.previous_land_id;
+    std::copy(v.previous_land_name.begin(), v.previous_land_name.end(), output.previous_land_name);
+    std::copy(v.parent_name.begin(), v.parent_name.end(), output.parent_name);
+    std::copy(v.relations.begin(), v.relations.end(), output.relations);
+}
+
+} // namespace
+
+extern "C" int acnet_client_submit_villagers(const AcNetVillager* villagers) {
+    try {
+        if (villagers == nullptr) return 0;
+        acnet::VillagerRoster roster;
+        bool any = false;
+        for (std::size_t i = 0; i < acnet::kVillagerSlots; ++i) {
+            villager_from_c(villagers[i], roster.slots[i]);
+            if (roster.slots[i].occupied) any = true;
+        }
+        /* An empty roster is not a roster. Submitting one would install a town
+         * with no neighbours and lock out the client that does have them. */
+        if (!any) return 0;
+        roster.initialized = true;
+        roster.revision = 1;
+        pending_villagers = roster;
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_villagers(AcNetVillager* output) {
+    try {
+        if (!client || output == nullptr || client->baseline() == nullptr) return 0;
+        const acnet::VillagerRoster& roster = client->baseline()->villagers;
+        if (!roster.initialized) return 0;
+        for (std::size_t i = 0; i < acnet::kVillagerSlots; ++i) villager_to_c(roster.slots[i], output[i]);
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" uint32_t acnet_client_villager_revision(void) {
+    try {
+        if (!client || client->baseline() == nullptr || !client->baseline()->villagers.initialized) return 0;
+        return client->baseline()->villagers.revision;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
                                                     uint16_t land_id,
                                                     uint16_t native_fruit,
@@ -583,6 +689,7 @@ extern "C" int acnet_client_submit_town_bootstrap(const uint8_t town_name[8],
             for (std::size_t i = 0; i < island_tile_count; ++i)
                 bootstrap.island_tiles.push_back({island_tiles[i].item, island_tiles[i].buried != 0});
         }
+        bootstrap.villagers = pending_villagers;
         return client->submit_town_bootstrap(std::move(bootstrap),
                                              acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
     } catch (...) { capture_exception(); return 0; }

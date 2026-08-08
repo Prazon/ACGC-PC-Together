@@ -85,6 +85,23 @@ bool appearance(ByteReader& reader, PlayerAppearance& value, CustomPattern& patt
            valid_appearance(value, pattern);
 }
 
+/* The roster rides the bootstrap in the same shape the baseline carries it, so
+ * the two cannot disagree about the layout. */
+bool encode_bootstrap_villagers(ByteWriter& writer, const VillagerRoster& roster) {
+    std::vector<std::uint8_t> payload;
+    if (!encode_villager_delta(roster, payload)) return false;
+    return writer.u16(static_cast<std::uint16_t>(payload.size())) &&
+           writer.bytes(payload.data(), payload.size());
+}
+
+bool decode_bootstrap_villagers(ByteReader& reader, VillagerRoster& roster) {
+    std::uint16_t size = 0;
+    if (!reader.u16(size) || size > 4096) return false;
+    std::vector<std::uint8_t> payload(size);
+    if (size != 0 && !reader.bytes(payload.data(), payload.size())) return false;
+    return decode_villager_delta(payload, roster);
+}
+
 } // namespace
 
 bool valid_island_bootstrap(const TownBootstrap& value) {
@@ -110,6 +127,7 @@ bool encode(const TownBootstrap& value, std::vector<std::uint8_t>& output) {
     for (const TownBootstrapTile& tile_value : value.island_tiles) {
         if (!writer.u16(tile_value.item) || !writer.u8(tile_value.buried ? 1 : 0)) return false;
     }
+    if (!encode_bootstrap_villagers(writer, value.villagers)) return false;
     output = writer.data();
     return true;
 }
@@ -141,6 +159,7 @@ bool decode(const std::vector<std::uint8_t>& input, TownBootstrap& value) {
         if (!reader.u16(tile_value.item) || !reader.u8(buried) || buried > 1) return false;
         tile_value.buried = buried != 0;
     }
+    if (!decode_bootstrap_villagers(reader, value.villagers)) return false;
     return valid_island_bootstrap(value) && reader.finished();
 }
 

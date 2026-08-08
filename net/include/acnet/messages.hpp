@@ -45,6 +45,13 @@ struct TownBootstrap {
      * island, and a later login supplies it. */
     std::array<std::uint8_t, 2> island_block_x{};
     std::vector<TownBootstrapTile> island_tiles;
+    /* The villagers this town generated. The server cannot invent them -- it
+     * holds no name, species or personality tables and is not allowed to -- so
+     * the first resident's town generation is the source, and the server owns
+     * the roster from then on. An uninitialized roster means the client had not
+     * generated one yet; the server keeps waiting rather than installing an
+     * empty town, exactly as it does for the island tiles. */
+    VillagerRoster villagers;
 };
 
 struct TownBootstrapResult {

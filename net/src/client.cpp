@@ -521,6 +521,14 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     }
                     baseline_.museum = museum;
                 }
+                if (delta.kind == ResourceKind::Villager && has_baseline_) {
+                    VillagerRoster roster;
+                    if (!decode_villager_delta(delta.payload, roster)) {
+                        error = "malformed villager delta";
+                        return false;
+                    }
+                    if (roster.revision >= baseline_.villagers.revision) baseline_.villagers = roster;
+                }
                 if (delta.kind == ResourceKind::Notice && has_baseline_) {
                     NoticeBoard board;
                     if (!decode_notice_delta(delta.payload, board)) {

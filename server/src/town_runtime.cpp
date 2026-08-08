@@ -1186,6 +1186,7 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.turnips = turnips_;
     baseline.town_tune = town_tune_;
     baseline.notices = notices_;
+    baseline.villagers = villagers_;
     /* Town-wide occupancy, which the viewer's interest set cannot show. */
     const acnet::TownOccupancy occupancy = current_occupancy();
     baseline.town_population = occupancy.population;
@@ -1342,6 +1343,17 @@ bool TownRuntime::dispatch(Connection& connection,
                  * bootstraps repeat the same value; a client that could not
                  * report one leaves whatever is already recorded alone. */
                 if (request.native_fruit != 0) native_fruit_ = request.native_fruit;
+                /* Same rule as the fruit and the island: the client that
+                 * generated the town is the one that knows its neighbours, and
+                 * the server holds no tables to invent them from. Adopted once;
+                 * from then on the roster is the server's and a later bootstrap
+                 * cannot overwrite it. */
+                const bool villagers_adopted = !villagers_.initialized && request.villagers.initialized;
+                if (villagers_adopted) {
+                    villagers_ = request.villagers;
+                    villagers_.revision = advance_revision(villagers_.revision);
+                    villagers_.initialized = true;
+                }
                 const bool initialized_now = !town_bootstrapped_;
                 if (initialized_now) {
                     std::size_t index = 0;
@@ -1383,6 +1395,15 @@ bool TownRuntime::dispatch(Connection& connection,
                     if (island_installed)
                         record_event("Island terrain adopted from resident account " +
                                      std::to_string(connection.account));
+                }
+                if (villagers_adopted) {
+                    record_event("Villager roster adopted from resident account " +
+                                 std::to_string(connection.account));
+                    acnet::ReplicationDelta delta;
+                    delta.kind = acnet::ResourceKind::Villager;
+                    delta.zone = 0;
+                    delta.target_account = 0;
+                    if (acnet::encode_villager_delta(villagers_, delta.payload)) deltas_.append(std::move(delta));
                 }
                 result.code = acnet::ResultCode::Ok;
                 result.revision = std::max<acnet::Revision>(1, deltas_.current_revision());

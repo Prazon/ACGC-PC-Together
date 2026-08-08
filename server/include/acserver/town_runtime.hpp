@@ -135,7 +135,15 @@ public:
     /* NPC villagers the server is simulating. Until villager replication lands
      * the runtime registers only the placeholder shopkeeper, so this reports 1
      * rather than a full town's roster. */
-    std::size_t villager_count() const { return npcs_.all_npcs().size(); }
+    /* The town's neighbours, not the two placeholder service NPCs the runtime
+     * registers. Reads 0 until a client hands over a generated roster. */
+    std::size_t villager_count() const {
+        std::size_t count = 0;
+        for (const acnet::VillagerSlot& slot : villagers_.slots) {
+            if (slot.occupied) ++count;
+        }
+        return count;
+    }
     /* The town's weekly stalk market, for the operator console. */
     const acnet::TurnipMarket& turnip_market() const { return turnips_; }
     std::uint8_t shop_tier() const { return static_cast<std::uint8_t>(shop_stock_.tier); }
@@ -291,6 +299,7 @@ private:
     std::unordered_map<std::uint64_t, acnet::TownTuneResult> town_tune_idempotency_;
     /* The noticeboard. The server owns the FIFO eviction, which is the part two
      * simultaneous posters contend over. */
+    acnet::VillagerRoster villagers_;
     acnet::NoticeBoard notices_;
     std::unordered_map<std::uint64_t, acnet::NoticePostResult> notice_idempotency_;
     /* The fruit this town grows, reported once by the bootstrapping client.

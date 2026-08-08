@@ -12,6 +12,7 @@
 #include "m_kankyo.h"
 #include "m_name_table.h"
 #include "m_notice.h"
+#include "m_npc.h"
 #include "m_time.h"
 #include "m_collision_bg.h"
 #include "m_home_h.h"
@@ -984,6 +985,9 @@ int Net_ApplyQuickstartIdentity(void) {
  * Returns 0 when the field has not been built yet and the acre kinds cannot be
  * read. The server then leaves the island uninitialized and adopts it from a
  * later login rather than installing an island at the wrong coordinates. */
+/* Defined further down, beside the projection it feeds. */
+static void Net_CaptureVillagers(void);
+
 static size_t Net_CaptureIslandBootstrap(AcNetTownBootstrapTile* out,
                                          size_t capacity,
                                          int* island_block_x) {
@@ -1046,6 +1050,7 @@ int Net_SubmitInitialTown(void) {
      * field an acre at a time. */
     if (populated == 0) return FALSE;
     island_count = Net_CaptureIslandBootstrap(island_tiles, ARRAY_COUNT(island_tiles), island_block_x);
+    Net_CaptureVillagers();
     return acnet_client_submit_town_bootstrap(Save_Get(land_info).name,
                                                Save_Get(land_info).id,
                                                (u16)Save_Get(fruit),
@@ -1889,6 +1894,110 @@ void Net_ApplyAuthoritativeTownTune(void) {
     if (Save_Get(melody) != authoritative) Save_Set(melody, authoritative);
 }
 
+/* The locally generated villagers, handed to a town that has none yet. The
+ * server holds no name, species or personality tables -- and is not allowed to
+ * -- so the first resident's town generation is the only possible source. Once
+ * the server owns a roster this is ignored, and the projection below is what
+ * every client reads instead. */
+static void Net_CaptureVillagers(void) {
+    AcNetVillager wire[ACNET_VILLAGER_SLOTS];
+    int i;
+
+    memset(wire, 0, sizeof(wire));
+    for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+        const Animal_c* animal = &Save_Get(animals[i]);
+
+        /* mNpc_LOOKS_UNSET in the personality, or no character at all, is how
+         * the original marks an empty slot. */
+        if (animal->id.npc_id == EMPTY_NO || animal->id.looks >= mNpc_LOOKS_UNSET) continue;
+        wire[i].occupied = 1;
+        wire[i].npc_id = (uint16_t)animal->id.npc_id;
+        wire[i].land_id = animal->id.land_id;
+        memcpy(wire[i].land_name, animal->id.land_name, ACNET_VILLAGER_NAME_BYTES);
+        wire[i].name_id = animal->id.name_id;
+        wire[i].looks = animal->id.looks;
+        wire[i].home_block_x = animal->home_info.block_x;
+        wire[i].home_block_z = animal->home_info.block_z;
+        wire[i].home_ut_x = animal->home_info.ut_x;
+        wire[i].home_ut_z = animal->home_info.ut_z;
+        memcpy(wire[i].catchphrase, animal->catchphrase, ACNET_VILLAGER_CATCHPHRASE_BYTES);
+        wire[i].cloth = (uint16_t)animal->cloth;
+        wire[i].present_cloth = (uint16_t)animal->present_cloth;
+        wire[i].cloth_original_id = animal->cloth_original_id;
+        wire[i].umbrella_id = animal->umbrella_id;
+        wire[i].mood = animal->mood;
+        wire[i].mood_time = animal->mood_time;
+        wire[i].is_home = animal->is_home;
+        wire[i].moved_in = animal->moved_in;
+        wire[i].removing = animal->removing;
+        wire[i].previous_land_id = animal->previous_land_id;
+        memcpy(wire[i].previous_land_name, animal->anmuni.previous_land_name, ACNET_VILLAGER_NAME_BYTES);
+        memcpy(wire[i].parent_name, animal->parent_name, ACNET_VILLAGER_NAME_BYTES);
+        memcpy(wire[i].relations, animal->animal_relations, ACNET_VILLAGER_SLOTS);
+    }
+    (void)acnet_client_submit_villagers(wire);
+}
+
+int Net_VillagersAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_villager_revision() != 0;
+}
+
+/* The town's neighbours, projected into the save the original reads through.
+ *
+ * Only the roster is projected -- who lives here, what they look like, where
+ * their house is, what they are wearing. Animal_c::memories is deliberately
+ * left alone: it is the per-player relationship record, seven eighths of the
+ * struct, and it is account-scoped rather than town-scoped. Overwriting it from
+ * a town-wide roster would hand every player the same friendships. */
+void Net_ApplyAuthoritativeVillagers(void) {
+    static u32 last_villager_revision = 0;
+    AcNetVillager wire[ACNET_VILLAGER_SLOTS];
+    u32 revision;
+    int i;
+
+    if (!Net_IsConnected()) return;
+    revision = acnet_client_villager_revision();
+    if (revision == 0 || revision == last_villager_revision) return;
+    if (!acnet_client_villagers(wire)) return;
+
+    for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+        Animal_c* animal = &Save_Get(animals[i]);
+
+        if (!wire[i].occupied) {
+            /* Vacating a slot clears the identity and nothing else, so a
+             * villager who moves out does not take a player's memories of the
+             * one who replaces them with a stale name. */
+            memset(&animal->id, 0, sizeof(animal->id));
+            animal->id.looks = mNpc_LOOKS_UNSET;
+            continue;
+        }
+        animal->id.npc_id = (mActor_name_t)wire[i].npc_id;
+        animal->id.land_id = wire[i].land_id;
+        memcpy(animal->id.land_name, wire[i].land_name, LAND_NAME_SIZE);
+        animal->id.name_id = wire[i].name_id;
+        animal->id.looks = wire[i].looks;
+        animal->home_info.block_x = wire[i].home_block_x;
+        animal->home_info.block_z = wire[i].home_block_z;
+        animal->home_info.ut_x = wire[i].home_ut_x;
+        animal->home_info.ut_z = wire[i].home_ut_z;
+        memcpy(animal->catchphrase, wire[i].catchphrase, ANIMAL_CATCHPHRASE_LEN);
+        animal->cloth = (mActor_name_t)wire[i].cloth;
+        animal->present_cloth = (mActor_name_t)wire[i].present_cloth;
+        animal->cloth_original_id = wire[i].cloth_original_id;
+        animal->umbrella_id = wire[i].umbrella_id;
+        animal->mood = wire[i].mood;
+        animal->mood_time = wire[i].mood_time;
+        animal->is_home = wire[i].is_home;
+        animal->moved_in = wire[i].moved_in;
+        animal->removing = wire[i].removing;
+        animal->previous_land_id = wire[i].previous_land_id;
+        memcpy(animal->anmuni.previous_land_name, wire[i].previous_land_name, LAND_NAME_SIZE);
+        memcpy(animal->parent_name, wire[i].parent_name, PLAYER_NAME_LEN);
+        memcpy(animal->animal_relations, wire[i].relations, ANIMAL_NUM_MAX);
+    }
+    last_villager_revision = revision;
+}
+
 int Net_NoticeBoardAuthoritative(void) {
     return Net_IsConnected() && acnet_client_notice_revision() != 0;
 }
@@ -2237,6 +2346,7 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     Net_ApplyAuthoritativeTurnipMarket();
     Net_ApplyAuthoritativeTownTune();
     Net_ApplyAuthoritativeNotices();
+    Net_ApplyAuthoritativeVillagers();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

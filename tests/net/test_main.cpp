@@ -1687,6 +1687,75 @@ void shop_tier_is_earned_and_server_owned() {
     CHECK(!acnet::encode_shop_delta(bad, payload));
 }
 
+void villager_roster_is_town_state() {
+    acnet::VillagerRoster roster;
+    roster.revision = 5;
+    roster.initialized = true;
+    acnet::VillagerIdentity bob;
+    bob.npc_id = 0x1234;
+    bob.land_id = 0x3007;
+    bob.name_id = 9;
+    bob.looks = 2;
+    bob.home_block_x = 3;
+    bob.home_block_z = 4;
+    bob.cloth = 0x2400;
+    bob.mood = 7;
+    bob.relations.fill(128);
+    bob.catchphrase[0] = 'y';
+    roster.slots[0] = {true, bob};
+    roster.slots[3] = {true, bob};
+
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_villager_delta(roster, payload));
+    acnet::VillagerRoster decoded;
+    CHECK(acnet::decode_villager_delta(payload, decoded));
+    CHECK(decoded == roster);
+    CHECK(decoded.slots[0].occupied);
+    CHECK(!decoded.slots[1].occupied);
+    CHECK(decoded.slots[3].villager.relations[0] == 128);
+
+    /* A vacant slot must be entirely empty, so an identity cannot ride along
+     * past a reader that only consults the flag -- the rule the resident roster
+     * already follows. */
+    acnet::VillagerRoster smuggled = roster;
+    smuggled.slots[1].occupied = false;
+    smuggled.slots[1].villager = bob;
+    CHECK(!acnet::encode_villager_delta(smuggled, payload));
+
+    /* npc_id 0 is EMPTY_NO: there is no such character. A personality past
+     * mNpc_LOOKS_UNSET would index off the end of the game's own tables. */
+    acnet::VillagerRoster nameless = roster;
+    nameless.slots[0].villager.npc_id = 0;
+    CHECK(!acnet::encode_villager_delta(nameless, payload));
+    acnet::VillagerRoster impossible = roster;
+    impossible.slots[0].villager.looks = acnet::kVillagerLooksUnset + 1;
+    CHECK(!acnet::encode_villager_delta(impossible, payload));
+
+    acnet::VillagerRoster unset = roster;
+    unset.revision = 0;
+    CHECK(!acnet::encode_villager_delta(unset, payload));
+
+    /* An uninitialized roster still round-trips: it is how the server says it
+     * has no villagers yet and is waiting for a client to hand some over. */
+    acnet::VillagerRoster empty;
+    CHECK(acnet::encode_villager_delta(empty, payload));
+    CHECK(acnet::decode_villager_delta(payload, decoded));
+    CHECK(!decoded.initialized);
+
+    /* The bootstrap carries the roster through the same codec, so the two
+     * cannot disagree about its shape. */
+    acnet::TownBootstrap bootstrap;
+    bootstrap.town_seed = 1;
+    bootstrap.land_id = 0x3001;
+    bootstrap.tiles.resize(acnet::kTownBootstrapTileCount);
+    bootstrap.villagers = roster;
+    std::vector<std::uint8_t> boot_payload;
+    CHECK(acnet::encode(bootstrap, boot_payload));
+    acnet::TownBootstrap decoded_bootstrap;
+    CHECK(acnet::decode(boot_payload, decoded_bootstrap));
+    CHECK(decoded_bootstrap.villagers == roster);
+}
+
 void notice_board_is_town_state() {
     acnet::NoticeBoard board;
     board.revision = 3;
@@ -5301,6 +5370,7 @@ int main() {
         {"selling a selection is atomic", selling_a_selection_is_atomic_and_caps_the_wallet},
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
         {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
+        {"villager roster is town state", villager_roster_is_town_state},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

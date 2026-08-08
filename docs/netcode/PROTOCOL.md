@@ -1,4 +1,4 @@
-# Dedicated town protocol v24
+# Dedicated town protocol v25
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -128,6 +128,39 @@ shelf.
 
 Client-side `mSP_PlusSales` returns early while connected, and the level and
 total are projected into `Save_t` alongside the shelf.
+
+## Villagers
+
+The town's roster is server state, added in v25: fifteen slots
+(`ANIMAL_NUM_MAX`), each an `occupied` flag and, when occupied, the identity —
+`npc_id`, origin town id and name, `name_id`, `looks` (personality), the acre
+and unit their house stands on, the catchphrase, shirt and pending shirt,
+pattern and umbrella ids, mood, `is_home`/`moved_in`/`removing`, previous town,
+the name of the player who spawned them in, and how they feel about each of the
+other fourteen. It rides the `Baseline` after the noticeboard, and
+`ResourceKind::Villager` deltas keep it live — town-wide, since one town has one
+set of neighbours.
+
+A vacant slot must be entirely zero, so an identity cannot ride along past a
+reader that only consults the flag — the rule the resident roster follows. An
+`npc_id` of 0 (`EMPTY_NO`, no such character) and a `looks` past
+`mNpc_LOOKS_UNSET` are both decode failures, since a viewer indexes the game's
+character and personality tables with them.
+
+**The server does not invent villagers.** It holds no name, species or
+personality tables and is not allowed to, so the roster rides the
+`TownBootstrap` — the first resident's town generation is the source, through
+the same codec the baseline uses so the two cannot disagree. Once adopted the
+roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
+roster is a legal value and means "waiting for a client to hand one over",
+exactly as an empty island tile list does.
+
+Deliberately **not** carried: `Animal_c::memories`, the per-player relationship
+records. They are seven eighths of the 0x988-byte struct and are account-scoped
+rather than town-scoped — projecting them from a town-wide roster would hand
+every player the same friendships. Client-side `mNpc_Grow` returns early while
+connected, so move-ins stop happening per client; making them a server decision
+is the next phase.
 
 ## The noticeboard
 

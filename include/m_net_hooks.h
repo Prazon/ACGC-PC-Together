@@ -168,6 +168,14 @@ int Net_NoticeBoardAuthoritative(void);
  * players posting at once cannot each drop a different old post. */
 int Net_RequestNoticePost(const void* post, u32 size);
 void Net_ApplyAuthoritativeNotices(void);
+
+/* TRUE once the town has reported its villagers. Save_Get(animals[]) is then a
+ * projection of the roster -- who lives here, what they look like, where their
+ * house is -- and must not be evolved locally: mNpc_Grow moves somebody in
+ * behind a local RANDOM(100), so every client would grow a different town.
+ * Animal_c::memories is NOT projected; it is per-player and stays local. */
+int Net_VillagersAuthoritative(void);
+void Net_ApplyAuthoritativeVillagers(void);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -230,6 +238,8 @@ void Net_ApplyAuthoritativeNotices(void);
 #define Net_NoticeBoardAuthoritative() FALSE
 #define Net_RequestNoticePost(post, size) FALSE
 #define Net_ApplyAuthoritativeNotices() ((void)0)
+#define Net_VillagersAuthoritative() FALSE
+#define Net_ApplyAuthoritativeVillagers() ((void)0)
 #endif
 
 #ifdef __cplusplus

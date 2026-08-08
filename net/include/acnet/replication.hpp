@@ -55,7 +55,13 @@ enum class ResourceKind : std::uint8_t {
     /* The noticeboard. Town-wide by definition -- it exists so townmates can
      * leave each other notes, which a local copy cannot do. */
     Notice,
+    /* The villager roster. Town-wide: one town has one set of neighbours, and
+     * without this every client evolves its own from the second boot onward. */
+    Villager,
 };
+
+bool encode_villager_delta(const VillagerRoster& roster, std::vector<std::uint8_t>& output);
+bool decode_villager_delta(const std::vector<std::uint8_t>& input, VillagerRoster& roster);
 
 /* One noticeboard post. The message is opaque bytes in the game's own font
  * encoding, sized to MAIL_BODY_LEN, like mail text -- nothing reinterprets
@@ -250,6 +256,7 @@ struct ZoneBaseline {
     TurnipMarket turnips;
     TownTune town_tune;
     NoticeBoard notices;
+    VillagerRoster villagers;
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

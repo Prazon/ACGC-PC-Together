@@ -354,6 +354,70 @@ static bool decode_notices(ByteReader& reader, NoticeBoard& board) {
     return true;
 }
 
+static bool encode_villagers(ByteWriter& writer, const VillagerRoster& roster) {
+    if (roster.revision == 0) return false;
+    if (!writer.u32(roster.revision) || !writer.u8(roster.initialized ? 1 : 0)) return false;
+    for (const VillagerSlot& slot : roster.slots) {
+        if (!valid_villager_slot(slot) || !writer.u8(slot.occupied ? 1 : 0)) return false;
+        if (!slot.occupied) continue;
+        const VillagerIdentity& v = slot.villager;
+        if (!writer.u16(v.npc_id) || !writer.u16(v.land_id) ||
+            !writer.bytes(v.land_name.data(), v.land_name.size()) || !writer.u8(v.name_id) ||
+            !writer.u8(v.looks) || !writer.u8(v.home_block_x) || !writer.u8(v.home_block_z) ||
+            !writer.u8(v.home_ut_x) || !writer.u8(v.home_ut_z) ||
+            !writer.bytes(v.catchphrase.data(), v.catchphrase.size()) || !writer.u16(v.cloth) ||
+            !writer.u16(v.present_cloth) || !writer.u8(v.cloth_original_id) || !writer.u8(v.umbrella_id) ||
+            !writer.u8(v.mood) || !writer.u8(v.mood_time) || !writer.u8(v.is_home) || !writer.u8(v.moved_in) ||
+            !writer.u8(v.removing) || !writer.u16(v.previous_land_id) ||
+            !writer.bytes(v.previous_land_name.data(), v.previous_land_name.size()) ||
+            !writer.bytes(v.parent_name.data(), v.parent_name.size()) ||
+            !writer.bytes(v.relations.data(), v.relations.size())) return false;
+    }
+    return true;
+}
+
+static bool decode_villagers(ByteReader& reader, VillagerRoster& roster) {
+    std::uint8_t initialized = 0;
+    if (!reader.u32(roster.revision) || !reader.u8(initialized) || initialized > 1 ||
+        roster.revision == 0) return false;
+    roster.initialized = initialized != 0;
+    for (VillagerSlot& slot : roster.slots) {
+        std::uint8_t occupied = 0;
+        slot = {};
+        if (!reader.u8(occupied) || occupied > 1) return false;
+        slot.occupied = occupied != 0;
+        if (!slot.occupied) continue;
+        VillagerIdentity& v = slot.villager;
+        if (!reader.u16(v.npc_id) || !reader.u16(v.land_id) ||
+            !reader.bytes(v.land_name.data(), v.land_name.size()) || !reader.u8(v.name_id) ||
+            !reader.u8(v.looks) || !reader.u8(v.home_block_x) || !reader.u8(v.home_block_z) ||
+            !reader.u8(v.home_ut_x) || !reader.u8(v.home_ut_z) ||
+            !reader.bytes(v.catchphrase.data(), v.catchphrase.size()) || !reader.u16(v.cloth) ||
+            !reader.u16(v.present_cloth) || !reader.u8(v.cloth_original_id) || !reader.u8(v.umbrella_id) ||
+            !reader.u8(v.mood) || !reader.u8(v.mood_time) || !reader.u8(v.is_home) || !reader.u8(v.moved_in) ||
+            !reader.u8(v.removing) || !reader.u16(v.previous_land_id) ||
+            !reader.bytes(v.previous_land_name.data(), v.previous_land_name.size()) ||
+            !reader.bytes(v.parent_name.data(), v.parent_name.size()) ||
+            !reader.bytes(v.relations.data(), v.relations.size())) return false;
+        /* Bounds-checked here so a viewer may index the game's personality and
+         * character tables with these directly. */
+        if (!valid_villager_slot(slot)) return false;
+    }
+    return true;
+}
+
+bool encode_villager_delta(const VillagerRoster& roster, std::vector<std::uint8_t>& output) {
+    ByteWriter writer(kMaximumBaselineBytes);
+    if (!encode_villagers(writer, roster)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_villager_delta(const std::vector<std::uint8_t>& input, VillagerRoster& roster) {
+    ByteReader reader(input);
+    return decode_villagers(reader, roster) && reader.finished();
+}
+
 bool encode_notice_delta(const NoticeBoard& board, std::vector<std::uint8_t>& output) {
     ByteWriter writer(kMaximumBaselineBytes);
     if (!encode_notices(writer, board)) return false;
@@ -452,6 +516,7 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
     if (baseline.town_tune.revision == 0) return false;
     if (!writer.u64(baseline.town_tune.notes) || !writer.u32(baseline.town_tune.revision)) return false;
     if (!encode_notices(writer, baseline.notices)) return false;
+    if (!encode_villagers(writer, baseline.villagers)) return false;
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
         if (!writer.i16(entry.first.x) || !writer.i16(entry.first.z) || !writer.u32(entry.second.revision) ||
@@ -550,6 +615,7 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
     if (!reader.u64(baseline.town_tune.notes) || !reader.u32(baseline.town_tune.revision) ||
         baseline.town_tune.revision == 0) return false;
     if (!decode_notices(reader, baseline.notices)) return false;
+    if (!decode_villagers(reader, baseline.villagers)) return false;
     baseline.has_house = has_house != 0;
     baseline.house = {};
     if (baseline.has_house && (!decode_house(reader, baseline.house) || baseline.house.zone != baseline.zone)) return false;
@@ -793,7 +859,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
         delta.kind == ResourceKind::Gyroid ||
         delta.kind == ResourceKind::Turnip ||
         delta.kind == ResourceKind::TownTune ||
-        delta.kind == ResourceKind::Notice) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Notice ||
+        delta.kind == ResourceKind::Villager) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

@@ -1,5 +1,7 @@
 #include "m_npc.h"
 
+#include "m_net_hooks.h"
+
 #include "m_font.h"
 #include "m_name_table.h"
 #include "m_common_data.h"
@@ -4403,6 +4405,20 @@ static int mNpc_SetGrowNpc(u8 looks) {
 extern void mNpc_Grow() {
     int selected;
     int grow_idx;
+
+    /* One town, one set of neighbours. Online the roster is server-owned and
+     * Net_ApplyAuthoritativeVillagers projects it back, so growing one here as
+     * well would move a different villager into every client's town behind its
+     * own RANDOM(100) -- and the next projection would undo it. Move-ins become
+     * a server decision when villagers do; until then the roster is stable
+     * rather than divergent, which is the point.
+     *
+     * mNpc_CheckGrow is deliberately not consulted first: it has side effects
+     * on the grow timer, and running them would leave the local clock claiming
+     * a move-in had been considered when the server never saw one. */
+    if (Net_VillagersAuthoritative()) {
+        return;
+    }
 
     if (mNpc_CheckGrow() == TRUE) {
         lbRTC_time_c* rtc_time = Common_GetPointer(time.rtc_time);

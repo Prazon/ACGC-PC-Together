@@ -20,8 +20,10 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 14 adds the town tune; an older checkpoint has none and the town keeps the
  * default melody until somebody retunes it.
  * 15 adds the noticeboard; an older checkpoint has none and the board starts
- * empty. */
-constexpr std::uint16_t kTownStateVersion = 15;
+ * empty.
+ * 16 adds the villager roster. An older checkpoint has none, so the roster
+ * reads as uninitialized and the next bootstrap adopts one. */
+constexpr std::uint16_t kTownStateVersion = 16;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -201,6 +203,15 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
     for (const acnet::NoticePost& post : notices_.posts) {
         if (!writer.bytes(post.message.data(), post.message.size()) ||
             !writer.bytes(post.posted_time.data(), post.posted_time.size())) return {};
+    }
+    {
+        /* Stored through the same codec the wire uses, so the checkpoint and
+         * the baseline can never disagree about the roster's shape. */
+        std::vector<std::uint8_t> roster;
+        if (!acnet::encode_villager_delta(villagers_, roster) ||
+            roster.size() > std::numeric_limits<std::uint16_t>::max() ||
+            !writer.u16(static_cast<std::uint16_t>(roster.size())) ||
+            !writer.bytes(roster.data(), roster.size())) return {};
     }
 
     const auto& mail = economy_.mail_records();
@@ -442,6 +453,15 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
                 !reader.bytes(post.posted_time.data(), post.posted_time.size())) {
                 error = "invalid noticeboard post"; return false;
             }
+        }
+    }
+    if (version >= 16) {
+        std::uint16_t roster_size = 0;
+        if (!reader.u16(roster_size)) { error = "invalid villager roster"; return false; }
+        std::vector<std::uint8_t> roster(roster_size);
+        if ((roster_size != 0 && !reader.bytes(roster.data(), roster.size())) ||
+            !acnet::decode_villager_delta(roster, villagers_)) {
+            error = "invalid villager roster"; return false;
         }
     }
 
