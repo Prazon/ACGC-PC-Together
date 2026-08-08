@@ -20,6 +20,7 @@
 #include "acnet/zone.hpp"
 #include "acserver/persistence.hpp"
 #include "acserver/config.hpp"
+#include "acserver/mod_packstore.hpp"
 #include "acserver/mod_calendar.hpp"
 #include "acserver/mod_host.hpp"
 #include "acserver/mod_registry.hpp"
@@ -1895,6 +1896,96 @@ void asset_delivery_messages_round_trip() {
     CHECK(acnet::encode(chunk, encoded));
     encoded.push_back(0);
     CHECK(!acnet::decode(encoded, decoded_chunk));
+}
+
+/* The server's content store: what it will serve, how it chunks it, and what it
+ * refuses. */
+void asset_pack_store_serves_content() {
+    const auto mods = modtest::make_mods_dir("packstore");
+
+    /* Two mods, one of which ships a byte-identical copy of the other's
+     * texture -- dedup is the main reason for content addressing. */
+    std::filesystem::create_directories(mods.root / "alpha" / "content");
+    std::filesystem::create_directories(mods.root / "beta" / "content");
+    const std::string model(5000, 'M');       /* spans several chunks */
+    const std::string shared(64, 'S');
+    {
+        std::ofstream(mods.root / "alpha" / "content" / "lantern.pcasset", std::ios::binary) << model;
+        std::ofstream(mods.root / "alpha" / "content" / "shared.tex", std::ios::binary) << shared;
+        std::ofstream(mods.root / "beta" / "content" / "copy.tex", std::ios::binary) << shared;
+        /* Not under content/, so never served: a mod's source stays private. */
+        std::ofstream(mods.root / "alpha" / "init.lua") << "-- private\n";
+    }
+
+    acserver::ModPackStore store;
+    std::string error;
+    CHECK(store.build(mods.root, error));
+
+    /* Three files, two distinct blobs. */
+    CHECK(store.blob_count() == 2);
+    CHECK(store.manifest().entries.size() == 2);
+    CHECK(store.total_bytes() == model.size() + shared.size());
+
+    /* The manifest advertises a real digest and a non-zero revision. */
+    CHECK(store.manifest().revision != 0);
+    bool digest_set = false;
+    for (const std::uint8_t byte : store.manifest().manifest_digest) digest_set = digest_set || byte != 0;
+    CHECK(digest_set);
+
+    /* Find the model's entry and reassemble it chunk by chunk, exactly as a
+     * client would. */
+    const acnet::AssetManifestEntry* model_entry = nullptr;
+    for (const acnet::AssetManifestEntry& entry : store.manifest().entries) {
+        if (entry.size == model.size()) model_entry = &entry;
+    }
+    CHECK(model_entry != nullptr);
+    CHECK(model_entry->kind == 0);   /* .pcasset */
+
+    const std::uint32_t chunks = store.chunk_count(model_entry->hash);
+    CHECK(chunks > 1);
+    std::vector<std::uint8_t> rebuilt;
+    for (std::uint32_t i = 0; i < chunks; ++i) {
+        std::vector<std::uint8_t> piece;
+        CHECK(store.chunk(model_entry->hash, i, piece));
+        CHECK(piece.size() <= acnet::kAssetChunkBytes);
+        rebuilt.insert(rebuilt.end(), piece.begin(), piece.end());
+    }
+    CHECK(rebuilt.size() == model.size());
+    CHECK(std::equal(rebuilt.begin(), rebuilt.end(), model.begin()));
+
+    /* What arrives must hash to what was advertised -- that is the whole
+     * integrity story, and it is why no signature scheme is needed. */
+    CHECK(acnet::sha256(rebuilt.data(), rebuilt.size()) == model_entry->hash);
+
+    /* A chunk past the end, and an unknown hash, are both refused rather than
+     * served as empty. */
+    std::vector<std::uint8_t> ignored;
+    CHECK(!store.chunk(model_entry->hash, chunks, ignored));
+    std::array<std::uint8_t, 32> unknown{};
+    unknown.fill(0xAB);
+    CHECK(!store.chunk(unknown, 0, ignored));
+    CHECK(store.chunk_count(unknown) == 0);
+
+    /* A town with no mods at all still builds a valid, empty manifest. */
+    acserver::ModPackStore empty;
+    CHECK(empty.build(mods.root / "definitely-absent", error));
+    CHECK(empty.blob_count() == 0);
+    CHECK(empty.manifest().revision != 0);
+
+    /* An oversized asset is refused at build time, where an operator sees it,
+     * rather than at serve time where a player would. */
+    const auto oversized = modtest::make_mods_dir("packbig");
+    std::filesystem::create_directories(oversized.root / "huge" / "content");
+    {
+        std::ofstream out(oversized.root / "huge" / "content" / "big.pcasset", std::ios::binary);
+        const std::string block(64 * 1024, 'X');
+        for (std::size_t written = 0; written <= acnet::kMaxAssetBlobBytes; written += block.size()) {
+            out << block;
+        }
+    }
+    acserver::ModPackStore refused;
+    CHECK(!refused.build(oversized.root, error));
+    CHECK(error.find("per-asset limit") != std::string::npos);
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -6411,6 +6502,7 @@ int main() {
         {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
         {"mod calendar replicates", mod_calendar_replicates},
         {"asset delivery messages round trip", asset_delivery_messages_round_trip},
+        {"asset pack store serves content", asset_pack_store_serves_content},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
