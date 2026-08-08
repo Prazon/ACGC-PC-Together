@@ -28,7 +28,19 @@ static u8* aMR_GetNameString(MY_ROOM_ACTOR* my_room, int rom_no) {
 }
 
 static void aMR_SetMemoryCardGameIndex(MY_ROOM_ACTOR* my_room, int sub_index) {
-    my_room->emu_info.rom_no = -(my_room->emu_info.memory_game_select + sub_index);
+    int index = my_room->emu_info.memory_game_select + sub_index;
+
+#ifdef TARGET_PC
+    /* PSX keeps its pick in a dedicated variable; rom_no stays at the sentinel
+     * so Common current_famicom_rom only ever carries "this is a PlayStation". */
+    if (my_room->emu_info.list_source == aMR_EMU_LIST_PSX) {
+        pc_psx_select_index(index);
+        my_room->emu_info.rom_no = PSX_EMU_ROM_BASE;
+        return;
+    }
+#endif
+
+    my_room->emu_info.rom_no = -index;
 }
 
 static void aMR_ReportDisplayMemoryGameSelectCount(MY_ROOM_ACTOR* my_room, int add_amount) {
@@ -88,6 +100,14 @@ static void aMR_SetEmulatorMessage_CanSave(ACTOR* actorx) {
 static void aMR_SetEmulatorStartMessage(ACTOR* actorx, int internal_rom) {
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
     int res;
+
+#ifdef TARGET_PC
+    /* Flavor the shared emulator dialog text by requesting console. */
+    {
+        extern int g_pc_psx_msg_flavor;
+        g_pc_psx_msg_flavor = (my_room->emu_info.rom_no >= PSX_EMU_ROM_BASE);
+    }
+#endif
 
     Common_Get(my_room_message_control_flags) |= (1 << 2);
 
@@ -1086,7 +1106,7 @@ static void aMR_MsgControlQqqEmulatorMemory1(ACTOR* actorx, GAME* game) {
     if (choice_no != -1) {
         switch (choice_no) {
             case mChoice_CHOICE0:
-                my_room->emu_info.rom_no = 0;
+                aMR_SetMemoryCardGameIndex(my_room, 0);
                 my_room->requested_msg_type = aMR_MSG_STATE_EXPLAIN_EMULATOR_MEMORY;
                 aMR_SetEmulatorStartMessage(actorx, FALSE);
                 break;
@@ -1113,10 +1133,18 @@ static void aMR_MsgInitQqqEmulatorMemory2(ACTOR* actorx) {
 
     mChoice_Load_ChoseStringFromRom(choice_win, cancel_string, 0x1AB, NULL); /* No thanks. */
 
+#ifdef TARGET_PC
+    /* A single-entry list reuses this dialog (the 1-entry one hardcodes a GBA
+     * choice), and the widget compacts the NULL slot away. */
+    u8* second = (my_room->emu_info.card_famicom_count > 1) ? aMR_GetNameString(my_room, 1) : NULL;
+#else
+    u8* second = aMR_GetNameString(my_room, 1);
+#endif
+
     // clang-format off
     mChoice_Set_choice_data(choice_win,
         aMR_GetNameString(my_room, 0), mChoice_CHOICE_STRING_LEN,
-        aMR_GetNameString(my_room, 1), mChoice_CHOICE_STRING_LEN,
+        second, mChoice_CHOICE_STRING_LEN,
         cancel_string, mChoice_CHOICE_STRING_LEN,
         NULL, mChoice_CHOICE_STRING_LEN,
         NULL, mChoice_CHOICE_STRING_LEN,
@@ -1132,12 +1160,24 @@ static void aMR_MsgControlQqqEmulatorMemory2(ACTOR* actorx, GAME* game) {
     if (choice_no != -1) {
         switch (choice_no) {
             case mChoice_CHOICE0:
-                my_room->emu_info.rom_no = 0;
+                aMR_SetMemoryCardGameIndex(my_room, 0);
                 my_room->requested_msg_type = aMR_MSG_STATE_EXPLAIN_EMULATOR_MEMORY;
                 aMR_SetEmulatorStartMessage(actorx, FALSE);
                 break;
             case mChoice_CHOICE1:
-                my_room->emu_info.rom_no = -1;
+#ifdef TARGET_PC
+                /* The widget compacts NULL slots, so a single-entry list puts
+                 * "No thanks." here instead of a second game — cancel. */
+                if (my_room->emu_info.card_famicom_count <= 1) {
+                    my_room->requested_msg_type = aMR_MSG_STATE_NONE;
+                    my_room->emu_info.request_flag = FALSE;
+                    mMsg_SET_CANCELNORMALCONTINUE();
+                    mMsg_UNSET_LOCKCONTINUE();
+                    mMsg_SET_FORCENEXT();
+                    break;
+                }
+#endif
+                aMR_SetMemoryCardGameIndex(my_room, 1);
                 my_room->requested_msg_type = aMR_MSG_STATE_EXPLAIN_EMULATOR_MEMORY;
                 aMR_SetEmulatorStartMessage(actorx, FALSE);
                 break;
@@ -1180,12 +1220,12 @@ static void aMR_MsgControlQqqEmulatorMemoryOver3(ACTOR* actorx, GAME* game) {
     if (choice_no != -1) {
         switch (choice_no) {
             case mChoice_CHOICE0:
-                my_room->emu_info.rom_no = 0;
+                aMR_SetMemoryCardGameIndex(my_room, 0);
                 my_room->requested_msg_type = aMR_MSG_STATE_EXPLAIN_EMULATOR_MEMORY;
                 aMR_SetEmulatorStartMessage(actorx, FALSE);
                 break;
             case mChoice_CHOICE1:
-                my_room->emu_info.rom_no = -1;
+                aMR_SetMemoryCardGameIndex(my_room, 1);
                 my_room->requested_msg_type = aMR_MSG_STATE_EXPLAIN_EMULATOR_MEMORY;
                 aMR_SetEmulatorStartMessage(actorx, FALSE);
                 break;

@@ -841,3 +841,5 @@ static Gfx* fFTR_GetTwoTileGfx(int width0, int height0, int scroll_x0, int scrol
 #include "../src/furniture/ac_nog_lawnmower.c"
 #include "../src/furniture/ac_nog_sprinkler.c"
 #include "../src/furniture/ac_dummy.c"
+#include "../src/furniture/ac_psx_console.c"
+#include "../src/furniture/ac_psx_game.c"

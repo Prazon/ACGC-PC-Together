@@ -1509,6 +1509,11 @@ static u8 aMR_calender_info_table[] = {
     FALSE,
     FALSE,
     FALSE,
+    FALSE, /* FTR_PSX_CONSOLE */
+    FALSE, /* FTR_PSX_GAME0 */
+    FALSE, /* FTR_PSX_GAME1 */
+    FALSE, /* FTR_PSX_GAME2 */
+    FALSE, /* FTR_PSX_GAME3 */
 };
 
 // clang-format on

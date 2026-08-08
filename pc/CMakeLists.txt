@@ -285,6 +285,9 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_os.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_dvd.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_pad.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_custom_furniture.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_libretro_core.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_psx.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_typing.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mouse.c
     ${DECOMP_ROOT}/src/static/dolphin/pad/Padclamp.c
@@ -533,6 +536,18 @@ else()
     list(FILTER SDL2_LIBRARIES EXCLUDE REGEX "SDL2main")
     target_link_libraries(ac_pc glad ${SDL2_LIBRARIES})
 endif()
+
+# Headless smoke test for the libretro host (loads core + disc, no game/GL)
+add_executable(psx_smoke
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools/psx_smoke.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_libretro_core.c
+)
+if(TARGET SDL2::SDL2)
+    target_link_libraries(psx_smoke SDL2::SDL2)
+else()
+    target_link_libraries(psx_smoke ${SDL2_LIBRARIES})
+endif()
+set_target_properties(psx_smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 if(WIN32)
     target_link_libraries(ac_pc opengl32 winmm imm32 version setupapi)

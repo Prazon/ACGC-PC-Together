@@ -22,6 +22,11 @@ typedef struct {
     int stick_deadzone;   /* Gamepad main stick deadzone, percent 0-40 (default 12) */
     int cstick_deadzone;  /* Gamepad C-stick deadzone, percent 0-40 (default 12) */
     char discord_client_id[32]; /* Discord Application ID; empty disables Rich Presence */
+    char psx_core[260];         /* libretro core DLL for the PS1 furniture item */
+    char psx_roms_dir[260];     /* folder scanned for PS1 disc images (.cue/.chd/.iso) */
+    char psx_bios_dir[260];     /* PS1 BIOS folder (scph5501.bin etc.) */
+    char psx_game[260];         /* disc image filename to boot; empty = first found */
+    char psx_games[1024];       /* '|'-separated shelf of disc filenames; empty = list the whole folder */
 } PCSettings;
 
 extern PCSettings g_pc_settings;

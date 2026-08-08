@@ -3,6 +3,7 @@
 #include "pc_typing.h"
 #include "pc_keybindings.h"
 #include "pc_settings.h"
+#include "pc_custom_furniture.h"
 #include <dolphin/pad.h>
 
 /* analog stick constants */
@@ -56,6 +57,7 @@ u32 PADRead(PADStatus* status) {
 
     const u8* keys = SDL_GetKeyboardState(NULL);
     u32 mouse = SDL_GetMouseState(NULL, NULL);
+    pc_custom_furniture_update(keys);
     u16 buttons = 0;
     s8 stickX = 0, stickY = 0;
     s8 cstickX = 0, cstickY = 0;
@@ -98,6 +100,19 @@ u32 PADRead(PADStatus* status) {
         if (INPUT_PRESSED(kb->dpad_right)) buttons |= PAD_BUTTON_RIGHT;
 
         #undef INPUT_PRESSED
+    }
+
+    /* --auto-start N: inject periodic Start presses from frame N onward
+     * (6 frames on, 120 off) so automated tests can get past the title
+     * screen without window focus. */
+    {
+        extern int g_pc_auto_start_frame;
+        static unsigned auto_frame_count = 0;
+        auto_frame_count++;
+        if (g_pc_auto_start_frame > 0 && auto_frame_count >= (unsigned)g_pc_auto_start_frame &&
+            ((auto_frame_count - g_pc_auto_start_frame) % 126) < 6) {
+            buttons |= PAD_BUTTON_START;
+        }
     }
 
     /* hotplug */

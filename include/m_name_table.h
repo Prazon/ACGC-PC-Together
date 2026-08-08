@@ -3033,6 +3033,13 @@ enum ftr1_e {
     X(FTR_TAK_STEW),
     X(FTR_DUMMY),
 
+    /* PC-only custom furniture, appended after FTR_DUMMY so stock item IDs stay stable */
+    X(FTR_PSX_CONSOLE),
+    X(FTR_PSX_GAME0),
+    X(FTR_PSX_GAME1),
+    X(FTR_PSX_GAME2),
+    X(FTR_PSX_GAME3),
+
     FTR1_END
 #undef X
 };

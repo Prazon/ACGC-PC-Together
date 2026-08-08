@@ -15,6 +15,10 @@
 #include "m_player_lib.h"
 #include "GBA2/gba2.h"
 #include "m_debug.h"
+#include "psx_emu.h"
+#ifdef TARGET_PC
+#include "pc_psx.h"
+#endif
 #include "m_mark_room.h"
 #include "sys_matrix.h"
 #include "m_rcp.h"
@@ -2257,9 +2261,22 @@ static void aMR_RequestStartEmu(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_actor, in
     }
 }
 
-static void aMR_RequestStartEmu_MemoryC(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_actor, int game_idx) {
+static void aMR_RequestStartEmu_List(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_actor, int game_idx,
+                                     int list_source) {
     if (my_room->emu_info.request_flag == FALSE && mMsg_Check_MainHide(mMsg_Get_base_window_p())) {
-        int card_count = aMR_GetCardFamicomCount();
+        int card_count;
+
+#ifdef TARGET_PC
+        my_room->emu_info.list_source = list_source;
+        if (list_source == aMR_EMU_LIST_PSX) {
+            card_count = pc_psx_list_games();
+        } else {
+            card_count = aMR_GetCardFamicomCount();
+        }
+#else
+        (void)list_source;
+        card_count = aMR_GetCardFamicomCount();
+#endif
 
         my_room->emu_info.card_famicom_count = card_count;
         my_room->emu_info.memory_game_select = 0;
@@ -2276,6 +2293,17 @@ static void aMR_RequestStartEmu_MemoryC(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_a
             if (my_room->emu_info.famicom_names_p != NULL) {
                 int n_games = 0;
 
+#ifdef TARGET_PC
+                if (list_source == aMR_EMU_LIST_PSX) {
+                    n_games = pc_psx_list_fill_titles(my_room->emu_info.famicom_names_p,
+                                                      (int)namebuf_size);
+                    if (n_games <= 0) {
+                        my_room->requested_msg_type = aMR_MSG_STATE_NO_PACK_NO_DATA;
+                        my_room->room_msg_flag = TRUE;
+                        return;
+                    }
+                } else
+#endif
                 if (famicom_get_disksystem_titles(&n_games, my_room->emu_info.famicom_names_p, namebuf_size) == FALSE) {
                     my_room->requested_msg_type = aMR_MSG_STATE_NO_PACK_NO_DATA;
                     my_room->room_msg_flag = TRUE;
@@ -2283,6 +2311,20 @@ static void aMR_RequestStartEmu_MemoryC(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_a
                 }
             }
 
+            /* The 1-entry dialog hardcodes a GBA-download choice that makes no
+             * sense for a PlayStation disc, so PSX always uses the 2-entry
+             * layout; its second slot collapses when there is only one title. */
+#ifdef TARGET_PC
+            if (card_count == 1 && list_source == aMR_EMU_LIST_PSX) {
+                my_room->emu_info.request_flag = TRUE;
+                my_room->emu_info.rom_no = game_idx;
+                my_room->emu_info.agb_rom_no = 255;
+                my_room->emu_info.explaination_given_flag = FALSE;
+                my_room->requested_msg_type = aMR_MSG_STATE_QQQ_EMULATOR_MEMORY2;
+                my_room->emu_ftrID = ftr_actor->id;
+                my_room->emu_info._10 = 0;
+            } else
+#endif
             if (card_count == 1) {
                 my_room->emu_info.request_flag = TRUE;
                 my_room->emu_info.rom_no = game_idx;
@@ -2312,10 +2354,27 @@ static void aMR_RequestStartEmu_MemoryC(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_a
     }
 }
 
+static void aMR_RequestStartEmu_MemoryC(MY_ROOM_ACTOR* my_room, FTR_ACTOR* ftr_actor, int game_idx) {
+    aMR_RequestStartEmu_List(my_room, ftr_actor, game_idx, aMR_EMU_LIST_NES);
+}
+
 static void aMR_FamicomEmuCommonMove(FTR_ACTOR* ftr_actor, ACTOR* actorx, GAME* game, int rom_no, int agb_rom_no) {
     MY_ROOM_ACTOR* my_room = (MY_ROOM_ACTOR*)actorx;
 
     if (ftr_actor->switch_changed_flag) {
+#ifdef TARGET_PC
+        /* BASE opens the picker; DIRECT means the furniture already chose its
+         * disc, so it takes the plain yes/no dialog like a stock NES item. */
+        if (rom_no == PSX_EMU_ROM_BASE) {
+            aMR_RequestStartEmu_List(my_room, ftr_actor, rom_no, aMR_EMU_LIST_PSX);
+            return;
+        }
+        if (rom_no == PSX_EMU_ROM_DIRECT) {
+            my_room->emu_info.list_source = aMR_EMU_LIST_PSX;
+            aMR_RequestStartEmu(my_room, ftr_actor, rom_no, 255);
+            return;
+        }
+#endif
         if (rom_no == 0) {
             aMR_RequestStartEmu_MemoryC(my_room, ftr_actor, 0);
         } else {

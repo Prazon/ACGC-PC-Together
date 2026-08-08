@@ -6,7 +6,11 @@ CPPFLAGS := -Inet/include -Iserver/include -Ipc/include -Ithird_party/lua
 CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra -Wpedantic -Werror -MMD -MP
 CFLAGS ?= -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror -MMD -MP
 LDFLAGS ?=
+ifeq ($(OS),Windows_NT)
+LDLIBS ?= -lws2_32 -lbcrypt
+else
 LDLIBS ?= -ldl
+endif
 
 NET_SOURCES := \
 	net/src/protocol.cpp \
