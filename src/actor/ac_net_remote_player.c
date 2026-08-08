@@ -8,6 +8,7 @@
 #include "ac_tools.h"
 #include "bg_item_h.h"
 #include "c_keyframe.h"
+#include "m_actor_shadow.h"
 #include "m_common_data.h"
 #include "m_field_info.h"
 #include "m_malloc.h"
@@ -118,6 +119,9 @@ typedef struct net_remote_render_data_s {
     u8 hand_pos_valid;
     /* Blink phase plus the resolved eye/mouth tile. See mPlib_Face_Step. */
     mPlib_face_state_c face;
+    /* PLAYER_ACTOR::shadow_pos. The shadow keeps a pointer to it rather than a
+     * copy, so it has to outlive the frame that computes it. */
+    xyz_t shadow_pos;
     u8 initialized;
 } NET_REMOTE_RENDER_DATA;
 
@@ -339,6 +343,103 @@ static void Net_Remote_Player_update_animation_speed(AC_NET_REMOTE_PLAYER* remot
             fflush(stdout);
         }
     }
+}
+
+/* Player_actor_SetupShadow: the shadow is a per-main-index property, so a
+ * viewer reproduces it from the replicated action instead of replicating a bit.
+ *
+ * The original indexes a 121-entry s8 table by now_main_index. Reproducing it
+ * as a positional array here would be a second copy that silently rots if the
+ * enum ever gains a state, so only the entries that are *not*
+ * mPlayer_SHADOW_TYPE_NORMAL are named. Every one of them is a state where the
+ * player is inside or underneath something -- in bed, down a pitfall, hidden as
+ * a groundhog, sitting in the boat -- which is what confirms the reading of the
+ * table rather than the ordinal count alone.
+ *
+ * Without this the remote actor never called Shape_Info_init at all, so
+ * shadow_proc stayed NULL and remote players cast no shadow anywhere. */
+static void Net_Remote_Player_update_shadow(AC_NET_REMOTE_PLAYER* remote, NET_REMOTE_RENDER_DATA* render) {
+    ACTOR* actor = (ACTOR*)remote;
+
+    if (!mPlayer_MAIN_INDEX_VALID((int)remote->action)) return;
+
+    switch (remote->action) {
+        /* mPlayer_SHADOW_TYPE_NONE */
+        case mPlayer_INDEX_DMA:
+        case mPlayer_INDEX_WAIT_BED:
+        case mPlayer_INDEX_ROLL_BED:
+        case mPlayer_INDEX_STANDUP_BED:
+        case mPlayer_INDEX_SITDOWN_WAIT:
+        case mPlayer_INDEX_STANDUP:
+        case mPlayer_INDEX_DEMO_GETON_TRAIN_WAIT:
+        case mPlayer_INDEX_HIDE:
+        case mPlayer_INDEX_WASH_CAR:
+        case mPlayer_INDEX_FALL_PITFALL:
+        case mPlayer_INDEX_STRUGGLE_PITFALL:
+        case mPlayer_INDEX_DEMO_GETON_BOAT_SITDOWN:
+        case mPlayer_INDEX_DEMO_GETON_BOAT_WAIT:
+        case mPlayer_INDEX_DEMO_GETON_BOAT_WADE:
+        case mPlayer_INDEX_DEMO_GETOFF_BOAT_STANDUP:
+            actor->shape_info.draw_shadow = FALSE;
+            break;
+        /* mPlayer_SHADOW_TYPE_WORLD_POS */
+        case mPlayer_INDEX_DOOR:
+            actor->shape_info.draw_shadow = TRUE;
+            mActorShadow_SetForceShadowPos(actor, &actor->world.position);
+            break;
+        /* mPlayer_SHADOW_TYPE_ANIME_POS: the shadow stays where the animation's
+         * own translation puts it, so it does not slide out from under a player
+         * walking out of a door. */
+        case mPlayer_INDEX_OUTDOOR:
+            actor->shape_info.draw_shadow = TRUE;
+            cKF_SkeletonInfo_R_AnimationMove_CulcTransToWorld(&render->shadow_pos, &actor->world.position, 0.0f,
+                                                              1000.0f, 0.0f, actor->shape_info.rotation.y,
+                                                              &actor->scale, &render->keyframe0,
+                                                              cKF_ANIMATION_TRANS_XZ | cKF_ANIMATION_TRANS_Y);
+            mActorShadow_SetForceShadowPos(actor, &render->shadow_pos);
+            break;
+        default:
+            actor->shape_info.draw_shadow = TRUE;
+            mActorShadow_UnSetForceShadowPos(actor);
+            break;
+    }
+}
+
+/* Player_actor_set_lean_angle / _recover_lean_angle: the forward pitch a
+ * running player leans into. It is derived from the body animation's playback
+ * speed, not from the ground normal, so a viewer that already reproduces the
+ * animation speed gets the lean for free -- and because the sixth power falls
+ * away so fast, it is visible on a dash (the full 20 degrees) and barely
+ * present at a walk, exactly as the original.
+ *
+ * The four states that lean are the same four Net_Remote_Player_animation_speed
+ * treats as locomotion; every other state calls the recover form, which eases
+ * the pitch back to zero. Both use add_calc_short_angle2, so the remote's pitch
+ * is smoothed over frames rather than snapped. */
+static void Net_Remote_Player_update_lean(AC_NET_REMOTE_PLAYER* remote, NET_REMOTE_RENDER_DATA* render) {
+    ACTOR* actor = (ACTOR*)remote;
+    s16 target = DEG2SHORT_ANGLE2(0.0f);
+
+    switch (remote->action) {
+        case mPlayer_INDEX_WALK:
+        case mPlayer_INDEX_RUN:
+        case mPlayer_INDEX_DASH:
+        case mPlayer_INDEX_DEMO_WALK: {
+            const f32 sp = render->keyframe0.frame_control.speed;
+            f32 lean = SQ(sp) / 0.36f;
+
+            lean = SQ(lean);
+            lean = lean * lean * lean * DEG2SHORT_ANGLE2(20.0f);
+            if (lean > DEG2SHORT_ANGLE2(20.0f)) lean = DEG2SHORT_ANGLE2(20.0f);
+            target = (s16)lean;
+            break;
+        }
+        default:
+            break;
+    }
+
+    add_calc_short_angle2(&actor->shape_info.rotation.x, target, 1.0f - sqrtf(0.5f), DEG2SHORT_ANGLE2(10.0f),
+                          DEG2SHORT_ANGLE2(0.0f));
 }
 
 /* Which item animation belongs to a replicated mPlayer_ITEM_MAIN_* state.
@@ -805,6 +906,20 @@ static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
     actor->world.position.y = mCoBG_GetBgY_OnlyCenter_FromWpos2(actor->world.position, 0.0f);
     actor->last_world_position.y = actor->world.position.y;
     actor->ground_y = actor->world.position.y;
+    /* The same shadow the local player builds in Player_actor_ct. Without it
+     * shadow_proc stays NULL -- Actor_info_make_actor's default -- and
+     * Actor_draw skips the shadow entirely, so every remote player floated over
+     * unshaded ground. ofs_y is restored afterwards because Shape_Info_init
+     * takes it as a parameter and the player's 200.0f is set after the call
+     * there too. */
+    Shape_Info_init(actor, 0.0f, &mAc_ActorShadowCircle, 18.0f, 18.0f);
+    /* Shape_Info_init enables it; hold it off until the appearance has actually
+     * loaded. Actor_draw runs shadow_proc whether or not the draw proc bailed
+     * out, so a remote whose skeleton is not built yet would otherwise be a
+     * shadow on the ground with nobody standing on it.
+     * Net_Remote_Player_update_shadow turns it on from the same branch that
+     * confirms the skeleton. */
+    actor->shape_info.draw_shadow = FALSE;
     actor->shape_info.ofs_y = 200.0f;
     actor->cull_width = 80.0f;
     actor->cull_height = 100.0f;
@@ -967,6 +1082,11 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
                                 render->keyframe0.frame_control.current_frame,
                                 render->keyframe0.frame_control.max_frames, dt);
                 Net_Remote_Player_update_item_scale(remote, render);
+                /* After the keyframe has been advanced: the lean reads the
+                 * speed that was just applied, and the door shadow reads the
+                 * animation translation of the frame about to be drawn. */
+                Net_Remote_Player_update_lean(remote, render);
+                Net_Remote_Player_update_shadow(remote, render);
                 Net_Remote_Player_refresh_item(remote, game);
                 if (render->item_visible && render->item_skeleton_loaded) {
                     if (mPlayer_ITEM_IS_BALLOON(render->loaded_item_kind)) {
