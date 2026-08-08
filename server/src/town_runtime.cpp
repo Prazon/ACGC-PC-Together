@@ -421,6 +421,124 @@ bool TownRuntime::configure_island_topology(std::string& error) {
     return true;
 }
 
+
+/* Bridges the Lua host to the town's authorities.
+ *
+ * Everything a mod asks for goes through the same path a client request takes:
+ * grant_item lands in the mailbox via the mail authority so it is journaled and
+ * auditable, and set_weather moves the authoritative clock so every player sees
+ * the same sky. A mod never writes town state directly. */
+class TownRuntime::ModWorldAdapter : public ModWorld {
+public:
+    explicit ModWorldAdapter(TownRuntime& runtime) : runtime_(runtime) {}
+
+    acnet::TownDate today() const override {
+        return acnet::town_date_from_seconds(runtime_.clock_.state().town_unix_seconds);
+    }
+
+    int weather() const override { return static_cast<int>(runtime_.clock_.state().weather); }
+
+    std::vector<std::uint64_t> players_online() const override {
+        std::vector<std::uint64_t> accounts;
+        accounts.reserve(runtime_.connections_.size());
+        for (const auto& entry : runtime_.connections_) {
+            if (entry.second.account != 0) accounts.push_back(entry.second.account);
+        }
+        std::sort(accounts.begin(), accounts.end());
+        return accounts;
+    }
+
+    bool holiday_active(const std::string& id) const override {
+        const acnet::TownDate date = today();
+        for (const ResolvedHoliday& holiday : runtime_.mod_calendar_) {
+            if (holiday.id == id && holiday_active_at(holiday, date)) return true;
+        }
+        return false;
+    }
+
+    bool set_weather(int kind) override {
+        if (kind < 0 || kind > 3) return false;
+        if (!runtime_.clock_.set_weather(static_cast<Weather>(kind), 1)) return false;
+        std::string error;
+        return runtime_.commit_state(131, error);
+    }
+
+    bool grant_item(std::uint64_t account, std::uint16_t item) override {
+        std::string error;
+        /* Reuses the operator gift path, so the item arrives as mail, bumps the
+         * mailbox revision a player transaction would, and is journaled before
+         * this returns. A mod told the grant succeeded can rely on it. */
+        return runtime_.send_mail(account, item, std::string(), error);
+    }
+
+    void announce(const std::string& mod_id, const std::string& key) override {
+        runtime_.record_event("mod " + mod_id + " announced " + key);
+    }
+
+    bool store(const std::string& mod_id, const std::string& key, const std::string& value) override {
+        return runtime_.database_.set_mod_state(mod_id, key, value, wall_unix_seconds());
+    }
+
+    bool load(const std::string& mod_id, const std::string& key, std::string& value) const override {
+        return runtime_.database_.get_mod_state(mod_id, key, value);
+    }
+
+private:
+    TownRuntime& runtime_;
+};
+
+bool TownRuntime::resolve_mod_calendar(int year, std::string& error) {
+    if (year == mod_calendar_year_) return true;
+    std::vector<ResolvedHoliday> resolved;
+    for (const HolidaySpec& spec : mod_host_.holidays()) {
+        std::string detail;
+        if (!resolve_holiday(spec, year, resolved, detail)) {
+            /* A spec that validated at registration should not fail here, so
+             * this is a bug rather than a mod's fault -- report it and keep the
+             * previous calendar rather than serving a half-resolved one. */
+            error = "mod calendar: " + detail;
+            return false;
+        }
+        if (resolved.size() > kMaxModHolidays) {
+            error = "mod calendar: more than " + std::to_string(kMaxModHolidays) + " occurrences in " +
+                    std::to_string(year);
+            return false;
+        }
+    }
+    mod_calendar_.swap(resolved);
+    mod_calendar_year_ = year;
+    mod_active_holidays_.clear();
+    return true;
+}
+
+void TownRuntime::update_mod_holiday_edges() {
+    if (mod_calendar_.empty()) return;
+    const acnet::TownDate date = acnet::town_date_from_seconds(clock_.state().town_unix_seconds);
+
+    std::vector<std::string> active;
+    for (const ResolvedHoliday& holiday : mod_calendar_) {
+        if (holiday_active_at(holiday, date)) active.push_back(holiday.id);
+    }
+    std::sort(active.begin(), active.end());
+
+    /* Two sorted lists, so an edge is a set difference. Firing on the edge
+     * rather than on every tick is what lets a mod treat holiday_begin as
+     * "this happened once". */
+    for (const std::string& id : active) {
+        if (!std::binary_search(mod_active_holidays_.begin(), mod_active_holidays_.end(), id)) {
+            mod_host_.call_holiday_hook(id, true);
+        }
+    }
+    for (const std::string& id : mod_active_holidays_) {
+        if (!std::binary_search(active.begin(), active.end(), id)) {
+            mod_host_.call_holiday_hook(id, false);
+        }
+    }
+    mod_active_holidays_.swap(active);
+}
+
+TownRuntime::~TownRuntime() = default;
+
 bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
     error.clear();
     if (initialized_ || config_.town_id == 0 || wall_seconds < 0) {
@@ -570,6 +688,27 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
                              }, replay, error)) return false;
     if (!latest_state.empty() && !decode_state(latest_state, error)) return false;
     if (!configure_zone_topology(error)) return false;
+    /* Mods load once, before the first client can connect. The set is fixed for
+     * the process lifetime: changing it mid-session would desync the calendar
+     * clients already hold. */
+    mod_world_ = std::make_unique<ModWorldAdapter>(*this);
+    mod_host_.set_world(mod_world_.get());
+    if (!mod_registry_.scan(config_.data_directory / "mods", error)) return false;
+    if (!mod_host_.load_all(mod_registry_, ModLimits{}, error)) return false;
+    mod_host_.drop_quarantined_holidays();
+    if (!mod_registry_.empty()) {
+        record_event("loaded " + std::to_string(mod_host_.loaded_ids().size()) + " mod(s)");
+    }
+    /* Resolve before the first client can connect. A town whose calendar only
+     * appeared on the next minute boundary would serve one baseline without it,
+     * and a client that joined in that window would hold a calendar the town
+     * disagreed with. */
+    if (!mod_host_.holidays().empty()) {
+        const int year = acnet::town_date_from_seconds(clock_.state().town_unix_seconds).year;
+        if (!resolve_mod_calendar(year, error)) return false;
+        update_mod_holiday_edges();
+    }
+
     constexpr std::int64_t hour_seconds = 60 * 60;
     constexpr std::int64_t day_seconds = 24 * hour_seconds;
     const std::int64_t town_time = clock_.state().town_unix_seconds;
@@ -2027,6 +2166,19 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
         last_clock_minute_ = clock_minute;
         last_weather_ = clock_.state().weather;
         last_weather_intensity_ = clock_.state().weather_intensity;
+
+        /* Mod holidays are checked on the minute rather than every tick: their
+         * windows have hour granularity, so a per-tick sweep would be sixty
+         * times the work for the same answer. Re-resolving on a year change
+         * also covers a town whose clock was moved by an operator. */
+        if (!mod_host_.holidays().empty()) {
+            const int year = acnet::town_date_from_seconds(clock_.state().town_unix_seconds).year;
+            if (year != mod_calendar_year_) {
+                std::string detail;
+                if (!resolve_mod_calendar(year, detail)) record_event(detail);
+            }
+            update_mod_holiday_edges();
+        }
     }
     zones_.expire(movement_.current_tick());
     for (auto transition = door_transitions_.begin(); transition != door_transitions_.end();) {

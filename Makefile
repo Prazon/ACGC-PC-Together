@@ -114,19 +114,19 @@ $(BUILD_DIR)/AnimalCrossingServer: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) 
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-$(BUILD_DIR)/protocol_fuzz: $(NET_OBJECTS) $(FUZZ_OBJECT)
+$(BUILD_DIR)/protocol_fuzz: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(FUZZ_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-$(BUILD_DIR)/town_load: $(NET_OBJECTS) $(LOAD_OBJECT)
+$(BUILD_DIR)/town_load: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(LOAD_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-$(BUILD_DIR)/town_chaos: $(NET_OBJECTS) $(CHAOS_OBJECT)
+$(BUILD_DIR)/town_chaos: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(CHAOS_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
-$(BUILD_DIR)/town_month_soak: $(NET_OBJECTS) $(MONTH_SOAK_OBJECT)
+$(BUILD_DIR)/town_month_soak: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(MONTH_SOAK_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
 

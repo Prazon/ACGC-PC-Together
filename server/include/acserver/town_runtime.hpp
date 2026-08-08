@@ -20,6 +20,8 @@
 #include "acserver/persistence.hpp"
 #include "acserver/database.hpp"
 #include "acserver/town_clock.hpp"
+#include "acserver/mod_host.hpp"
+#include "acserver/mod_registry.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -98,6 +100,9 @@ struct RuntimeEvent {
 class TownRuntime {
 public:
     explicit TownRuntime(TownRuntimeConfig config);
+    /* Out of line because mod_world_ is a unique_ptr to a type completed only
+     * in the .cpp; the implicit destructor cannot see it here. */
+    ~TownRuntime();
 
     bool initialize(std::int64_t wall_unix_seconds, std::string& error);
     bool step(std::uint64_t monotonic_ms, std::int64_t wall_unix_seconds, std::string& error);
@@ -167,6 +172,10 @@ public:
         return world_.tile({zone, x, z});
     }
     const ClockState& clock_state() const { return clock_.state(); }
+    /* Mod state, for the operator console and tests. */
+    const std::vector<ResolvedHoliday>& mod_calendar() const { return mod_calendar_; }
+    std::array<std::uint8_t, 32> mod_manifest_digest() const { return mod_registry_.manifest_digest(); }
+    std::vector<std::string> loaded_mods() const { return mod_host_.loaded_ids(); }
     std::optional<acnet::Transform> player_transform(acnet::AccountId account) const {
         const acnet::PlayerView* player = players_.by_account(account);
         return player == nullptr ? std::nullopt : std::optional<acnet::Transform>(player->transform);
@@ -253,6 +262,13 @@ private:
     /* Calendar year of the town clock, which is what the new year's grab bag
      * costs. */
     std::uint16_t town_year() const;
+    /* Resolves every registered holiday against `year` and replaces the
+     * calendar. Idempotent: calling it twice for the same year is a no-op. */
+    bool resolve_mod_calendar(int year, std::string& error);
+    /* Fires holiday_begin/holiday_end for windows that opened or closed since
+     * the last call. */
+    void update_mod_holiday_edges();
+
     std::vector<std::uint8_t> encode_state() const;
     bool decode_state(const std::vector<std::uint8_t>& payload, std::string& error);
     bool commit_state(std::uint16_t record_type, std::string& error);
@@ -294,6 +310,20 @@ private:
     acnet::HousingAuthority housing_;
     acnet::DeltaLog deltas_;
     TownClock clock_;
+
+    /* Mods. The registry and host are owned here because a mod's holidays are
+     * town state: they are resolved against the authoritative clock, journaled,
+     * and replicated. `mod_world_` is the adapter that lets Lua reach the same
+     * authorities a client request would. */
+    ModRegistry mod_registry_;
+    ModHost mod_host_;
+    class ModWorldAdapter;
+    std::unique_ptr<ModWorldAdapter> mod_world_;
+    std::vector<ResolvedHoliday> mod_calendar_;
+    int mod_calendar_year_ = 0;
+    /* Which holidays were inside their window at the last check, so
+     * begin/end hooks fire exactly once per edge rather than every tick. */
+    std::vector<std::string> mod_active_holidays_;
     PersistenceStore persistence_;
     DatabaseStore database_;
     std::unordered_map<acnet::SessionId, Connection> connections_;

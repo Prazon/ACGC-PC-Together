@@ -49,6 +49,9 @@ CREATE INDEX IF NOT EXISTS mail_recipient_idx ON mail_metadata(recipient_account
         R"SQL(
 CREATE TABLE IF NOT EXISTS housing_metadata(house_id INTEGER PRIMARY KEY,owner_account_id INTEGER NOT NULL UNIQUE,original_slot INTEGER NOT NULL CHECK(original_slot BETWEEN 0 AND 3),zone_id INTEGER NOT NULL,revision INTEGER NOT NULL);
 )SQL",
+        R"SQL(
+CREATE TABLE IF NOT EXISTS mod_state(mod_id TEXT NOT NULL,key TEXT NOT NULL,value TEXT NOT NULL,updated_at INTEGER NOT NULL,PRIMARY KEY(mod_id,key)) WITHOUT ROWID;
+)SQL",
     };
     return values;
 }
@@ -232,6 +235,46 @@ bool DatabaseStore::set_banned(acnet::AccountId account, bool banned, std::int64
     if (account == 0 || !record_account(account, now, error)) return false;
     return impl_->execute("UPDATE accounts SET banned=" + std::string(banned ? "1" : "0") +
                           " WHERE account_id=" + std::to_string(account) + ";", error);
+}
+
+namespace {
+
+/* SQLite string literal escaping. Mod ids are already restricted to [a-z0-9-],
+ * but keys and values come from Lua, so they are escaped rather than trusted. */
+std::string sql_quote(const std::string& value) {
+    std::string out = "'";
+    for (const char c : value) {
+        if (c == '\'') out.push_back('\'');
+        out.push_back(c);
+    }
+    out.push_back('\'');
+    return out;
+}
+
+} // namespace
+
+bool DatabaseStore::set_mod_state(const std::string& mod_id, const std::string& key,
+                                  const std::string& value, std::int64_t now) {
+    if (mod_id.empty() || key.empty()) return false;
+    std::string error;
+    return impl_->execute("INSERT INTO mod_state(mod_id,key,value,updated_at) VALUES(" +
+                              sql_quote(mod_id) + "," + sql_quote(key) + "," + sql_quote(value) + "," +
+                              std::to_string(now) +
+                              ") ON CONFLICT(mod_id,key) DO UPDATE SET value=excluded.value,"
+                              "updated_at=excluded.updated_at;",
+                          error);
+}
+
+bool DatabaseStore::get_mod_state(const std::string& mod_id, const std::string& key,
+                                  std::string& value) const {
+    if (mod_id.empty() || key.empty()) return false;
+    std::string error;
+    const std::string found = impl_->query("SELECT value FROM mod_state WHERE mod_id=" + sql_quote(mod_id) +
+                                               " AND key=" + sql_quote(key) + " LIMIT 1;",
+                                           error);
+    if (!error.empty() || found.empty()) return false;
+    value = found;
+    return true;
 }
 
 bool DatabaseStore::is_banned(acnet::AccountId account, bool& banned, std::string& error) const {

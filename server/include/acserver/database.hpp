@@ -30,6 +30,15 @@ public:
     bool set_banned(acnet::AccountId account, bool banned, std::int64_t unix_seconds, std::string& error);
     bool is_banned(acnet::AccountId account, bool& banned, std::string& error) const;
 
+    /* Per-mod key/value behind calendar.store / calendar.load. Keyed by mod id
+     * so one mod cannot read or overwrite another's state. Both are best-effort
+     * from a mod's point of view: a false return reaches Lua as a false result
+     * rather than an error, because losing a mod's bookkeeping must not take
+     * the town down. */
+    bool set_mod_state(const std::string& mod_id, const std::string& key, const std::string& value,
+                       std::int64_t unix_seconds);
+    bool get_mod_state(const std::string& mod_id, const std::string& key, std::string& value) const;
+
     int schema_version(std::string& error) const;
     std::string journal_mode(std::string& error) const;
     std::filesystem::path path() const;

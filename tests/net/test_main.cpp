@@ -616,18 +616,35 @@ void sqlite_metadata_uses_wal_and_migrations() {
     {
         acserver::DatabaseStore database(root);
         CHECK(database.initialize(error));
-        CHECK(database.schema_version(error) == 3);
+        CHECK(database.schema_version(error) == 4);   /* 4 adds mod_state */
         CHECK(database.journal_mode(error) == "wal");
         CHECK(database.record_account(42, 1700000000, error));
         CHECK(database.record_session(91, 42, true, 1700000001, error));
         CHECK(database.record_transaction(1, 42, 20, acnet::ResultCode::Ok, 1700000002, error));
         CHECK(database.audit(42, "test_action", "bounded details", 1700000003, error));
+
+        /* mod_state backs calendar.store/load. Scoped per mod so one mod cannot
+         * read or overwrite another's bookkeeping. */
+        std::string stored;
+        CHECK(!database.get_mod_state("lantern-night", "awarded_year", stored));
+        CHECK(database.set_mod_state("lantern-night", "awarded_year", "n2026", 1700000004));
+        CHECK(database.get_mod_state("lantern-night", "awarded_year", stored));
+        CHECK(stored == "n2026");
+        CHECK(!database.get_mod_state("other-mod", "awarded_year", stored));
+        /* Upsert rather than a duplicate-key failure. */
+        CHECK(database.set_mod_state("lantern-night", "awarded_year", "n2027", 1700000005));
+        CHECK(database.get_mod_state("lantern-night", "awarded_year", stored));
+        CHECK(stored == "n2027");
+        /* A quote in a value must not break the statement. */
+        CHECK(database.set_mod_state("lantern-night", "note", "it's fine", 1700000006));
+        CHECK(database.get_mod_state("lantern-night", "note", stored));
+        CHECK(stored == "it's fine");
         CHECK(std::filesystem::exists(database.path()));
         CHECK(!std::filesystem::exists(root / "config.toml"));
     }
     acserver::DatabaseStore reopened(root);
     CHECK(reopened.initialize(error));
-    CHECK(reopened.schema_version(error) == 3);
+    CHECK(reopened.schema_version(error) == 4);
     CHECK(reopened.journal_mode(error) == "wal");
 }
 
@@ -1566,6 +1583,96 @@ void mod_registration_is_load_time_only() {
     CHECK(!host.call_hook("sneaky", "on_hour"));
     CHECK(host.last_error("sneaky").find("while the mod is loading") != std::string::npos);
     CHECK(host.holidays().size() == 1);
+}
+
+/* The whole P2 path against a real TownRuntime: a mod on disk is discovered,
+ * sandboxed, loaded, its holidays resolved against the authoritative clock, and
+ * its persisted state survives a restart. */
+void mod_calendar_drives_a_real_town() {
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() / ("acgc-mod-town-" + std::to_string(unique));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(path, error); }
+    } cleanup{root};
+
+    const std::filesystem::path town = root / "town";
+    std::filesystem::create_directories(town / "mods" / "lantern-night");
+    {
+        std::ofstream manifest(town / "mods" / "lantern-night" / "mod.toml");
+        manifest << "id = \"lantern-night\"\nname = \"Lantern Night\"\nversion = \"1.0.0\"\n"
+                 << "api_version = " << acserver::kModApiVersion << "\n";
+    }
+    {
+        std::ofstream entry(town / "mods" / "lantern-night" / "init.lua");
+        entry << "calendar.register {\n"
+                 "  id = 'lantern_night', name = 'holiday_name',\n"
+                 "  date = { month = 10, day = 7 },\n"
+                 "  hours = { from = 18, to = 22 },\n"
+                 "}\n"
+                 "calendar.register {\n"
+                 "  id = 'harvest', name = 'harvest_name',\n"
+                 "  date = { month = 11, week = 4, weekday = 'thursday' },\n"
+                 "}\n"
+                 "function on_holiday_begin(id)\n"
+                 "  calendar.store('last_begin', id)\n"
+                 "end\n";
+    }
+
+    acserver::TownRuntimeConfig config;
+    config.port = 0;
+    config.data_directory = town;
+    config.connection_timeout_ms = 60000;
+    config.invite_key = "mod-town-key";
+    /* A fixed clock parked inside the Lantern Night window, so the holiday is
+     * live the moment the town starts. 2026-10-07 19:00 UTC. */
+    config.clock.mode = acserver::ClockMode::Fixed;
+    config.clock.sync_to_system_clock = false;
+    config.clock.starting_town_unix_seconds = 1791399600;
+
+    std::string error;
+    {
+        acserver::TownRuntime server(config);
+        CHECK(server.initialize(1700000000, error));
+
+        /* The mod loaded and its holidays resolved for the town's year. */
+        CHECK(server.loaded_mods().size() == 1);
+        CHECK(server.loaded_mods()[0] == "lantern-night");
+        const std::vector<acserver::ResolvedHoliday>& calendar = server.mod_calendar();
+        CHECK(calendar.size() == 2);
+        CHECK(calendar[0].id == "lantern-night.lantern_night");
+        CHECK(calendar[0].month == 10 && calendar[0].day == 7);
+        CHECK(calendar[1].id == "lantern-night.harvest");
+        CHECK(calendar[1].month == 11 && calendar[1].day == 26);   /* Thanksgiving 2026 */
+
+        /* A digest over the mod set, which is what ServerHello will advertise. */
+        const std::array<std::uint8_t, 32> digest = server.mod_manifest_digest();
+        bool any = false;
+        for (const std::uint8_t byte : digest) any = any || byte != 0;
+        CHECK(any);
+
+        /* Stepping past a minute boundary fires the begin edge. */
+        for (int i = 0; i < 4; ++i) {
+            CHECK(server.step(static_cast<std::uint64_t>(1000 + i * 30000), 1700000000 + i * 30, error));
+        }
+        CHECK(server.shutdown(error));
+    }
+
+    /* The town restarts, re-resolves the same calendar, and the mod's stored
+     * state is still there. */
+    {
+        acserver::TownRuntime server(config);
+        CHECK(server.initialize(1700001000, error));
+        CHECK(server.mod_calendar().size() == 2);
+
+        acserver::DatabaseStore database(town);
+        CHECK(database.initialize(error));
+        std::string stored;
+        CHECK(database.get_mod_state("lantern-night", "last_begin", stored));
+        CHECK(stored == "slantern_night");   /* 's' tag plus the unqualified id */
+        CHECK(server.shutdown(error));
+    }
 }
 
 void town_configuration_is_loaded_and_validated() {
@@ -6079,6 +6186,7 @@ int main() {
         {"mod calendar effects route through runtime", mod_calendar_effects_route_through_the_runtime},
         {"mod calendar store round trips", mod_calendar_store_round_trips},
         {"mod registration is load time only", mod_registration_is_load_time_only},
+        {"mod calendar drives a real town", mod_calendar_drives_a_real_town},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
