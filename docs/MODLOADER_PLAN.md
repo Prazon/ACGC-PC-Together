@@ -458,6 +458,27 @@ mod entry above `FTR_NUM` and the static entry below.
 - *Against:* every read site must be found and converted. Missing one is exactly the §3.1 wild
   dereference, and there is no compiler assistance in finding them.
 
+**Blocker found while attempting Option A (2026-08-08).** It is not as simple as renaming the
+symbol. `ac_furniture_profile_data.c_inc` is included into **two** translation units:
+
+```
+src/actor/ac_furniture_data.c_inc:18   -> reaches ac_my_room.c
+src/game/m_catalog_ovl.c:51
+```
+
+Today each gets its own `static` copy — wasteful but legal, and the two are identical so nothing
+notices. Making the symbol a non-static pointer so it can be repointed produces **two definitions
+of the same global**, which is a duplicate-symbol link error, not a compile error. A
+`-fsyntax-only` check passes; the link fails.
+
+Any real Option A therefore has to first make the table single-definition — declared `extern` in a
+header and defined in exactly one TU — which is a larger and more invasive decomp change than
+"rename and add a pointer". Whoever picks this up should budget for that, and should verify with a
+**link**, not a syntax check.
+
+The same question applies to every other `.c_inc` table before it is grown: check how many parent
+TUs include it.
+
 **Recommendation: Option A.** It converts an open-ended "did we find every read?" problem into a
 closed "did we grow every table?" problem, and the latter is enforceable with the
 `static_assert` set from §5.2 — which then does double duty. Option B's failure mode is a crash
