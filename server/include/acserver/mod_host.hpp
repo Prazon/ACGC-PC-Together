@@ -1,5 +1,6 @@
 #pragma once
 
+#include "acserver/mod_calendar.hpp"
 #include "acserver/mod_registry.hpp"
 
 #include <cstddef>
@@ -65,6 +66,18 @@ public:
     std::vector<std::string> loaded_ids() const;
     const ModMetrics& metrics() const { return metrics_; }
 
+    /* Every holiday declared by every loaded mod, in load order, with ids
+     * namespaced <mod-id>.<id>. Registration happens during load_all: a mod
+     * calls calendar.register() at the top level of its chunk, so by the time
+     * load_all returns the set is complete and does not change again for the
+     * process lifetime. That is what lets the resolved calendar be computed
+     * once per town day and replicated as plain data. */
+    const std::vector<HolidaySpec>& holidays() const { return holidays_; }
+
+    /* Holidays declared by a mod that was later quarantined are dropped: a mod
+     * that cannot run its hooks should not still be shaping the calendar. */
+    void drop_quarantined_holidays();
+
     /* Diagnostics for tests and the operator console: the last error a mod
      * produced, empty if it has not failed. */
     std::string last_error(const std::string& mod_id) const;
@@ -72,6 +85,7 @@ public:
 private:
     struct Mod;
     std::vector<std::unique_ptr<Mod>> mods_;
+    std::vector<HolidaySpec> holidays_;
     ModLimits limits_;
     ModMetrics metrics_;
 

@@ -1215,6 +1215,146 @@ void mod_holiday_windows_are_bounded() {
     CHECK(acserver::holiday_rumor_at(newyear[0], 2026, december));
 }
 
+/* The whole P2 path: a mod written the way a mod author would write it,
+ * declaring holidays through the Lua API, resolved against a real year. */
+void mod_calendar_api_registers_holidays() {
+    const auto mods = modtest::make_mods_dir("calapi");
+    modtest::write_mod(mods.root, "lantern-night",
+        "calendar.register {\n"
+        "  id = 'lantern_night',\n"
+        "  name = 'holiday_name',\n"
+        "  date = { month = 10, day = 7 },\n"
+        "  hours = { from = 18, to = 22 },\n"
+        "  rumor = { days_before = 6 },\n"
+        "}\n"
+        "calendar.register {\n"
+        "  id = 'harvest',\n"
+        "  name = 'harvest_name',\n"
+        "  date = { month = 11, week = 4, weekday = 'thursday' },\n"
+        "  hours = { from = 15, to = 20 },\n"
+        "}\n"
+        "calendar.register {\n"
+        "  id = 'tourney',\n"
+        "  name = 'tourney_name',\n"
+        "  date = { month = 6, every = 'sunday' },\n"
+        "  marker = false,\n"
+        "}\n"
+        "calendar.on('day_start', function() end)\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(!host.quarantined("lantern-night"));
+    CHECK(host.last_error("lantern-night").empty());
+
+    const std::vector<acserver::HolidaySpec>& specs = host.holidays();
+    CHECK(specs.size() == 3);
+    /* Ids are namespaced so two mods can both declare "harvest". */
+    CHECK(specs[0].id == "lantern-night.lantern_night");
+    CHECK(specs[0].hour_from == 18 && specs[0].hour_to == 22);
+    CHECK(specs[0].rumor_days_before == 6);
+    CHECK(specs[1].recurrence == acserver::Recurrence::NthWeekday);
+    CHECK(specs[1].weekday == 4);
+    CHECK(specs[2].recurrence == acserver::Recurrence::EveryWeekday);
+    CHECK(!specs[2].marker);
+
+    /* calendar.on installs the global the host calls by name. */
+    CHECK(host.call_hook("lantern-night", "on_day_start"));
+
+    /* Resolved against 2026: 7 October, Thanksgiving on the 26th, four Sundays. */
+    std::vector<acserver::ResolvedHoliday> resolved;
+    for (const acserver::HolidaySpec& spec : specs) {
+        CHECK(acserver::resolve_holiday(spec, 2026, resolved, error));
+    }
+    CHECK(resolved.size() == 6);
+    CHECK(resolved[0].month == 10 && resolved[0].day == 7);
+    CHECK(resolved[1].month == 11 && resolved[1].day == 26);
+
+    acnet::TownDate date;
+    date.year = 2026;
+    date.month = 10;
+    date.day = 7;
+    date.hour = 19;
+    CHECK(acserver::holiday_active_at(resolved[0], date));
+}
+
+/* A malformed spec fails at registration with a message naming the problem,
+ * and takes the whole mod with it rather than half-registering a calendar. */
+void mod_calendar_api_rejects_bad_specs() {
+    const auto bad_hours = modtest::make_mods_dir("badhours");
+    modtest::write_mod(bad_hours.root, "broken",
+        "calendar.register { id = 'ok', name = 'n', date = { month = 1, day = 1 } }\n"
+        "calendar.register { id = 'bad', name = 'n', date = { month = 1, day = 1 },\n"
+        "                    hours = { from = 22, to = 6 } }\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(bad_hours.root, error));
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, acserver::ModLimits{}, error));
+    CHECK(host.quarantined("broken"));
+    CHECK(host.last_error("broken").find("hour_to") != std::string::npos);
+    /* The first, valid registration is rolled back too: half a mod's calendar
+     * is worse than none of it. */
+    CHECK(host.holidays().empty());
+
+    /* A date table that selects no recurrence at all. */
+    const auto no_form = modtest::make_mods_dir("noform");
+    modtest::write_mod(no_form.root, "vague",
+        "calendar.register { id = 'x', name = 'n', date = { month = 5 } }\n");
+    acserver::ModRegistry vague_registry;
+    CHECK(vague_registry.scan(no_form.root, error));
+    acserver::ModHost vague_host;
+    CHECK(vague_host.load_all(vague_registry, acserver::ModLimits{}, error));
+    CHECK(vague_host.quarantined("vague"));
+
+    /* A misspelled weekday is named rather than silently treated as Sunday. */
+    const auto misspelled = modtest::make_mods_dir("weekday");
+    modtest::write_mod(misspelled.root, "typo",
+        "calendar.register { id = 'x', name = 'n',\n"
+        "                    date = { month = 5, week = 2, weekday = 'sundy' } }\n");
+    acserver::ModRegistry typo_registry;
+    CHECK(typo_registry.scan(misspelled.root, error));
+    acserver::ModHost typo_host;
+    CHECK(typo_host.load_all(typo_registry, acserver::ModLimits{}, error));
+    CHECK(typo_host.quarantined("typo"));
+    CHECK(typo_host.last_error("typo").find("sundy") != std::string::npos);
+}
+
+/* Two mods declaring the same local id must not collide, and a mod that is
+ * quarantined later stops shaping the calendar. */
+void mod_calendar_holidays_are_namespaced() {
+    const auto mods = modtest::make_mods_dir("namespace");
+    modtest::write_mod(mods.root, "alpha",
+        "calendar.register { id = 'harvest', name = 'n', date = { month = 9, day = 1 } }\n"
+        "function on_hour() error('alpha always fails') end\n");
+    modtest::write_mod(mods.root, "beta",
+        "calendar.register { id = 'harvest', name = 'n', date = { month = 9, day = 2 } }\n"
+        "function on_hour() end\n");
+
+    acserver::ModRegistry registry;
+    std::string error;
+    CHECK(registry.scan(mods.root, error));
+
+    acserver::ModLimits limits;
+    limits.errors_to_quarantine = 1;
+    acserver::ModHost host;
+    CHECK(host.load_all(registry, limits, error));
+    CHECK(host.holidays().size() == 2);
+    CHECK(host.holidays()[0].id == "alpha.harvest");
+    CHECK(host.holidays()[1].id == "beta.harvest");
+
+    /* alpha fails its hook and is quarantined; its holiday goes with it. */
+    CHECK(!host.call_hook("alpha", "on_hour"));
+    CHECK(host.quarantined("alpha"));
+    host.drop_quarantined_holidays();
+    CHECK(host.holidays().size() == 1);
+    CHECK(host.holidays()[0].id == "beta.harvest");
+}
+
 void town_configuration_is_loaded_and_validated() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -5717,6 +5857,9 @@ int main() {
         {"mod holidays resolve per year", mod_holidays_resolve_per_year},
         {"mod holiday specs are validated", mod_holiday_specs_are_validated},
         {"mod holiday windows are bounded", mod_holiday_windows_are_bounded},
+        {"mod calendar api registers holidays", mod_calendar_api_registers_holidays},
+        {"mod calendar api rejects bad specs", mod_calendar_api_rejects_bad_specs},
+        {"mod calendar holidays are namespaced", mod_calendar_holidays_are_namespaced},
         {"client network INI", client_network_ini_is_loaded_and_validated},
         {"packet round trip and corruption", packet_round_trip_and_corruption},
         {"protocol rejects truncation/nonfinite", protocol_rejects_truncated_and_nonfinite},
