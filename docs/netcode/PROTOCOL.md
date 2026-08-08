@@ -1,4 +1,4 @@
-# Dedicated town protocol v32
+# Dedicated town protocol v33
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -198,6 +198,16 @@ way the visitor alone did not explain. Villager *schedules* need no separate
 replication — they are derived from the roster, the town clock and these flags,
 all of which are now shared, and positions come from the simulation host
 regardless.
+
+v33 adds the two **seasonal transition offsets** to the same payload. They are
+not event data — they live in the common block — but they are the same kind of
+thing: a value the town rolls once and everyone must share. Each shifts by up to
+five days when a species stops or starts appearing, and each client was rolling
+its own, so two players could disagree about whether it was still bass season.
+That decides which fish and insects exist at all.
+
+**Individual fish and insect spawns are still per-client** and are a larger
+problem — see `CURRENT_STATUS.md`.
 
 Every client used to roll its own, so the *contents* diverged even where the
 date did not: two players walked into Redd's tent and were offered different

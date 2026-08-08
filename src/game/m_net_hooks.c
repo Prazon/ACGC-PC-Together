@@ -2004,22 +2004,40 @@ _Static_assert(sizeof(mEv_special_u) + sizeof(mEv_weekly_u) + sizeof(u32) <=
  * place so the two orders cannot drift apart. */
 #define NET_EVENT_WEEKLY_OFFSET (sizeof(mEv_special_u))
 #define NET_EVENT_FLAGS_OFFSET (sizeof(mEv_special_u) + sizeof(mEv_weekly_u))
+#define NET_EVENT_SEASON_OFFSET (NET_EVENT_FLAGS_OFFSET + sizeof(u32))
 
+_Static_assert(NET_EVENT_SEASON_OFFSET + 2 <= ACNET_SPECIAL_EVENT_PAYLOAD_BYTES,
+               "town event payload no longer fits the wire field");
+
+/* The payload also carries the two seasonal transition offsets.
+ *
+ * They are not event data -- they live in the common block -- but they are the
+ * same kind of thing: a value the town rolls once and everyone must share. Each
+ * shifts by up to five days when a species stops or starts appearing, and each
+ * client was rolling its own, so two players could disagree about whether it
+ * was still bass season. That decides which fish and insects exist at all,
+ * which is a stranger inconsistency than any single spawn. */
 static void Net_PackEventPayload(u8* payload) {
     mEv_event_save_c* save = &Save_Get(event_save_data);
+    const u8 seasons[2] = { Save_Get(gyoei_term_transition_offset), Save_Get(insect_term_transition_offset) };
 
     memset(payload, 0, ACNET_SPECIAL_EVENT_PAYLOAD_BYTES);
     memcpy(payload, &save->special.event, sizeof(save->special.event));
     memcpy(payload + NET_EVENT_WEEKLY_OFFSET, &save->weekly, sizeof(save->weekly));
     memcpy(payload + NET_EVENT_FLAGS_OFFSET, &save->flags, sizeof(save->flags));
+    memcpy(payload + NET_EVENT_SEASON_OFFSET, seasons, sizeof(seasons));
 }
 
 static void Net_UnpackEventPayload(const u8* payload) {
     mEv_event_save_c* save = &Save_Get(event_save_data);
+    u8 seasons[2];
 
     memcpy(&save->special.event, payload, sizeof(save->special.event));
     memcpy(&save->weekly, payload + NET_EVENT_WEEKLY_OFFSET, sizeof(save->weekly));
     memcpy(&save->flags, payload + NET_EVENT_FLAGS_OFFSET, sizeof(save->flags));
+    memcpy(seasons, payload + NET_EVENT_SEASON_OFFSET, sizeof(seasons));
+    Save_Set(gyoei_term_transition_offset, seasons[0]);
+    Save_Set(insect_term_transition_offset, seasons[1]);
 }
 
 /* The session ending under the player's feet.

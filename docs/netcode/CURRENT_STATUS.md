@@ -1894,6 +1894,52 @@ NPC gifts are all server-owned; schedules are derived from state that already
 is. What remains is watching it run -- see the tuning note on positions above,
 which is the piece most likely to need adjustment on screen.
 
+## Fish, insects and the fishing float (2026-08-08)
+
+### Delivered: the seasonal offsets (protocol v33)
+
+`gyoei_term_transition_offset` and `insect_term_transition_offset` shift by up
+to five days when a species stops or starts appearing, and every client rolled
+its own. Two players could disagree about whether it was still bass season --
+which decides *which fish and insects exist at all*, a stranger inconsistency
+than any individual spawn. They ride the town event payload now, since they are
+the same kind of thing: a value the town rolls once and everyone must share.
+
+### Not delivered: individual spawns, and why
+
+Fish and insects are rolled per client from `fqrand()` (`ac_set_ovl_gyoei.c`,
+`ac_set_ovl_insect.c`), so two players at the same pond see different fish.
+This is real and visible, and it is **not a quick seed fix**:
+
+- Seeding the roll from a town value does not work. `fqrand()` reads one global
+  stream, and each client's stream diverges immediately because they make
+  different numbers of calls. Making it deterministic would mean deriving a seed
+  at every decision point from (town, acre, time), which changes the spawner
+  from "re-rolls as you walk in and out" to "fixed for a period" -- a gameplay
+  change, not just a consistency one.
+- The server cannot own it. Spawn placement needs the water and terrain data it
+  has no copy of -- the same blocker as daily regeneration.
+- The host-simulates pattern from villager positions *would* fit, and the
+  transport already exists. What does not exist is the hard half: a follower
+  must stop its own set manager spawning and instead create and destroy actors
+  from replication. Villagers are fifteen long-lived actors; fish and insects
+  are created and destroyed constantly as you walk, so this is materially more
+  invasive than the villager work was.
+
+### Not delivered: the remote fishing float
+
+The float is a **scene singleton**. `Player_actor_SetActorUki` claims it with
+`Actor_info_name_search(mAc_PROFILE_UKI)`, and so does the fish AI
+(`ac_gyo_test.c`, `ac_gyo_kaseki.c`). Spawning a second one for a remote would
+make the fish target whichever the search happened to find first -- so the
+obvious approach risks **breaking local fishing**, which is far worse than
+remotes having no visible float.
+
+Doing it properly needs two things: a replicated cast position (the float is out
+in the water, not at the hand, so it cannot be derived like the held tool), and a
+rendering path that is not the shared UKI actor -- drawn as part of the remote's
+presentation, the way the umbrella and balloon already are.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as
