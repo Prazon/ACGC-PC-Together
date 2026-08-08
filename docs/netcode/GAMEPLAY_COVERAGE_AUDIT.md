@@ -76,10 +76,11 @@ daily job only refilled quantities. See below.
 
 ### Tier 2 — silent per-client divergence
 
-**6. Villagers.** *(Roster resolved 2026-08-08 — see CURRENT_STATUS.md. The
-roster is server-owned, villagers are registered entities, and `mNpc_Grow` no
-longer runs per client. Move-ins/outs, conversation leases, per-player memories
-and schedules remain.)* Original text:
+**6. Villagers.** *(Roster and turnover resolved 2026-08-08 — see
+CURRENT_STATUS.md. The roster is server-owned, villagers are registered
+entities, `mNpc_Grow` no longer runs per client, and move-ins and move-outs are
+server decisions with the client supplying the newcomer. Conversation leases,
+per-player memories and schedules remain.)* Original text:
 
 **Villagers are entirely local.** `m_npc.c` (7383 lines), `m_npc_schedule.c`,
 `m_quest.c`, and all 68 `src/actor/npc/*.c` files have no net references. The
