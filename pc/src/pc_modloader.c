@@ -291,6 +291,12 @@ int pc_modloader_grow_furniture(size_t extra, const void* base_profile) {
 
 void pc_modloader_shutdown(void) {
     int i;
+
+    /* Before the arena goes away. A grown furniture table lives in it, and
+     * leaving furniture_quality pointing at unmapped memory turns the next
+     * read of any entry -- stock ones included -- into a segfault. */
+    ftr_profile_table_restore_base();
+
     for (i = 0; i < g_override_count; i++) free(g_overrides[i].data);
     g_override_count = 0;
     g_initialized = 0;

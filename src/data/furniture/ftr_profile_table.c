@@ -17,3 +17,8 @@
  * furniture; otherwise it is the static table and costs nothing. */
 aFTR_PROFILE** furniture_quality = furniture_quality_base;
 size_t furniture_quality_count = FTR_NUM;
+
+void ftr_profile_table_restore_base(void) {
+    furniture_quality = furniture_quality_base;
+    furniture_quality_count = FTR_NUM;
+}

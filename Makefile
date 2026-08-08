@@ -72,11 +72,23 @@ MOD_CACHE_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_cache_check.o $(BUILD_DIR)/pc/s
 # progress that cannot reach its total, a corrupted blob accepted.
 MOD_FETCH_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_fetch_check.o $(BUILD_DIR)/pc/src/pc_mod_fetch.o \
                      $(BUILD_DIR)/pc/src/pc_mod_cache.o
+
+# The registry check links the REAL furniture table (1266 entries) so it
+# exercises the actual growth path and pointer swap rather than a mock. Decomp
+# headers are not warning-clean, so it uses its own flags.
+MOD_REGISTRY_FLAGS := -std=c11 -O0 -g -DTARGET_PC -DVERSION=0 -DF3DEX_GBI_2 -DNDEBUG \
+                      -DBUGFIXES -D_LANGUAGE_C -DPC_ENHANCEMENTS \
+                      -Iinclude -Isrc -I. -Ipc/include -Inet/include
+MOD_REGISTRY_SOURCES := tests/fuzz/mod_registry_check.c \
+                        src/data/furniture/ftr_profile_table.c \
+                        pc/src/pc_mod_registry.c \
+                        pc/src/pc_modloader.c \
+                        pc/src/pc_mod_arena.c
 LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
 
-.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check mod-fetch-check
+.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check mod-fetch-check mod-registry-check
 
 all: $(BUILD_DIR)/netcode_tests $(BUILD_DIR)/AnimalCrossingServer
 
@@ -96,6 +108,14 @@ mod-cache-check: $(BUILD_DIR)/mod_cache_check
 	@rm -rf $(BUILD_DIR)/mod-cache-scratch
 	@mkdir -p $(BUILD_DIR)/mod-cache-scratch
 	cd $(BUILD_DIR)/mod-cache-scratch && $(abspath $(BUILD_DIR))/mod_cache_check
+
+mod-registry-check: $(BUILD_DIR)/mod_registry_check
+	$(BUILD_DIR)/mod_registry_check
+
+$(BUILD_DIR)/mod_registry_check: $(MOD_REGISTRY_SOURCES) tests/fuzz/gen_ftr_stubs.py
+	@mkdir -p $(dir $@)
+	python3 tests/fuzz/gen_ftr_stubs.py $(BUILD_DIR)/ftr_stubs.c
+	$(CC) $(MOD_REGISTRY_FLAGS) $(MOD_REGISTRY_SOURCES) $(BUILD_DIR)/ftr_stubs.c -o $@
 
 mod-fetch-check: $(BUILD_DIR)/mod_fetch_check
 	@rm -rf $(BUILD_DIR)/mod-fetch-scratch
@@ -122,7 +142,7 @@ long-soak: $(BUILD_DIR)/town_load
 client-link: $(NET_OBJECTS)
 	python3 scripts/check_client_link.py $(BUILD_DIR)
 
-check: test client-link fuzz mod-cache-check mod-fetch-check load chaos month-soak smoke
+check: test client-link fuzz mod-cache-check mod-fetch-check mod-registry-check load chaos month-soak smoke
 
 sanitize:
 	$(MAKE) clean BUILD_DIR=build/netcode-sanitize

@@ -303,6 +303,7 @@ set(PC_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_cache.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_fetch.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_loadscreen.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_mod_registry.c
     src/pc_texture_pack.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_settings.c
     ${CMAKE_CURRENT_SOURCE_DIR}/src/pc_profiler.c

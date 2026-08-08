@@ -37,6 +37,14 @@ extern "C" {
 extern aFTR_PROFILE** furniture_quality;
 extern size_t furniture_quality_count;
 
+/* Points furniture_quality back at the static base table.
+ *
+ * Necessary because a grown table lives in the mod arena: once that is
+ * unmapped, the pointer dangles and the very next unchecked read -- of a stock
+ * entry, not even a mod one -- is a segfault. Whoever tears the arena down must
+ * call this first. A registry check caught exactly that crash. */
+void ftr_profile_table_restore_base(void);
+
 #ifdef __cplusplus
 }
 #endif
