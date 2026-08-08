@@ -62,11 +62,15 @@ FUZZ_OBJECT := $(BUILD_DIR)/tests/fuzz/protocol_fuzz.o
 # content, so it gets the same bounded-garbage treatment as the protocol
 # parsers. Built from pc/ sources but free of SDL and GL by design.
 PCASSET_FUZZ_OBJECTS := $(BUILD_DIR)/tests/fuzz/pcasset_fuzz.o $(BUILD_DIR)/pc/src/pc_mod_assets.o
+# The client cache carries its own SHA-256 (crypto.cpp is C++ and the client
+# links a strict subset), so it is checked against published vectors rather
+# than assumed correct.
+MOD_CACHE_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_cache_check.o $(BUILD_DIR)/pc/src/pc_mod_cache.o
 LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
 
-.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link
+.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check
 
 all: $(BUILD_DIR)/netcode_tests $(BUILD_DIR)/AnimalCrossingServer
 
@@ -81,6 +85,11 @@ smoke: $(BUILD_DIR)/AnimalCrossingServer
 fuzz: $(BUILD_DIR)/protocol_fuzz $(BUILD_DIR)/pcasset_fuzz
 	$(BUILD_DIR)/protocol_fuzz 50000
 	$(BUILD_DIR)/pcasset_fuzz 50000
+
+mod-cache-check: $(BUILD_DIR)/mod_cache_check
+	@rm -rf $(BUILD_DIR)/mod-cache-scratch
+	@mkdir -p $(BUILD_DIR)/mod-cache-scratch
+	cd $(BUILD_DIR)/mod-cache-scratch && $(abspath $(BUILD_DIR))/mod_cache_check
 
 load: $(BUILD_DIR)/town_load
 	$(BUILD_DIR)/town_load 8 600
@@ -102,7 +111,7 @@ long-soak: $(BUILD_DIR)/town_load
 client-link: $(NET_OBJECTS)
 	python3 scripts/check_client_link.py $(BUILD_DIR)
 
-check: test client-link fuzz load chaos month-soak smoke
+check: test client-link fuzz mod-cache-check load chaos month-soak smoke
 
 sanitize:
 	$(MAKE) clean BUILD_DIR=build/netcode-sanitize
@@ -123,6 +132,10 @@ $(BUILD_DIR)/AnimalCrossingServer: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) 
 $(BUILD_DIR)/protocol_fuzz: $(NET_OBJECTS) $(MOD_OBJECTS) $(LUA_OBJECTS) $(FUZZ_OBJECT)
 	@mkdir -p $(dir $@)
 	$(CXX) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+$(BUILD_DIR)/mod_cache_check: $(MOD_CACHE_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CC) $^ $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/pcasset_fuzz: $(PCASSET_FUZZ_OBJECTS)
 	@mkdir -p $(dir $@)
@@ -160,4 +173,4 @@ $(BUILD_DIR)/third_party/lua/%.o: third_party/lua/%.c
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
+-include $(MOD_CACHE_OBJECTS:.o=.d) $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
