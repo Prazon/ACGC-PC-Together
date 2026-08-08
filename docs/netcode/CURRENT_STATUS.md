@@ -1217,6 +1217,42 @@ letter the same way. Worth checking when mail is next touched.
 
 `make test` 50/50, Windows client and server build clean.
 
+## Remote body animations at the game's real speeds (2026-08-07)
+
+Reported from the first four-client visual session: remote idles ran at double
+speed, and the suspicion was that most non-walk animations did too. Correct on
+both counts, and entirely client-side — no wire or server change.
+
+`Net_Remote_Player_animation_speed` returned 1.0 for every action outside
+walk/run/ready-walk-net. But the game's baseline animation speed is 0.5, not
+1.0: a survey of every `Player_actor_InitAnimation_Base1/2/3` call site found
+131 of 133 passing `0.5f` — wait, talk, pickup, dig, swing, sit, shock, the
+demo states, all of it. So every non-locomotion remote animation played at
+exactly 2x. The item keyframe had already been through the identical bug and
+was fixed to 0.5; the body keyframes kept the 1.0 default.
+
+The fix, all in `Net_Remote_Player_animation_speed`:
+
+- Default is now **0.5**.
+- The velocity-derived walk formula now also covers **dash** and the **demo
+  walk** — `Player_actor_CulcAnimation_Dash`/`_Run` are wrappers around
+  `_Walk`, so all four states share one formula.
+- The two genuine 1.0 states get an explicit case: the pitfall climb-out and
+  the umbrella twirl.
+- `CHANGE_CLOTH` splits on the replicated animation: the dressing-room try-on
+  (`MENU_CHANGE1`) is 1.0, the Halloween prank takes the baseline. The local
+  `try_on` flag is not replicated, but the animation choice is.
+- The `YATTA1`/`YATTA2` `0.6f` literals in the tree are the `VER_GAFU01_00`
+  branch of a version guard; this build is `VER_GAFE01_00`, whose branch is
+  `0.5f`, so the default covers the cheers with no special case.
+- Approximated at the baseline, with a comment saying so: radio exercise and
+  the car wash (frames driven externally by the event/minigame after a 0.0
+  init) and the snowball push (speed written per frame by the snowball actor).
+
+Verification: `make test` 50/50; full Windows client build clean; the
+manual-test clients restaged from `bin/`. Visual confirmation is the next
+four-client run.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as

@@ -220,13 +220,23 @@ static void Net_Remote_Player_apply_animation(NET_REMOTE_RENDER_DATA* render, co
 }
 
 /* Locomotion animations play at a speed derived from how fast the player is
- * actually moving; everything else plays at 1.0.
+ * actually moving; everything else plays at the game's baseline of 0.5.
  *
- * Player_actor_CulcAnimation_Walk assigns keyframe0/1 frame_control.speed every
- * frame from actor->speed, and Player_actor_CulcAnimation_Run just calls it, so
- * one formula covers both. Ready_walk_net has its own constants. Without this a
- * remote played every walk cycle at 1.0 -- between 1.7x and 4.5x too fast --
- * which is why remote players always appeared to be sprinting on the spot.
+ * The baseline is 0.5, not 1.0. Every Player_actor_InitAnimation_Base1/2/3
+ * call site was surveyed: 131 of the 133 real ones pass 0.5f -- wait, talk,
+ * pickup, dig, swing, sit, shock, all of it. The only 1.0f states are the
+ * pitfall climb-out and the umbrella twirl, and the only other literal,
+ * YATTA1/YATTA2 at 0.6f, is the VER_GAFU01_00 branch of a version guard --
+ * this build is VER_GAFE01_00, whose branch passes 0.5f. Returning 1.0 here
+ * ran every non-locomotion remote animation, idle included, at exactly double
+ * rate. The item keyframe learned this same lesson first; see
+ * Net_Remote_Player_update_item.
+ *
+ * The locomotion family: Player_actor_CulcAnimation_Walk assigns keyframe0/1
+ * frame_control.speed every frame from actor->speed; run, dash and the demo
+ * walk all funnel into it (Player_actor_CulcAnimation_Run and _Dash are
+ * wrappers), so one formula covers the four. Ready_walk_net has its own
+ * constants.
  *
  * The speed is derived rather than replicated. Actor_position_speed_set makes
  * position_speed the actor's scalar speed resolved through its facing, so
@@ -236,40 +246,53 @@ static void Net_Remote_Player_apply_animation(NET_REMOTE_RENDER_DATA* render, co
  * changes every frame while walking, which cannot ride the change-triggered
  * reliable presentation delta.
  *
- * Two inputs are deliberately dropped: over_speed_normalize_NoneZero, a terrain
- * slope correction that is 1.0 on flat ground, and the wall-collision branches,
- * which are local collision state a viewer does not have. Both only matter while
- * scraping along a wall or a steep slope. */
-static f32 Net_Remote_Player_animation_speed(const AC_NET_REMOTE_PLAYER* remote) {
+ * Deliberately approximated at the 0.5 baseline: radio exercise and the car
+ * wash, whose frames the event/minigame drives externally after a 0.0 init,
+ * and the snowball push, whose speed the snowball actor writes per frame.
+ * Dropped from the walk formula: over_speed_normalize_NoneZero, a terrain
+ * slope correction that is 1.0 on flat ground, and the wall-collision
+ * branches, which are local collision state a viewer does not have. */
+static f32 Net_Remote_Player_animation_speed(const AC_NET_REMOTE_PLAYER* remote,
+                                             const NET_REMOTE_RENDER_DATA* render) {
     const f32 speed = ((const ACTOR*)remote)->speed;
     f32 sp;
 
     switch (remote->action) {
         case mPlayer_INDEX_WALK:
         case mPlayer_INDEX_RUN:
+        case mPlayer_INDEX_DASH:
+        case mPlayer_INDEX_DEMO_WALK:
             sp = 0.59999996f * sqrtf(speed / 7.5f);
             break;
         case mPlayer_INDEX_READY_WALK_NET:
             sp = 0.252f * sqrtf(speed / 1.8f);
             break;
-        default:
+        case mPlayer_INDEX_CLIMBUP_PITFALL:
+        case mPlayer_INDEX_ROTATE_UMBRELLA:
             return 1.0f;
+        case mPlayer_INDEX_CHANGE_CLOTH:
+            /* The dressing-room try-on (MENU_CHANGE1) is the state's 1.0
+             * branch; the Halloween prank (ITAZURA1) takes the baseline. The
+             * try_on flag is not replicated, but the animation choice is. */
+            return render->loaded_body == mPlayer_ANIM_MENU_CHANGE1 ? 1.0f : 0.5f;
+        default:
+            return 0.5f;
     }
 
     return sp < 0.22f ? 0.22f : sp;
 }
 
 static void Net_Remote_Player_update_animation_speed(AC_NET_REMOTE_PLAYER* remote, NET_REMOTE_RENDER_DATA* render) {
-    const f32 sp = Net_Remote_Player_animation_speed(remote);
+    const f32 sp = Net_Remote_Player_animation_speed(remote, render);
 
     render->keyframe0.frame_control.speed = sp;
     render->keyframe1.frame_control.speed = sp;
 
     /* --verbose prints one line per state change, which is what to compare
      * against the local player: a full-stick walk should report speed 4.875 and
-     * anim 0.484, a full-stick dash 7.5 and 0.600. A remote reporting anim 1.000
-     * while walking means the action never arrived and the switch fell through
-     * to its default. */
+     * anim 0.484, a full-stick dash 7.5 and 0.600, and anything stationary
+     * 0.500. A remote reporting anim 0.500 while visibly striding means the
+     * action never arrived and the switch fell through to its default. */
     {
         extern int g_pc_verbose;
         if (g_pc_verbose && render->logged_action != remote->action) {
