@@ -19,6 +19,8 @@
 #include "m_player_lib.h"
 #include "m_scene_table.h"
 #include "m_submenu.h"
+#include "m_submenu_ovl.h"
+#include "m_hand_ovl.h"
 #include "m_room_type.h"
 #include "padmgr.h"
 
@@ -1722,6 +1724,23 @@ static int Net_TileProjectable(const mActor_name_t* local_cell, u16 incoming) {
     return TRUE;
 }
 
+/* Whether the item submenu's drag hand is holding something. While it is, the
+ * grabbed item exists in neither the hand slot nor any pocket -- it lives only
+ * on the cursor -- so both the reconciler and the inventory projection would
+ * misread the state. The reconciler would stow the "put away" tool into an
+ * arbitrary slot mid-drag, and the projection would paint the same item back
+ * into a pocket while the player is still carrying it on the cursor; dropping
+ * it then makes two. Grabbing your own fishing rod off the character portrait
+ * and putting it in the pockets produced exactly that pair. Both paths wait
+ * until the cursor is empty; the game always settles the drag into a pocket or
+ * back into the hand, and the projection reconciles from that stable state. */
+static int Net_InventoryDragActive(GAME_PLAY* play) {
+    mHD_Ovl_c* hand_ovl;
+    if (play == NULL || play->submenu.overlay == NULL) return FALSE;
+    hand_ovl = play->submenu.overlay->hand_ovl;
+    return hand_ovl != NULL && hand_ovl->info.item != EMPTY_NO;
+}
+
 static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     AcNetItemSlot slots[15];
     u32 baseline_serial;
@@ -1812,7 +1831,8 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
         if (dirty) mFI_SetFGUpData();
     }
     inventory_revision = acnet_client_inventory_revision();
-    if (Now_Private != NULL && inventory_revision != 0 && inventory_revision != last_inventory_revision) {
+    if (Now_Private != NULL && inventory_revision != 0 && inventory_revision != last_inventory_revision &&
+        !Net_InventoryDragActive(play)) {
         u32 conditions = 0;
         count = acnet_client_inventory(slots, ARRAY_COUNT(slots));
         for (i = 0; i < count; ++i) {
@@ -1996,7 +2016,7 @@ void Net_PreSimulation(GAME_PLAY* play) {
     Net_SynchronizeRemoteActors(play, gameplay_ready);
     if (gameplay_ready) {
         Net_ApplyAuthoritativeState(play);
-        Net_ReconcileEquipment();
+        if (!Net_InventoryDragActive(play)) Net_ReconcileEquipment();
     }
 }
 

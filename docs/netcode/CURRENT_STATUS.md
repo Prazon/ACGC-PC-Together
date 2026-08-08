@@ -1179,9 +1179,43 @@ Verified by the reporter: the freezes are gone on the repaired test town.
 `make test` 50/50, Windows client and server build clean.
 
 **Known issue found in the same session:** grabbing your own equipped fishing
-rod duplicates it into the inventory (two rods after the grab). Not yet
-investigated; likely the equipment/inventory reconciliation racing a hold
-request. Next session should start here.
+rod duplicated it into the inventory. Root-caused and fixed the same day -- see
+the next entry.
+
+## The submenu drag hand no longer duplicates tools (2026-08-07)
+
+Grabbing your own equipped fishing rod off the character portrait and dropping
+it into the pockets left two rods in the inventory.
+
+While the item submenu's drag hand carries an item, that item exists in
+neither the hand slot nor any pocket -- it lives only on the cursor
+(`play->submenu.overlay->hand_ovl->info.item`). Two per-frame consumers
+misread that transient state:
+
+- `Net_ReconcileEquipment` saw hand `EMPTY` against an authoritative rod,
+  found the rod in no local pocket, and hit its "stow into any empty slot"
+  fallback -- asking the server to put the rod away before the player had
+  chosen where.
+- The inventory projection then painted the server's answer back into a
+  pocket while the rod was still on the cursor. Dropping the cursor copy into
+  another slot made two rods, and nothing corrected it until the next
+  revision bump.
+
+Both now wait for the cursor to empty (`Net_InventoryDragActive`). The drag
+always settles into a pocket or back onto the portrait, and reconciliation
+from that stable state names the slot the player actually chose, so the
+server stows the tool where it was dropped rather than into the first free
+slot.
+
+The hold-item transaction itself was verified sound -- it is a pure swap and
+cannot create an item; the duplicate was purely a client-side projection into
+a moving UI state.
+
+**Possible same-shape issue, not investigated:** the drag hand can also carry
+a letter (`info.mail`), and the carried-mail projection may repaint a dragged
+letter the same way. Worth checking when mail is next touched.
+
+`make test` 50/50, Windows client and server build clean.
 
 ## Compatibility note for the protocol version
 
