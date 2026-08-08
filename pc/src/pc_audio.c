@@ -9,6 +9,7 @@
  * so OS preemption of the game thread doesn't cause audio dropouts.
  */
 #include "pc_platform.h"
+#include "pc_mod_music.h"
 #include "pc_settings.h"
 #include "pc_audio_ptr.h"
 #include "jaudio_NES/audiothread.h"
@@ -91,6 +92,12 @@ static void pc_audio_callback(void* userdata, Uint8* stream, int len) {
     if (copy < total_samples) {
         memset(&out[copy], 0, (total_samples - copy) * sizeof(s16));
     }
+
+    /* Custom songs mix on top of the game's own output, over the whole buffer
+     * rather than just the part the ring filled -- a stereo should keep playing
+     * through a moment when the game itself has nothing queued. Saturating, and
+     * a no-op when nothing is playing. */
+    pc_mod_music_mix(out, total_samples);
 
     SDL_MemoryBarrierRelease();
     SDL_AtomicSet(&ring_read_pos, (int)(rp + copy));

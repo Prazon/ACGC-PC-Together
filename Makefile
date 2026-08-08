@@ -79,6 +79,15 @@ MOD_FETCH_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_fetch_check.o $(BUILD_DIR)/pc/s
 MOD_REGISTRY_FLAGS := -std=c11 -O0 -g -DTARGET_PC -DVERSION=0 -DF3DEX_GBI_2 -DNDEBUG \
                       -DBUGFIXES -D_LANGUAGE_C -DPC_ENHANCEMENTS \
                       -Iinclude -Isrc -I. -Ipc/include -Inet/include
+MOD_MUSIC_OBJECTS := $(BUILD_DIR)/tests/fuzz/mod_music_check.o $(BUILD_DIR)/pc/src/pc_mod_music.o
+
+# The model compiler links decomp headers for Vtx/Gfx, so it uses the registry
+# check's flag set rather than the netcode one.
+MOD_MODEL_SOURCES := tests/fuzz/mod_model_check.c \
+                     pc/src/pc_mod_model.c \
+                     pc/src/pc_mod_assets.c \
+                     pc/src/pc_mod_arena.c
+
 MOD_REGISTRY_SOURCES := tests/fuzz/mod_registry_check.c \
                         src/data/furniture/ftr_profile_table.c \
                         pc/src/pc_mod_registry.c \
@@ -88,7 +97,7 @@ LOAD_OBJECT := $(BUILD_DIR)/tests/load/town_load.o
 CHAOS_OBJECT := $(BUILD_DIR)/tests/load/town_chaos.o
 MONTH_SOAK_OBJECT := $(BUILD_DIR)/tests/load/town_month_soak.o
 
-.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check mod-fetch-check mod-registry-check
+.PHONY: all test server smoke fuzz load chaos month-soak soak long-soak check clean sanitize client-link mod-cache-check mod-fetch-check mod-registry-check mod-model-check mod-music-check
 
 all: $(BUILD_DIR)/netcode_tests $(BUILD_DIR)/AnimalCrossingServer
 
@@ -108,6 +117,20 @@ mod-cache-check: $(BUILD_DIR)/mod_cache_check
 	@rm -rf $(BUILD_DIR)/mod-cache-scratch
 	@mkdir -p $(BUILD_DIR)/mod-cache-scratch
 	cd $(BUILD_DIR)/mod-cache-scratch && $(abspath $(BUILD_DIR))/mod_cache_check
+
+mod-music-check: $(BUILD_DIR)/mod_music_check
+	$(BUILD_DIR)/mod_music_check
+
+$(BUILD_DIR)/mod_music_check: $(MOD_MUSIC_OBJECTS)
+	@mkdir -p $(dir $@)
+	$(CC) $^ $(LDFLAGS) -o $@
+
+mod-model-check: $(BUILD_DIR)/mod_model_check
+	$(BUILD_DIR)/mod_model_check
+
+$(BUILD_DIR)/mod_model_check: $(MOD_MODEL_SOURCES)
+	@mkdir -p $(dir $@)
+	$(CC) $(MOD_REGISTRY_FLAGS) $(MOD_MODEL_SOURCES) -o $@
 
 mod-registry-check: $(BUILD_DIR)/mod_registry_check
 	$(BUILD_DIR)/mod_registry_check
@@ -142,7 +165,7 @@ long-soak: $(BUILD_DIR)/town_load
 client-link: $(NET_OBJECTS)
 	python3 scripts/check_client_link.py $(BUILD_DIR)
 
-check: test client-link fuzz mod-cache-check mod-fetch-check mod-registry-check load chaos month-soak smoke
+check: test client-link fuzz mod-cache-check mod-fetch-check mod-registry-check mod-model-check mod-music-check load chaos month-soak smoke
 
 sanitize:
 	$(MAKE) clean BUILD_DIR=build/netcode-sanitize
@@ -208,4 +231,4 @@ $(BUILD_DIR)/third_party/lua/%.o: third_party/lua/%.c
 clean:
 	rm -rf $(BUILD_DIR)
 
--include $(MOD_FETCH_OBJECTS:.o=.d) $(MOD_CACHE_OBJECTS:.o=.d) $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
+-include $(MOD_MUSIC_OBJECTS:.o=.d) $(MOD_FETCH_OBJECTS:.o=.d) $(MOD_CACHE_OBJECTS:.o=.d) $(PCASSET_FUZZ_OBJECTS:.o=.d) $(MOD_OBJECTS:.o=.d) $(LUA_OBJECTS:.o=.d) $(NET_OBJECTS:.o=.d) $(NETWORK_CONFIG_OBJECT:.o=.d) $(TEST_OBJECT:.o=.d) $(SERVER_OBJECTS:.o=.d) $(FUZZ_OBJECT:.o=.d) $(LOAD_OBJECT:.o=.d) $(CHAOS_OBJECT:.o=.d) $(MONTH_SOAK_OBJECT:.o=.d)
