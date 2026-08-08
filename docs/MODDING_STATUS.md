@@ -13,11 +13,11 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P5** arena, `.pcasset`, model compiler | **container, parser and arena done**; model compiler outstanding |
 | **P6** table growth, registry, placeholder | **blocked** — attempted and reverted, see below |
 | **P7** delivery, server side | **done** (wire format, pack store, chunk service) |
-| **P8** client cache, fetch, loading UI | **cache done**; fetch loop and UI outstanding |
-| **P9** custom songs and discs | not started |
+| **P8** client cache, fetch, loading UI | **done** (cache, fetch loop, loading screen) |
+| **P9** custom songs and discs | **registry and grant done**; audio playback outstanding |
 
-Gate: `make check` exits 0 — 78/78 tests, `client_link` pass at 20 objects, protocol fuzz 50k,
-`.pcasset` fuzz 50k, and the content-cache check with its SHA-256 vectors.
+Gate: `make check` exits 0 — 82/82 tests, `client_link` pass at 20 objects, protocol fuzz 50k,
+`.pcasset` fuzz 50k, the content-cache check with its SHA-256 vectors, and the fetch-loop check.
 
 ---
 
@@ -141,6 +141,29 @@ bind to — sits behind it.
 
 **Verify with a link, not a syntax check**, and count the parent TUs of every other `.c_inc` table
 before growing it.
+
+## Custom songs (P9)
+
+```lua
+music.define { id = 'lantern_waltz', name = 'song_name', audio = 'waltz.ogg' }
+music.grant(0, 55)   -- house slot 0, song id 55
+```
+
+**A town gets exactly nine custom songs.** A stereo's `music_box` is 64 bits and the original game
+uses 55 (`MINIDISK_NUM`), so bits 55–63 are all that is free. The cap is the bitfield, not the
+code, and the error message says so.
+
+Slots are handed out in registration order — deterministic, because mod load order is — so the
+same mod set yields the same song ids every start. That matters: the id is what a saved
+`music_box` holds. Slots are **never reused**; the counter is monotonic, so a song defined after a
+quarantine cannot land on a bit some stereo already holds. Renumbering would silently make every
+such stereo play something else.
+
+`music.grant` routes through `grant_house_song`, the same entry point the `--grant-song` operator
+command uses, so it is journaled and bumps the same house revision a player action would.
+
+**Audio playback is not implemented.** Mixing decoded PCM into `pc_audio.c`'s ring buffer needs
+SDL, unavailable here. The registry and grant path work; the sound does not yet.
 
 ## Corrections made while building
 
