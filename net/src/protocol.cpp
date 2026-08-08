@@ -434,12 +434,31 @@ bool decode(const std::vector<std::uint8_t>& input, ServerHello& message) {
     return r.finished();
 }
 
+/* Shared by InputCommand and the presentation delta so the two cannot disagree
+ * about the layout. The three single-bit selectors share one byte. */
+bool encode_appearance_bits(ByteWriter& w, const PlayerAppearanceBits& bits) {
+    const std::uint8_t flags = static_cast<std::uint8_t>((bits.bee_swell ? 1U : 0U) | (bits.decoy ? 2U : 0U) |
+                                                         (bits.change_color ? 4U : 0U));
+    return valid(bits) && w.u8(flags) && w.u8(bits.sunburn) && w.u8(bits.umbrella_state) && w.u16(bits.carried_item);
+}
+
+bool decode_appearance_bits(ByteReader& r, PlayerAppearanceBits& bits) {
+    std::uint8_t flags = 0;
+    if (!r.u8(flags) || (flags & 0xF8U) != 0 || !r.u8(bits.sunburn) || !r.u8(bits.umbrella_state) ||
+        !r.u16(bits.carried_item)) return false;
+    bits.bee_swell = (flags & 1U) != 0;
+    bits.decoy = (flags & 2U) != 0;
+    bits.change_color = (flags & 4U) != 0;
+    return valid(bits);
+}
+
 bool encode(const InputCommand& message, std::vector<std::uint8_t>& output) {
     ByteWriter w;
     if (!w.u32(message.sequence) || !w.u32(message.estimated_server_tick) ||
         !w.i16(message.stick_x) || !w.i16(message.stick_y) || !w.u16(message.buttons) ||
         !w.u16(message.action) || !encode_transform(w, message.client_transform) ||
-        !encode_animation(w, message.animation)) return false;
+        !encode_animation(w, message.animation) ||
+        !encode_appearance_bits(w, message.appearance_bits)) return false;
     output = w.data();
     return true;
 }
@@ -449,7 +468,8 @@ bool decode(const std::vector<std::uint8_t>& input, InputCommand& message) {
     if (!r.u32(message.sequence) || !r.u32(message.estimated_server_tick) ||
         !r.i16(message.stick_x) || !r.i16(message.stick_y) || !r.u16(message.buttons) ||
         !r.u16(message.action) || !decode_transform(r, message.client_transform) ||
-        !decode_animation(r, message.animation)) return false;
+        !decode_animation(r, message.animation) ||
+        !decode_appearance_bits(r, message.appearance_bits)) return false;
     return r.finished();
 }
 

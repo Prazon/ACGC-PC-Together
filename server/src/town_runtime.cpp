@@ -1972,6 +1972,7 @@ bool TownRuntime::step(std::uint64_t monotonic_ms, std::int64_t wall_seconds, st
          * reliable, so a viewer cannot miss a transition and hold a pose. */
         if (mutable_view->presentation.animation != movement->animation) {
             mutable_view->presentation.animation = movement->animation;
+            mutable_view->presentation.appearance_bits = movement->appearance_bits;
             publish_presentation(*mutable_view);
         }
     }

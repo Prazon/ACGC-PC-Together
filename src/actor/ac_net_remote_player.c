@@ -68,6 +68,15 @@ typedef struct net_remote_render_data_s {
     u32 loaded_appearance_revision;
     u8 loaded_pattern_present;
     u8 loaded_pattern_palette;
+    /* The face resource inputs currently baked into face_texture/face_palette.
+     * A sting or a fresh tan changes the resource, not the pose, so it has to
+     * re-trigger the load that the gender/face/clothing comparison guards. */
+    u8 loaded_bee_swell;
+    u8 loaded_decoy;
+    u8 loaded_sunburn;
+    /* The umbrella action last handed to the TOOLS_ACTOR, so a repeat of the
+     * same state does not re-request it every frame. 0xFF means "none yet". */
+    u8 loaded_umbrella_state;
     /* The replicated animation currently playing, so a repeat of the same
      * state does not restart it every frame. */
     u16 loaded_body;
@@ -139,7 +148,9 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
         render->loaded_face == face && render->loaded_clothing == remote->clothing &&
         render->loaded_appearance_revision == remote->appearance_revision &&
         render->loaded_pattern_present == state->pattern_present &&
-        render->loaded_pattern_palette == state->pattern_palette) return TRUE;
+        render->loaded_pattern_palette == state->pattern_palette &&
+        render->loaded_bee_swell == remote->bee_swell && render->loaded_decoy == remote->decoy &&
+        render->loaded_sunburn == remote->sunburn) return TRUE;
 
     if (state->pattern_present && state->clothing_index >= (CLOTH_NUM + 1) &&
         state->clothing_index < (CLOTH_NUM + 1 + mPr_ORIGINAL_DESIGN_COUNT) &&
@@ -165,7 +176,8 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
         cloth.idx = state->clothing_index < (CLOTH_NUM + 1) ? state->clothing_index : cloth.idx;
         mPlib_Load_PlayerTexAndPallet(render->clothing_texture, render->clothing_palette, cloth.idx);
     }
-    if (!mPlib_Load_PlayerFaceTexAndPallet(render->face_texture, render->face_palette, gender, face)) return FALSE;
+    if (!mPlib_Load_PlayerFaceTexAndPalletEx(render->face_texture, render->face_palette, gender, face,
+                                             remote->bee_swell, remote->decoy, remote->sunburn)) return FALSE;
 
     if (render->initialized) {
         if (render->animation_loaded) {
@@ -189,6 +201,9 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
     render->loaded_appearance_revision = remote->appearance_revision;
     render->loaded_pattern_present = state->pattern_present;
     render->loaded_pattern_palette = state->pattern_palette;
+    render->loaded_bee_swell = remote->bee_swell;
+    render->loaded_decoy = remote->decoy;
+    render->loaded_sunburn = remote->sunburn;
     /* The skeletons were rebuilt, so whatever was playing is gone. */
     render->animation_loaded = FALSE;
     render->loaded_part_table = mPlayer_PART_TABLE_NORMAL;
@@ -600,13 +615,30 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
                                                                         aTOL_ACTION_DESTRUCT);
             }
             remote->umbrella_actor = NULL;
+            render->loaded_umbrella_state = 0xFF;
         }
         if (remote->umbrella_actor == NULL && Common_Get(clip).tools_clip != NULL) {
+            /* Born in whatever action the owner is actually in, so an umbrella
+             * that comes into view already open does not replay its opening.
+             * DESTRUCT would kill it the frame it was born, so a remote
+             * reporting it is treated as "not yet opened". */
+            const int birth_state = remote->umbrella_state != aTOL_ACTION_DESTRUCT ? (int)remote->umbrella_state
+                                                                                   : aTOL_ACTION_S_TAKEOUT;
             remote->umbrella_actor = Common_Get(clip).tools_clip->aTOL_birth_proc(
-                kind - mPlayer_ITEM_KIND_UMBRELLA00, aTOL_ACTION_S_TAKEOUT, (ACTOR*)remote, game, -1, NULL);
+                kind - mPlayer_ITEM_KIND_UMBRELLA00, birth_state, (ACTOR*)remote, game, -1, NULL);
             if (remote->umbrella_actor != NULL) {
                 remote->umbrella_actor->world.position = remote->actor_class.world.position;
+                render->loaded_umbrella_state = (u8)birth_state;
             }
+        } else if (remote->umbrella_actor != NULL && remote->umbrella_state != render->loaded_umbrella_state &&
+                   remote->umbrella_state != aTOL_ACTION_DESTRUCT && Common_Get(clip).tools_clip != NULL) {
+            /* The open and close animations. DESTRUCT is deliberately never
+             * forwarded from the wire: the umbrella's lifetime belongs to the
+             * tool-change path above and to the actor's own dt, and honouring a
+             * replicated DESTRUCT would leave a dangling child. */
+            Common_Get(clip).tools_clip->aTOL_chg_request_mode_proc((ACTOR*)remote, remote->umbrella_actor,
+                                                                    (int)remote->umbrella_state);
+            render->loaded_umbrella_state = remote->umbrella_state;
         }
         render->item_visible = remote->umbrella_actor != NULL;
         render->item_skeleton_loaded = FALSE;
@@ -620,6 +652,7 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
         Common_Get(clip).tools_clip->aTOL_chg_request_mode_proc((ACTOR*)remote, remote->umbrella_actor,
                                                                 aTOL_ACTION_DESTRUCT);
         remote->umbrella_actor = NULL;
+        render->loaded_umbrella_state = 0xFF;
     }
 
     shape = mPlib_Get_BasicItemShapeIndex_fromItemKind(kind);
@@ -939,6 +972,7 @@ static void Net_Remote_Player_ct(ACTOR* actor, GAME* game) {
         render->loaded_item_kind = -1;
         render->loaded_item_shape = -1;
         render->loaded_item_anim = -1;
+        render->loaded_umbrella_state = 0xFF;
         render->item_scale = 1.0f;
         mPlib_Face_Reset(&render->face);
     }
@@ -1070,6 +1104,12 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
              * kPlayerActionCount / kPlayerItemStateCount. */
             remote->action = states[i].transform.action;
             remote->item_state = states[i].animation_item_state;
+            remote->bee_swell = states[i].bee_swell;
+            remote->decoy = states[i].decoy;
+            remote->change_color = states[i].change_color;
+            remote->sunburn = states[i].sunburn;
+            remote->umbrella_state = states[i].umbrella_state;
+            remote->carried_item = states[i].carried_item;
             remote->missing_frames = 0;
             if (Net_Remote_Player_refresh_appearance(remote, &states[i])) {
                 NET_REMOTE_RENDER_DATA* render = (NET_REMOTE_RENDER_DATA*)remote->render_data;

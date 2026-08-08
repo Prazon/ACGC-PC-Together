@@ -59,6 +59,16 @@ typedef struct AcNetRemotePlayer {
     uint8_t transition_phase;
     uint32_t transition_door;
     uint32_t transition_expires_tick;
+    /* Resource selectors the viewer cannot derive: which face texture and
+     * palette to load, whether the umbrella is opening or closing, and what is
+     * in the hand mid-pickup. Already range-checked by the decoder --
+     * `sunburn` is 0-8 and `umbrella_state` is a valid aTOL_ACTION_*. */
+    uint8_t bee_swell;
+    uint8_t decoy;
+    uint8_t change_color;
+    uint8_t sunburn;
+    uint8_t umbrella_state;
+    uint16_t carried_item;
 } AcNetRemotePlayer;
 
 /* One original resident slot. `occupied` 0 means the slot is authoritatively
@@ -326,6 +336,17 @@ int acnet_client_poll(void);
  * now_item_main_index, with the keyframe's playback mode. They are what other
  * clients draw this player with, so they are range-checked before they are
  * sent and again when they arrive. */
+/* The local player's resource selectors, latched until the next call. Kept off
+ * acnet_client_frame's parameter list, which is already long, and read from
+ * there when the presentation delta is built. Out-of-range values are clamped
+ * rather than rejected: they would otherwise cost the whole frame's input. */
+void acnet_client_set_appearance_bits(uint8_t bee_swell,
+                                      uint8_t decoy,
+                                      uint8_t change_color,
+                                      uint8_t sunburn,
+                                      uint8_t umbrella_state,
+                                      uint16_t carried_item);
+
 int acnet_client_frame(int16_t stick_x,
                        int16_t stick_y,
                        uint16_t buttons,

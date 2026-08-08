@@ -130,6 +130,29 @@ extern "C" int acnet_client_poll(void) {
     }
 }
 
+namespace {
+acnet::PlayerAppearanceBits pending_appearance_bits;
+} // namespace
+
+extern "C" void acnet_client_set_appearance_bits(uint8_t bee_swell,
+                                                 uint8_t decoy,
+                                                 uint8_t change_color,
+                                                 uint8_t sunburn,
+                                                 uint8_t umbrella_state,
+                                                 uint16_t carried_item) {
+    pending_appearance_bits.bee_swell = bee_swell != 0;
+    pending_appearance_bits.decoy = decoy != 0;
+    pending_appearance_bits.change_color = change_color != 0;
+    /* Clamped rather than rejected. These ride the same frame command as the
+     * movement input, so refusing one would cost the player their whole frame
+     * of motion over a cosmetic byte. */
+    pending_appearance_bits.sunburn =
+        sunburn > acnet::kMaximumSunburnRank ? acnet::kMaximumSunburnRank : sunburn;
+    pending_appearance_bits.umbrella_state =
+        umbrella_state >= acnet::kUmbrellaStateCount ? 0 : umbrella_state;
+    pending_appearance_bits.carried_item = carried_item;
+}
+
 extern "C" int acnet_client_frame(int16_t stick_x,
                                    int16_t stick_y,
                                    uint16_t buttons,
@@ -163,6 +186,7 @@ extern "C" int acnet_client_frame(int16_t stick_x,
                            buttons,
                            action,
                            animation,
+                           pending_appearance_bits,
                            from_c(*local_transform),
                            corrected,
                            has_correction,
@@ -206,6 +230,15 @@ extern "C" size_t acnet_client_remote_players(AcNetRemotePlayer* output, size_t 
                 output[i].transition_phase = static_cast<std::uint8_t>(remotes[i].transition_phase);
                 output[i].transition_door = remotes[i].transition_door;
                 output[i].transition_expires_tick = remotes[i].transition_expires_tick;
+                {
+                    const acnet::PlayerAppearanceBits& bits = remotes[i].presentation.appearance_bits;
+                    output[i].bee_swell = bits.bee_swell ? 1 : 0;
+                    output[i].decoy = bits.decoy ? 1 : 0;
+                    output[i].change_color = bits.change_color ? 1 : 0;
+                    output[i].sunburn = bits.sunburn;
+                    output[i].umbrella_state = bits.umbrella_state;
+                    output[i].carried_item = bits.carried_item;
+                }
             }
         }
         return output == nullptr ? remotes.size() : count;

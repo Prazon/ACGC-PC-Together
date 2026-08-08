@@ -1,6 +1,7 @@
 # Networked visuals: what a viewer still cannot draw
 
-Status: audit. Category B and C are proposed, not implemented.
+Status: audit. Category B is partly delivered; Category C is delivered
+(2026-08-07) and is no longer proposed. See the notes on each below.
 
 Companion to the delivered work in `CURRENT_STATUS.md` → "Remote faces, tools
 and locomotion speed". That commit consumed everything a viewer already had on
@@ -26,10 +27,35 @@ already perform because it has the same world data.
 | **Footprints, ripples, dust, splash.** `Player_actor_SetEffect_Walk` and friends emit these from the keyframe frame plus the ground attribute. Remotes emit none, so they cross sand and snow without a trace. | Both inputs are local: the viewer runs the remote's keyframe itself and can read the ground attribute at its position. |
 | **Nameplate.** `remote->name` is replicated and never drawn, so in a crowd there is no way to tell who is who. | Pure presentation; the data is already there. |
 
-## C. Needs new wire fields
+## C. Needs new wire fields — delivered 2026-08-07 as protocol v20
 
-Each of these would change the wire format and require a protocol version bump,
-which is strict — client and server must be updated together.
+All of these except the animation phase landed in one bump, as recommended
+below. `PlayerAppearanceBits` rides `InputCommand` up and the `Player`
+presentation delta back down, so it is change-triggered rather than polled:
+
+- **Bee swell, decoy, tan.** The rate note below was settled in favour of
+  presentation. `mPlib_Load_PlayerFaceTexAndPalletEx` is the remote-facing form
+  of the two local-player-only resource pickers, taking the three inputs the
+  originals read out of `Now_Private` and the town-common block, including the
+  tanned-palette branch and its decoy suppression.
+- **Umbrella open/closed.** The remote umbrella is now born in the owner's
+  actual action rather than always `S_TAKEOUT`, and follows it afterwards. A
+  replicated `DESTRUCT` is deliberately never forwarded: the umbrella's
+  lifetime belongs to the tool-change path and the actor's `dt`, and honouring
+  it from the wire would leave a dangling child.
+- **Item in hand during pickup/scoop**, read from the matching branch of the
+  `main_data` union only while its own state is running — the union means
+  reading `pickup.item` during a scoop would report another state's bytes.
+- **Golden-tool / sting colour flash**, replicated but not yet consumed by the
+  remote's draw.
+
+**Still outstanding: animation phase.** It was deliberately left out. A plain
+"start frame" is not enough — by the time the delta lands the animation has
+moved on, so the viewer needs the sender's frame *plus* the elapsed time, and
+getting that wrong looks worse than starting from the top. It wants its own
+design pass.
+
+Original text, kept for the reasoning:
 
 | Gap | Field | Cost | Where it belongs |
 |-|-|-|-|

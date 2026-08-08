@@ -35,7 +35,7 @@ bool drive_connected(acserver::TownRuntime& server,
             acnet::Transform corrected;
             bool correction = false;
             const std::int16_t x = ((frame / 90 + i) & 1U) == 0 ? 4000 : -4000;
-            if (!bots[i].client->frame(now, x, 0, 0, 0, bots[i].animation, bots[i].presentation,
+            if (!bots[i].client->frame(now, x, 0, 0, 0, bots[i].animation, {}, bots[i].presentation,
                                        corrected, correction, error)) return false;
             if (correction) bots[i].presentation = corrected;
         }

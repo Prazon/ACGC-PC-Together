@@ -28,6 +28,7 @@ struct MovementPlayer {
     ZoneId zone = 1;
     Transform transform;
     PlayerAnimation animation;
+    PlayerAppearanceBits appearance_bits;
     std::uint32_t last_received_sequence = 0;
     std::uint32_t last_processed_sequence = 0;
     std::deque<InputCommand> queued_inputs;

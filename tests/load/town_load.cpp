@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
             const std::int16_t z = ((tick / 120 + i) & 1U) == 0 ? 6000 : -6000;
             acnet::Transform corrected;
             bool correction = false;
-            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].animation, bots[i].transform,
+            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].animation, {}, bots[i].transform,
                                        corrected, correction, error)) { std::cerr << error << '\n'; return 5; }
             if (correction) bots[i].transform = corrected;
             /* Catching requires the rod in hand, so each bot holds the one it

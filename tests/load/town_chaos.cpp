@@ -151,7 +151,7 @@ int main(int argc, char** argv) {
             const std::int16_t z = ((tick / 240 + i) & 1U) == 0 ? 5000 : -5000;
             acnet::Transform corrected;
             bool correction = false;
-            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].animation, bots[i].presentation,
+            if (!bots[i].client->frame(now, x, z, 0, 0, bots[i].animation, {}, bots[i].presentation,
                                        corrected, correction, error)) {
                 std::cerr << error << '\n'; return 7;
             }

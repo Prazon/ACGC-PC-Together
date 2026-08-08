@@ -17,7 +17,7 @@ using Revision = std::uint32_t;
 using Tick = std::uint32_t;
 
 constexpr std::uint32_t kWireMagic = 0x41434E54U; // ACNT
-constexpr std::uint16_t kProtocolVersion = 19;
+constexpr std::uint16_t kProtocolVersion = 20;
 constexpr std::size_t kMaxPacketBytes = 1200;
 constexpr std::size_t kMaxPayloadBytes = 1152;
 constexpr std::size_t kEncryptionTagBytes = 16;
@@ -160,6 +160,46 @@ struct PlayerAnimation {
     bool operator!=(const PlayerAnimation& other) const { return !(*this == other); }
 };
 
+/* Presentation bits that change the *resources* a viewer draws a player with,
+ * rather than the pose. Each one is something the original reads from the
+ * acting client's own state and no viewer can derive.
+ *
+ * These are conceptually appearance, but they are carried on the presentation
+ * delta rather than in AppearanceUpdate deliberately: appearance is rate-capped
+ * at one per second and journalled, and a bee sting is transient enough that it
+ * would either be delayed behind the bucket or burn it. Presentation is
+ * change-triggered and not journalled, which is the right shape for a face that
+ * swells and subsides. */
+struct PlayerAppearanceBits {
+    /* Common_Get(player_bee_swell_flag): a stung player's face resource. */
+    bool bee_swell = false;
+    /* Common_Get(player_decoy_flag): the Halloween decoy face. */
+    bool decoy = false;
+    /* PLAYER_ACTOR::change_color_flag, a fog override the original uses for the
+     * golden-tool sparkle and the sting flash. */
+    bool change_color = false;
+    /* Now_Private->sunburn.rank, 0-8: selects a darker face palette. */
+    std::uint8_t sunburn = 0;
+    /* PLAYER_ACTOR::umbrella_state (aTOL_ACTION_*), which drives the umbrella's
+     * open and close animation. Without it every remote umbrella is born open
+     * and never animates. */
+    std::uint8_t umbrella_state = 0;
+    /* main_data.pickup.item / get_scoop.item -- what is in the hand *during* a
+     * pickup or scoop, which is not the equipped tool and is not yet in the
+     * pockets, so neither of the other two fields carries it. 0 when neither
+     * animation is running. */
+    std::uint16_t carried_item = 0;
+
+    bool operator==(const PlayerAppearanceBits& other) const {
+        return bee_swell == other.bee_swell && decoy == other.decoy && change_color == other.change_color &&
+               sunburn == other.sunburn && umbrella_state == other.umbrella_state &&
+               carried_item == other.carried_item;
+    }
+};
+
+constexpr std::uint8_t kMaximumSunburnRank = 8;  // mPr_sunburn_c::rank is 0-8
+constexpr std::uint8_t kUmbrellaStateCount = 6;  // aTOL_ACTION_NUM
+
 /* Everything a viewer needs to draw another player beyond their transform and
  * appearance. Sent as a reliable Player delta on change rather than in the
  * 15 Hz snapshot: a full 16-player snapshot already sits near the unfragmented
@@ -168,12 +208,18 @@ struct PlayerPresentation {
     PlayerAnimation animation;
     /* Server-owned, mirrored from InventoryState::equipped. */
     std::uint16_t equipped_item = 0;
+    PlayerAppearanceBits appearance_bits;
 
     bool operator==(const PlayerPresentation& other) const {
-        return animation == other.animation && equipped_item == other.equipped_item;
+        return animation == other.animation && equipped_item == other.equipped_item &&
+               appearance_bits == other.appearance_bits;
     }
     bool operator!=(const PlayerPresentation& other) const { return !(*this == other); }
 };
+
+inline bool valid(const PlayerAppearanceBits& bits) {
+    return bits.sunburn <= kMaximumSunburnRank && bits.umbrella_state < kUmbrellaStateCount;
+}
 
 inline bool valid(const PlayerAnimation& animation) {
     return animation.body < kPlayerAnimationCount && animation.overlay < kPlayerAnimationCount &&
@@ -271,6 +317,10 @@ struct InputCommand {
      * skeleton is doing. The server bounds-checks it and forwards it -- it is
      * presentation, and nothing gameplay-authoritative reads it. */
     PlayerAnimation animation;
+    /* Same reasoning again: which face resource, umbrella state and mid-pickup
+     * item to draw this player with are all read from the acting client's own
+     * state and are pure presentation. */
+    PlayerAppearanceBits appearance_bits;
 };
 
 struct TransformSnapshot {

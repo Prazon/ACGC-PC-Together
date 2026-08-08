@@ -1,4 +1,4 @@
-# Dedicated town protocol v19
+# Dedicated town protocol v20
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -82,6 +82,29 @@ house's interior zone does not authorize its exterior gyroid. After an accepted
 operation the server broadcasts the gyroid delta and re-baselines the acting
 connection, because a diffed update or an overflow bag cannot be mirrored from
 the result alone.
+
+## Remote appearance bits
+
+Beyond the pose, a viewer needs the *resources* to draw another player with.
+`PlayerAppearanceBits`, added in v20, carries six bytes: one flag byte (bit 0
+bee swell, bit 1 Halloween decoy, bit 2 the golden-tool/sting colour flash),
+the sunburn rank (u8, 0-8), the umbrella action (u8, `aTOL_ACTION_*`), and the
+item held mid-pickup or mid-scoop (u16, 0 for neither).
+
+It rides `InputCommand` up and the `Player` presentation delta back down,
+sharing one codec so the two cannot disagree about layout. Undefined flag bits,
+a rank past the palette table, and an undefined umbrella action are all decode
+failures, on the same principle as the animation indices: a viewer indexes real
+tables with these.
+
+They are conceptually appearance but are deliberately *not* in
+`AppearanceUpdate`, which is rate-capped at one per second and journalled. A
+bee sting is transient enough that it would either queue behind the bucket or
+burn it; presentation is change-triggered and not journalled, which is the right
+shape for a face that swells and subsides.
+
+The animation *phase* is deliberately still absent — see
+`docs/netcode/VISUAL_REPLICATION_AUDIT.md`.
 
 ## The stalk market
 

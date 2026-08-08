@@ -179,20 +179,37 @@ bool encode_presentation(ByteWriter& writer, const PlayerPresentation& presentat
     const PlayerAnimation& animation = presentation.animation;
     const std::uint8_t flags = static_cast<std::uint8_t>((animation.looping ? 1U : 0U) |
                                                          (animation.reversed ? 2U : 0U));
-    return valid(animation) && writer.u8(animation.body) && writer.u8(animation.overlay) &&
+    const PlayerAppearanceBits& bits = presentation.appearance_bits;
+    /* The three single-bit resource selectors share one byte with the two
+     * animation flags rather than costing a byte each. */
+    const std::uint8_t appearance = static_cast<std::uint8_t>((bits.bee_swell ? 1U : 0U) |
+                                                              (bits.decoy ? 2U : 0U) |
+                                                              (bits.change_color ? 4U : 0U));
+    return valid(animation) && valid(bits) && writer.u8(animation.body) && writer.u8(animation.overlay) &&
            writer.u8(animation.part_table) && writer.u8(animation.item_state) && writer.u8(flags) &&
-           writer.u16(presentation.equipped_item);
+           writer.u16(presentation.equipped_item) && writer.u8(appearance) && writer.u8(bits.sunburn) &&
+           writer.u8(bits.umbrella_state) && writer.u16(bits.carried_item);
 }
 
 bool decode_presentation(ByteReader& reader, PlayerPresentation& presentation) {
     PlayerAnimation& animation = presentation.animation;
     std::uint8_t flags = 0;
+    PlayerAppearanceBits& bits = presentation.appearance_bits;
+    std::uint8_t appearance = 0;
     if (!reader.u8(animation.body) || !reader.u8(animation.overlay) || !reader.u8(animation.part_table) ||
         !reader.u8(animation.item_state) || !reader.u8(flags) || (flags & 0xFCU) != 0 ||
-        !reader.u16(presentation.equipped_item)) return false;
+        !reader.u16(presentation.equipped_item) || !reader.u8(appearance) || (appearance & 0xF8U) != 0 ||
+        !reader.u8(bits.sunburn) || !reader.u8(bits.umbrella_state) || !reader.u16(bits.carried_item))
+        return false;
     animation.looping = (flags & 1U) != 0;
     animation.reversed = (flags & 2U) != 0;
-    return valid(animation);
+    bits.bee_swell = (appearance & 1U) != 0;
+    bits.decoy = (appearance & 2U) != 0;
+    bits.change_color = (appearance & 4U) != 0;
+    /* Bounds-checked here so a viewer may index its face-palette and umbrella
+     * tables with these directly, exactly as it already does with the
+     * animation indices. */
+    return valid(animation) && valid(bits);
 }
 
 /* A vacant slot carries no identity at all, so a peer cannot smuggle a name or

@@ -423,11 +423,16 @@ void player_presentation_round_trips_and_is_bounded() {
     command.estimated_server_tick = 4;
     command.action = acnet::kPlayerActionCount - 1;
     command.animation = animation;
+    command.appearance_bits.decoy = true;
+    command.appearance_bits.sunburn = 3;
+    command.appearance_bits.umbrella_state = acnet::kUmbrellaStateCount - 1;
+    command.appearance_bits.carried_item = 0x1234;
     std::vector<std::uint8_t> payload;
     CHECK(acnet::encode(command, payload));
     acnet::InputCommand decoded_command;
     CHECK(acnet::decode(payload, decoded_command));
     CHECK(decoded_command.animation == animation);
+    CHECK(decoded_command.appearance_bits == command.appearance_bits);
 
     /* The Player delta carries it back out to every viewer. */
     acnet::PlayerPresentationDelta delta;
@@ -435,6 +440,11 @@ void player_presentation_round_trips_and_is_bounded() {
     delta.entity = 34;
     delta.presentation.animation = animation;
     delta.presentation.equipped_item = 0x2202;
+    delta.presentation.appearance_bits.bee_swell = true;
+    delta.presentation.appearance_bits.change_color = true;
+    delta.presentation.appearance_bits.sunburn = acnet::kMaximumSunburnRank;
+    delta.presentation.appearance_bits.umbrella_state = acnet::kUmbrellaStateCount - 1;
+    delta.presentation.appearance_bits.carried_item = 0x3040;
     std::vector<std::uint8_t> delta_bytes;
     CHECK(acnet::encode_player_delta(delta, delta_bytes));
     acnet::PlayerPresentationDelta decoded_delta;
@@ -452,7 +462,10 @@ void player_presentation_round_trips_and_is_bounded() {
 
     /* Every index is a table lookup on the receiving client, so out-of-range
      * values must never survive the decoder. */
-    const std::size_t body_offset = delta_bytes.size() - 7;
+    /* Counted forward from the start -- account (8) then entity (8) -- rather
+     * than back from the end, so adding a presentation field cannot silently
+     * point these mutations at the wrong byte. */
+    const std::size_t body_offset = 16;
     std::vector<std::uint8_t> bad_body = delta_bytes;
     bad_body[body_offset] = static_cast<std::uint8_t>(acnet::kPlayerAnimationCount);
     CHECK(!acnet::decode_player_delta(bad_body, decoded_delta));
@@ -465,6 +478,19 @@ void player_presentation_round_trips_and_is_bounded() {
     std::vector<std::uint8_t> bad_flags = delta_bytes;
     bad_flags[body_offset + 4] = 0xFF;
     CHECK(!acnet::decode_player_delta(bad_flags, decoded_delta));
+
+    /* The resource selectors are table lookups too: a sunburn rank past the
+     * palette table or an undefined umbrella action must not survive either,
+     * and neither may an unused bit in the shared flag byte. */
+    std::vector<std::uint8_t> bad_appearance = delta_bytes;
+    bad_appearance[body_offset + 7] = 0x08;
+    CHECK(!acnet::decode_player_delta(bad_appearance, decoded_delta));
+    std::vector<std::uint8_t> bad_sunburn = delta_bytes;
+    bad_sunburn[body_offset + 8] = acnet::kMaximumSunburnRank + 1;
+    CHECK(!acnet::decode_player_delta(bad_sunburn, decoded_delta));
+    std::vector<std::uint8_t> bad_umbrella = delta_bytes;
+    bad_umbrella[body_offset + 9] = acnet::kUmbrellaStateCount;
+    CHECK(!acnet::decode_player_delta(bad_umbrella, decoded_delta));
 
     /* The same bounds apply on the way in, and the movement authority refuses
      * a command that fails them rather than forwarding it. */
@@ -3843,10 +3869,10 @@ void production_clients_connect_move_and_render_each_other() {
         second_local.position.x -= 0.5F;
         second_local.velocity.x = -30.0F;
         second_local.yaw = -8192;
-        CHECK(first.frame(now, 26000, 0, 0, 0, {}, first_local, corrected, has_correction, error));
+        CHECK(first.frame(now, 26000, 0, 0, 0, {}, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) first_local = corrected;
-        CHECK(second.frame(now, -26000, 0, 0, 0, {}, second_local, corrected, has_correction, error));
+        CHECK(second.frame(now, -26000, 0, 0, 0, {}, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
@@ -3860,10 +3886,10 @@ void production_clients_connect_move_and_render_each_other() {
         bool has_correction = false;
         first_local.velocity.x = 0.0F;
         second_local.velocity.x = 0.0F;
-        CHECK(first.frame(now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
+        CHECK(first.frame(now, 0, 0, 0, 0, {}, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) first_local = corrected;
-        CHECK(second.frame(now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
+        CHECK(second.frame(now, 0, 0, 0, 0, {}, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         if (has_correction) second_local = corrected;
         CHECK(server.step(now, wall + static_cast<std::int64_t>(frame / 60), error));
@@ -3900,9 +3926,9 @@ void production_clients_connect_move_and_render_each_other() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(++settle_now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
+        CHECK(first.frame(++settle_now, 0, 0, 0, 0, {}, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -4004,9 +4030,9 @@ void production_clients_connect_move_and_render_each_other() {
         ++settle_now;
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(settle_now, 0, 0, 0, 119, first_animation, first_local, corrected, has_correction, error));
+        CHECK(first.frame(settle_now, 0, 0, 0, 119, first_animation, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 120, second_animation, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 120, second_animation, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -4024,9 +4050,9 @@ void production_clients_connect_move_and_render_each_other() {
     {
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(first.frame(settle_now, 0, 0, 0, 0, {}, first_local, corrected, has_correction, error));
+        CHECK(first.frame(settle_now, 0, 0, 0, 0, {}, {}, first_local, corrected, has_correction, error));
         CHECK(!has_correction);
-        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, second_local, corrected, has_correction, error));
+        CHECK(second.frame(settle_now, 0, 0, 0, 0, {}, {}, second_local, corrected, has_correction, error));
         CHECK(!has_correction);
         CHECK(server.step(settle_now, wall + 5, error));
         CHECK(first.poll(settle_now, error));
@@ -4432,8 +4458,8 @@ void appearance_survives_a_zone_round_trip() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         acnet::Transform corrected;
         bool has_correction = false;
-        CHECK(stayer.frame(++now, 0, 0, 0, 0, {}, stayer_local, corrected, has_correction, error));
-        CHECK(traveller.frame(now, 0, 0, 0, 0, {}, traveller_local, corrected, has_correction, error));
+        CHECK(stayer.frame(++now, 0, 0, 0, 0, {}, {}, stayer_local, corrected, has_correction, error));
+        CHECK(traveller.frame(now, 0, 0, 0, 0, {}, {}, traveller_local, corrected, has_correction, error));
         CHECK(server.step(now, wall + 5, error));
         CHECK(stayer.poll(now, error));
         CHECK(traveller.poll(now, error));

@@ -1389,25 +1389,46 @@ extern void mPlib_Load_PlayerTexAndPallet(void* tex_p, void* pal_p, int idx) {
     }
 }
 
-extern int mPlib_Load_PlayerFaceTexAndPallet(void* tex_p, void* pal_p, int gender, int face) {
+/* The remote-player equivalent of mPlib_Get_UseFaceTexRom_p and
+ * mPlib_Get_UseFacePalletRom_p, which both read the *local* player's state out
+ * of Now_Private and the town-common block. A viewer has to draw somebody
+ * else's face, so the same three inputs are passed in instead: whether they
+ * have been stung, whether they are wearing the Halloween decoy, and how tanned
+ * they are. Each face resource stores 0xE00 bytes of eye/mouth textures
+ * followed by its 16-entry palette. */
+extern int mPlib_Load_PlayerFaceTexAndPalletEx(void* tex_p, void* pal_p, int gender, int face, int swell, int decoy,
+                                               int sunburn_rank) {
     u32 face_rom_p;
+    u32 pallet_rom_p;
 
     if (tex_p == NULL || pal_p == NULL ||
         (gender != mPr_SEX_MALE && gender != mPr_SEX_FEMALE) ||
         face < 0 || face >= mPr_FACE_TYPE_NUM) return FALSE;
+    if (sunburn_rank < 0) sunburn_rank = 0;
 
-    /* Remote residents use their normal, non-swollen face variant. Each face
-     * resource stores 0xE00 bytes of eye/mouth textures followed by its
-     * 16-entry palette. */
-    face_rom_p = mPlib_Get_UseFaceTexRom_p_common(gender, face, FALSE, FALSE);
+    face_rom_p = mPlib_Get_UseFaceTexRom_p_common(gender, face, swell, decoy);
+    /* A tan is a different palette against the same texture, and the decoy face
+     * suppresses it -- exactly the branch mPlib_Get_UseFacePalletRom_p takes. */
+    if (sunburn_rank > 0 && decoy == FALSE) {
+        u32 idx = mPlib_Get_UseFaceRom_index(gender, face, swell, FALSE, mPlayer_USE_FACE_ROM_TYPE_PAL);
+        pallet_rom_p = mPlib_Get_UseFaceTexRom_p_common(mPr_SEX_FEMALE, mPr_FACE_TYPE7, TRUE, TRUE) + 0xE00 +
+                       (sunburn_rank + idx) * 0x20;
+    } else {
+        pallet_rom_p = face_rom_p + 0xE00;
+    }
+
     _JW_GetResourceAram(face_rom_p, (u8*)tex_p, 0xE00);
-    _JW_GetResourceAram(face_rom_p + 0xE00, (u8*)pal_p, mNW_PALETTE_SIZE);
+    _JW_GetResourceAram(pallet_rom_p, (u8*)pal_p, mNW_PALETTE_SIZE);
 #ifdef TARGET_PC
     mPlib_ByteSwapPlayerPalette((u16*)pal_p);
 #endif
     DCStoreRangeNoSync(tex_p, 0xE00);
     DCStoreRangeNoSync(pal_p, mNW_PALETTE_SIZE);
     return TRUE;
+}
+
+extern int mPlib_Load_PlayerFaceTexAndPallet(void* tex_p, void* pal_p, int gender, int face) {
+    return mPlib_Load_PlayerFaceTexAndPalletEx(tex_p, pal_p, gender, face, FALSE, FALSE, 0);
 }
 
 static mPlayer_change_data_from_submenu_c change_data_from_submenu;

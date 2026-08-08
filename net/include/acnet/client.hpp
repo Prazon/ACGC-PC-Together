@@ -78,6 +78,7 @@ public:
                std::uint16_t buttons,
                std::uint16_t action,
                const PlayerAnimation& animation,
+               const PlayerAppearanceBits& appearance_bits,
                const Transform& diagnostic_local,
                Transform& corrected_local,
                bool& has_correction,

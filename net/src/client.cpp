@@ -817,6 +817,7 @@ bool ClientRuntime::frame(std::uint64_t now_ms,
                           std::uint16_t buttons,
                           std::uint16_t action,
                           const PlayerAnimation& animation,
+                          const PlayerAppearanceBits& appearance_bits,
                           const Transform& diagnostic_local,
                           Transform& corrected_local,
                           bool& has_correction,
@@ -834,6 +835,7 @@ bool ClientRuntime::frame(std::uint64_t now_ms,
          * server to reinterpret camera-relative stick axes. */
         command.client_transform = diagnostic_local;
         command.client_transform.action = action;
+        command.appearance_bits = appearance_bits;
         std::vector<std::uint8_t> payload;
         if (!encode(command, payload) ||
             !send_payload(MessageType::InputCommand, Channel::Snapshots, payload, now_ms, error)) return false;

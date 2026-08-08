@@ -719,6 +719,42 @@ static void Net_CapturePlayerAnimation(const PLAYER_ACTOR* player, NET_ANIMATION
     animation->reversed = frame_control->start_frame > frame_control->end_frame;
 }
 
+/* The resource selectors a viewer cannot derive: which face texture and palette
+ * to load, whether the umbrella is mid-open, and what is in the hand during a
+ * pickup or scoop. Everything here is read from the local player's own state
+ * once a frame and latched; the next frame command carries it.
+ *
+ * The bee-sting and decoy flags live in the town-common block rather than on
+ * the actor because the original only ever has one player, so Common_Get is the
+ * acting player's own state here -- see the sole-player classification in
+ * ARCHITECTURE_AUDIT.md. Nothing reads them for a remote. */
+static void Net_CapturePlayerAppearanceBits(const PLAYER_ACTOR* player) {
+    mActor_name_t carried = EMPTY_NO;
+    int sunburn = 0;
+    int umbrella = 0;
+    int change_color = FALSE;
+
+    if (player != NULL) {
+        umbrella = player->umbrella_state;
+        change_color = player->change_color_flag != 0;
+        /* Only meaningful while the matching animation is the one running --
+         * main_data is a union of every main state, so reading pickup.item
+         * during a scoop would report another state's bytes. */
+        if (player->now_main_index == mPlayer_INDEX_PICKUP)
+            carried = player->main_data.pickup.item;
+        else if (player->now_main_index == mPlayer_INDEX_GET_SCOOP)
+            carried = player->main_data.get_scoop.item;
+    }
+    if (Now_Private != NULL && Now_Private->sunburn.rank > 0) sunburn = Now_Private->sunburn.rank;
+
+    acnet_client_set_appearance_bits((uint8_t)(Common_Get(player_bee_swell_flag) == TRUE),
+                                     (uint8_t)(Common_Get(player_decoy_flag) == TRUE),
+                                     (uint8_t)change_color,
+                                     (uint8_t)sunburn,
+                                     (uint8_t)(umbrella >= 0 && umbrella < aTOL_ACTION_NUM ? umbrella : 0),
+                                     (uint16_t)(carried == EMPTY_NO ? 0 : carried));
+}
+
 static int Net_CapturePlayerTransform(GAME_PLAY* play, AcNetTransform* transform) {
     PLAYER_ACTOR* player;
     if (play == NULL || transform == NULL) return FALSE;
@@ -2284,6 +2320,7 @@ void Net_PostSimulation(GAME_PLAY* play) {
     pad = &play->game.pads[PAD0];
     menu_open = play->submenu.process_status != mSM_PROCESS_WAIT;
     Net_CapturePlayerAnimation((PLAYER_ACTOR*)player_actor, &animation);
+    Net_CapturePlayerAppearanceBits((PLAYER_ACTOR*)player_actor);
     if (acnet_client_frame(menu_open ? 0 : (s16)pad->now.stick_x * 512,
                            menu_open ? 0 : (s16)pad->now.stick_y * 512,
                            menu_open ? 0 : pad->now.button,

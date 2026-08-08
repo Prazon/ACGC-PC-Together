@@ -118,6 +118,7 @@ void MovementSimulator::tick() {
             const InputCommand& input = target.queued_inputs.front();
             target.transform = input.client_transform;
             target.animation = input.animation;
+            target.appearance_bits = input.appearance_bits;
             target.last_processed_sequence = input.sequence;
             target.queued_inputs.pop_front();
         }
@@ -144,6 +145,7 @@ PlayerSnapshot MovementSimulator::snapshot(AccountId account) const {
     result.acknowledged_input = source->last_processed_sequence;
     result.transform = source->transform;
     result.presentation.animation = source->animation;
+    result.presentation.appearance_bits = source->appearance_bits;
     return result;
 }
 
