@@ -1723,14 +1723,42 @@ account-scoped rather than town-scoped; projecting it from a town-wide roster
 would hand every player the same friendships. Vacating a slot therefore clears
 the identity and nothing else.
 
-### What phase one deliberately leaves
+### Phase two: the turnover (protocol v26)
 
-- **Move-ins and move-outs.** Nobody moves in or out online now: `mNpc_Grow` is
-  off and the server does not yet make the decision. That is stable rather than
-  divergent, which is the improvement, but it is not the finished behaviour. The
-  server cannot pick *which* villager moves in without the character tables it
-  is not allowed to hold, so this needs the same shape the bootstrap uses -- the
-  server decides *that* somebody moves, a client supplies *who*.
+Phase one froze the town -- nobody moved in or out. That is now server-decided,
+along the split the bootstrap already established: the server owns what must be
+single-valued, the client owns what needs the game's tables.
+
+The server owns *when* a move-in is due (one per day, into a real vacancy) and
+*which slot*. It publishes the opening with a seed; a client runs `mNpc_Grow`'s
+own roll against that seed and offers the result. Every client may offer, the
+first accepted closes the opening, and because they all seed from the same value
+they are offering the same villager -- so the race has no visible outcome and
+needs no election. A move-in naming a character already in town is refused,
+since the roster is keyed by who they are.
+
+The two conditions the original checks that the server cannot -- the player
+belonging to this town, and having spoken to every current villager -- stay on
+the client where the data is. `mNpc_Grow`'s selection half was split into
+`mNpc_GrowSelectAndPlace` so the networked offer runs the same roll rather than
+a reimplementation of it.
+
+Move-out is the mirror: the original decides a departure from dialogue, which is
+client-side, so the client reports it and the server owns what follows -- the
+slot empties at the next daily turnover, not on announcement. The client detects
+it by **diffing** the local `removing` flag against the authoritative one rather
+than hooking the dialogue, which catches the town-transfer path and the
+conversation path without having to find each one.
+
+**`make check` earned its keep here.** The roster is stored in checkpoints
+through the wire codec, so the two cannot disagree about its shape -- worth
+having, but it means changing the wire invalidates stored data. The smoke step
+refused to start on a checkpoint the *previous build* had written, which is
+exactly the failure that step exists to catch. The blob is length-prefixed so
+the case is recoverable: a version-16 roster is skipped rather than rejected and
+the next bootstrap re-adopts one. Checkpoints are at 17.
+### Still open
+
 - **Conversation leases remain unreachable, and deliberately so.** They are now
   addressable -- villagers are registered entities and the roster gives the slot
   -- but taking one properly means blocking `aNPC_act_talk_init_proc` until the
