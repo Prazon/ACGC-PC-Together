@@ -10,13 +10,14 @@ Branch `modding`. Tracks what is actually built against the phase map in
 | **P2** calendar API, holidays, runtime wiring, persistence | **done** |
 | **P3** `ModCalendar` replication | **done** (server, wire and client) |
 | **P4** T1 asset override | **done** |
-| **P5** arena, `.pcasset`, model compiler | not started |
+| **P5** arena, `.pcasset`, model compiler | **container + parser done** (fuzzed); arena and model compiler outstanding |
 | **P6** table growth, registry, placeholder | not started |
-| **P7** delivery, server side | not started |
-| **P8** client cache, fetch, loading UI | not started |
+| **P7** delivery, server side | **done** (wire format, pack store, chunk service) |
+| **P8** client cache, fetch, loading UI | **cache done**; fetch loop and UI outstanding |
 | **P9** custom songs and discs | not started |
 
-Gate: `make check` exits 0, 75/75 tests, `client_link` pass at 20 objects, fuzz 50k pass.
+Gate: `make check` exits 0 — 78/78 tests, `client_link` pass at 20 objects, protocol fuzz 50k,
+`.pcasset` fuzz 50k, and the content-cache check with its SHA-256 vectors.
 
 ---
 
@@ -96,6 +97,31 @@ resolves identically on every machine.
 
 This is the override tier: it replaces existing assets and cannot add new ones. Adding is P5/P6.
 
+## Content delivery (P5/P7/P8)
+
+A town serves what its mods put under `mods/<id>/content/`. Everything else — `init.lua`,
+`mod.toml`, `overrides/` — stays private.
+
+```
+AssetManifest      S->C, alongside the first baseline, only if the town has content
+AssetChunkRequest  C->S, a bounded window; the server never sends unrequested data
+AssetChunk         S->C, one chunk per packet, so delivery never fragments
+```
+
+Assets are named by the hash of their bytes. That gives cross-town dedup, makes verification and
+identification the same operation (so no signature scheme is needed), and means a manifest never
+supplies a filename — path traversal is structurally impossible rather than sanitised.
+
+Verified end to end against a live server: a client joins over UDP, receives the manifest, pulls a
+multi-chunk asset, reassembles it, and confirms it hashes back to what was advertised.
+
+**The `.pcasset` parser never allocates.** Parsing yields borrowed views over the caller's buffer,
+so a hostile file cannot make it allocate on its behalf. It is fuzzed in `make check` and
+separately survived 200k iterations under ASan + UBSan.
+
+**Still missing for a player to see content:** the client fetch loop that drives the cache from a
+manifest, the mod arena and model compiler (P5), and the registry and table growth (P6).
+
 ## Corrections made while building
 
 Each came from measuring rather than trusting a prior description.
@@ -121,15 +147,19 @@ Each came from measuring rather than trusting a prior description.
 
 ## Constraints a future phase must not forget
 
-- **Protocol is now v23** and `kTownStateVersion` is 13. Both move fast — re-check before
+- **Protocol is now v24** and `kTownStateVersion` is 13. Both move fast — re-check before
   assuming a number.
 - **Mod calendar markers use event byte band 64..99** (`mSC_EVENT_MOD_BASE`, 36 slots). The stock
   values are the soncho enum plus 32 and 101-103, so that band is free. A town may declare more
   holidays (64) than it can mark (36); the marker pass stops at the band's end.
 - **`music_box` is 64 bits with 55 used** — 9 spare song slots before P9 forces a save and wire
   change. Master already replicates it (v22), so P9 builds on that rather than inventing it.
-- **P8 is blocked on fuzzing the `.pcasset` parser.** It is the first point where the client
-  parses bytes an arbitrary server chose.
+- **The `.pcasset` fuzz gate is satisfied** and must stay that way: it is the first point where
+  the client parses bytes an arbitrary server chose.
+- **Bulk messages are session-scoped.** A chunk request built with session 0 is dropped before it
+  reaches the service — the manifest arrives, no chunks do, and it looks like a broken service
+  rather than a missing session id. This cost real debugging time; the P8 fetch loop must carry
+  the session from `ServerHello`.
 - **Lua must never enter `NET_SOURCES`.** `client-link` is the guard. Note that
   `town_runtime.cpp` *is* in `NET_SOURCES` and now calls the mod host, so every binary linking
   `NET_OBJECTS` needs `MOD_OBJECTS` and `LUA_OBJECTS` — the client does not, because it links a
