@@ -1,4 +1,4 @@
-# Dedicated town protocol v17
+# Dedicated town protocol v18
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -282,7 +282,16 @@ because it is the whole truth for that chunk and replaying older changes over it
 would regress state.
 
 House baselines carry three floors of bounded room cells, canonical inventory
-item IDs plus furniture facing, furniture switch bits, light state, and music.
+item IDs plus furniture facing, furniture switch bits, light state, music, and
+— added in v18 — the house's **surfaces**: per floor a wallpaper index, a
+flooring index and the two `mHm_fllot_bit_c` flags saying either is one of the
+player's own designs, plus the exterior palette, its two pending values
+(`ordered_outlook_pal`, `next_outlook_pal`) and the door design. The indices are
+carried opaquely, since they address game tables whose size the server has no
+reason to know and the client clamps an out-of-range index as it loads the room.
+A `pattern_bits` byte with anything set outside the two defined flags is a
+decode failure. `HouseUpdate` and the `HouseState` baseline share one codec, so
+the request and the broadcast can never disagree about field order.
 The owner may bootstrap a house once. Later full-room updates atomically consume
 added items from authoritative inventory and return removed items; moves and
 rotations conserve the item multiset. Free size changes and invented furniture

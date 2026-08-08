@@ -1,10 +1,36 @@
 #include "acnet/housing.hpp"
 
+#include "acnet/protocol.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <unordered_map>
 
 namespace acnet {
+
+bool encode_house_surfaces(ByteWriter& writer, const HouseSurfaces& surfaces) {
+    for (std::size_t i = 0; i < kHouseFloorCount; ++i) {
+        if ((surfaces.pattern_bits[i] & ~kHouseSurfacePatternMask) != 0) return false;
+        if (!writer.u8(surfaces.wallpaper[i]) || !writer.u8(surfaces.flooring[i]) ||
+            !writer.u8(surfaces.pattern_bits[i])) return false;
+    }
+    return writer.u8(surfaces.exterior_palette) && writer.u8(surfaces.ordered_exterior_palette) &&
+           writer.u8(surfaces.next_exterior_palette) && writer.u8(surfaces.door_design);
+}
+
+bool decode_house_surfaces(ByteReader& reader, HouseSurfaces& surfaces) {
+    for (std::size_t i = 0; i < kHouseFloorCount; ++i) {
+        if (!reader.u8(surfaces.wallpaper[i]) || !reader.u8(surfaces.flooring[i]) ||
+            !reader.u8(surfaces.pattern_bits[i])) return false;
+        /* The original defines two bits; anything else is a client inventing
+         * state the game will never read. Reject rather than mask, so a
+         * mismatch surfaces as a decode failure instead of silently differing
+         * from what the sender hashed. */
+        if ((surfaces.pattern_bits[i] & ~kHouseSurfacePatternMask) != 0) return false;
+    }
+    return reader.u8(surfaces.exterior_palette) && reader.u8(surfaces.ordered_exterior_palette) &&
+           reader.u8(surfaces.next_exterior_palette) && reader.u8(surfaces.door_design);
+}
 
 namespace {
 
@@ -345,6 +371,7 @@ HouseUpdateResult HousingAuthority::replace_contents(const HouseUpdate& update) 
     house.basement_light_on = update.basement_light_on;
     house.music_tracks = update.music_tracks;
     house.furniture_switches = update.furniture_switches;
+    house.surfaces = update.surfaces;
     house.furniture = update.furniture;
     house.initialized = true;
     house.revision = next_revision(house.revision);

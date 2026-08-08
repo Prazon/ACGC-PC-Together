@@ -82,7 +82,31 @@ typedef struct AcNetHouseState {
     uint8_t basement_light_on;
     int16_t music_tracks[3];
     uint64_t furniture_switches[12];
+    /* The room surfaces every occupant sees and the exterior everyone walking
+     * past sees. Indices into the game's wall/floor/design tables, carried
+     * opaquely; the client clamps an out-of-range one as it loads the room.
+     * pattern_bits is mHm_fllot_bit_c: bit 0 wall_original, bit 1
+     * floor_original. */
+    uint8_t wallpaper[3];
+    uint8_t flooring[3];
+    uint8_t pattern_bits[3];
+    uint8_t exterior_palette;
+    uint8_t ordered_exterior_palette;
+    uint8_t next_exterior_palette;
+    uint8_t door_design;
 } AcNetHouseState;
+
+/* The same block on the way up, so the submit call does not grow seven more
+ * positional parameters. */
+typedef struct AcNetHouseSurfaces {
+    uint8_t wallpaper[3];
+    uint8_t flooring[3];
+    uint8_t pattern_bits[3];
+    uint8_t exterior_palette;
+    uint8_t ordered_exterior_palette;
+    uint8_t next_exterior_palette;
+    uint8_t door_design;
+} AcNetHouseSurfaces;
 
 typedef struct AcNetHouseFurniture {
     uint8_t x;
@@ -525,6 +549,7 @@ int acnet_client_submit_house_update(uint64_t house_id,
                                      uint8_t basement_light_on,
                                      const int16_t music_tracks[3],
                                      const uint64_t furniture_switches[12],
+                                     const AcNetHouseSurfaces* surfaces,
                                      const AcNetHouseFurniture* furniture,
                                      size_t furniture_count);
 int acnet_client_take_house_update_result(AcNetHouseUpdateResult* output);

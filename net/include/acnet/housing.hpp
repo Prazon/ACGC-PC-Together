@@ -111,6 +111,55 @@ struct FurnitureAddressHash {
     std::size_t operator()(const FurnitureAddress& address) const;
 };
 
+/* Everything about a house that is a *surface* rather than an object standing
+ * on one. All of it is visible to somebody other than the owner -- the walls
+ * and floor to anyone in the room, the palette and door design to anyone
+ * walking past outside -- and all of it was previously local, so two players
+ * standing in the same room saw different wallpaper and a repainted house
+ * looked unchanged to everybody but its owner.
+ *
+ * The indices are carried opaquely. They address the game's wall, floor and
+ * design tables, which the server has no business knowing the size of, and the
+ * client already clamps an out-of-range index to zero as it loads the room
+ * (aMI_CheckFloorWallIndex), so a hostile value cannot walk off a table on a
+ * viewer. */
+struct HouseSurfaces {
+    std::array<std::uint8_t, kHouseFloorCount> wallpaper{};
+    std::array<std::uint8_t, kHouseFloorCount> flooring{};
+    /* mHm_fllot_bit_c: bit 0 wall_original, bit 1 floor_original -- the surface
+     * is one of the player's own designs rather than a catalogue item. The
+     * remaining six bits are unused by the original and are rejected rather
+     * than stored, so they cannot become a covert channel. */
+    std::array<std::uint8_t, kHouseFloorCount> pattern_bits{};
+    /* mHm_hs_c::outlook_pal and the two pending changes the original applies at
+     * the day rollover: ordered_outlook_pal (bought at Nook's with an upgrade)
+     * and next_outlook_pal (everything else -- a villager, Wisp, a repaint). */
+    std::uint8_t exterior_palette = 0;
+    std::uint8_t ordered_exterior_palette = 0;
+    std::uint8_t next_exterior_palette = 0;
+    /* mHm_hs_c::door_original, the player design hung on the front door. */
+    std::uint8_t door_design = 0;
+
+    bool operator==(const HouseSurfaces& other) const {
+        return wallpaper == other.wallpaper && flooring == other.flooring && pattern_bits == other.pattern_bits &&
+               exterior_palette == other.exterior_palette &&
+               ordered_exterior_palette == other.ordered_exterior_palette &&
+               next_exterior_palette == other.next_exterior_palette && door_design == other.door_design;
+    }
+};
+
+/* The two design flags mHm_fllot_bit_c actually defines. */
+constexpr std::uint8_t kHouseSurfacePatternMask = 0x03;
+
+class ByteWriter;
+class ByteReader;
+
+/* Shared by the HouseUpdate request and the HouseState baseline so the two can
+ * never disagree about the field order. decode rejects a pattern_bits byte with
+ * anything set outside kHouseSurfacePatternMask. */
+bool encode_house_surfaces(ByteWriter& writer, const HouseSurfaces& surfaces);
+bool decode_house_surfaces(ByteReader& reader, HouseSurfaces& surfaces);
+
 struct HouseState {
     std::uint64_t house_id = 0;
     AccountId owner = 0;
@@ -126,6 +175,7 @@ struct HouseState {
     bool basement_light_on = false;
     std::array<std::int16_t, kHouseFloorCount> music_tracks{{-1, -1, -1}};
     std::array<std::uint64_t, kHouseFloorCount * kHouseLayerCount> furniture_switches{};
+    HouseSurfaces surfaces;
     /* item is the canonical pocket item ID; condition stores the original
      * room-facing direction (0..3). Reserved footprint cells use their
      * original 0xFxxx value with condition zero. */
@@ -144,6 +194,7 @@ struct HouseUpdate {
     bool basement_light_on = false;
     std::array<std::int16_t, kHouseFloorCount> music_tracks{{-1, -1, -1}};
     std::array<std::uint64_t, kHouseFloorCount * kHouseLayerCount> furniture_switches{};
+    HouseSurfaces surfaces;
     std::unordered_map<FurnitureAddress, ItemSlot, FurnitureAddressHash> furniture;
 };
 

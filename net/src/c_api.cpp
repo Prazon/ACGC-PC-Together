@@ -304,6 +304,15 @@ extern "C" int acnet_client_house(AcNetHouseState* output) {
         for (std::size_t i = 0; i < house.music_tracks.size(); ++i) output->music_tracks[i] = house.music_tracks[i];
         for (std::size_t i = 0; i < house.furniture_switches.size(); ++i)
             output->furniture_switches[i] = house.furniture_switches[i];
+        for (std::size_t i = 0; i < acnet::kHouseFloorCount; ++i) {
+            output->wallpaper[i] = house.surfaces.wallpaper[i];
+            output->flooring[i] = house.surfaces.flooring[i];
+            output->pattern_bits[i] = house.surfaces.pattern_bits[i];
+        }
+        output->exterior_palette = house.surfaces.exterior_palette;
+        output->ordered_exterior_palette = house.surfaces.ordered_exterior_palette;
+        output->next_exterior_palette = house.surfaces.next_exterior_palette;
+        output->door_design = house.surfaces.door_design;
         return 1;
     } catch (...) { capture_exception(); return 0; }
 }
@@ -882,12 +891,14 @@ extern "C" int acnet_client_submit_house_update(uint64_t house_id,
                                                   uint8_t basement_light_on,
                                                   const int16_t music_tracks[3],
                                                   const uint64_t furniture_switches[12],
+                                                  const AcNetHouseSurfaces* surfaces,
                                                   const AcNetHouseFurniture* furniture,
                                                   size_t furniture_count) {
     try {
         if (!client || house_id == 0 || expected_house_revision == 0 ||
             upgrade_level > acnet::kMaximumHouseUpgradeLevel ||
             main_light_on > 1 || basement_light_on > 1 || music_tracks == nullptr || furniture_switches == nullptr ||
+            surfaces == nullptr ||
             furniture_count > acnet::kMaximumHouseFurniture || (furniture_count != 0 && furniture == nullptr)) return 0;
         acnet::HouseUpdate update;
         update.idempotency = random_idempotency();
@@ -898,6 +909,19 @@ extern "C" int acnet_client_submit_house_update(uint64_t house_id,
         update.basement_light_on = basement_light_on != 0;
         std::copy_n(music_tracks, update.music_tracks.size(), update.music_tracks.begin());
         std::copy_n(furniture_switches, update.furniture_switches.size(), update.furniture_switches.begin());
+        for (std::size_t i = 0; i < acnet::kHouseFloorCount; ++i) {
+            /* Refuse rather than mask: a caller offering bits the game does not
+             * define has miscomputed the block, and the encoder would reject it
+             * anyway once it reached the wire. */
+            if ((surfaces->pattern_bits[i] & ~acnet::kHouseSurfacePatternMask) != 0) return 0;
+            update.surfaces.wallpaper[i] = surfaces->wallpaper[i];
+            update.surfaces.flooring[i] = surfaces->flooring[i];
+            update.surfaces.pattern_bits[i] = surfaces->pattern_bits[i];
+        }
+        update.surfaces.exterior_palette = surfaces->exterior_palette;
+        update.surfaces.ordered_exterior_palette = surfaces->ordered_exterior_palette;
+        update.surfaces.next_exterior_palette = surfaces->next_exterior_palette;
+        update.surfaces.door_design = surfaces->door_design;
         for (std::size_t i = 0; i < furniture_count; ++i) {
             acnet::FurnitureAddress address{furniture[i].x, furniture[i].z, furniture[i].floor, furniture[i].layer};
             acnet::ItemSlot item{furniture[i].item, furniture[i].condition};

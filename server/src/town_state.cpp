@@ -10,7 +10,10 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 10;
+/* 11 adds HouseState::surfaces -- wallpaper, flooring, pattern flags, exterior
+ * palette and door design. An older checkpoint simply has none, and every field
+ * defaults to the index-zero surface the game itself falls back to. */
+constexpr std::uint16_t kTownStateVersion = 11;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -220,6 +223,12 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
             !writer.u8(house.basement_light_on ? 1 : 0)) return {};
         for (std::int16_t music : house.music_tracks) if (!writer.i16(music)) return {};
         for (std::uint64_t switches : house.furniture_switches) if (!writer.u64(switches)) return {};
+        for (std::size_t f = 0; f < acnet::kHouseFloorCount; ++f) {
+            if (!writer.u8(house.surfaces.wallpaper[f]) || !writer.u8(house.surfaces.flooring[f]) ||
+                !writer.u8(house.surfaces.pattern_bits[f])) return {};
+        }
+        if (!writer.u8(house.surfaces.exterior_palette) || !writer.u8(house.surfaces.ordered_exterior_palette) ||
+            !writer.u8(house.surfaces.next_exterior_palette) || !writer.u8(house.surfaces.door_design)) return {};
         if (!writer.u32(static_cast<std::uint32_t>(house.furniture.size()))) return {};
         std::vector<std::pair<acnet::FurnitureAddress, acnet::ItemSlot>> furniture;
         for (const auto& item : house.furniture) furniture.push_back(item);
@@ -452,6 +461,20 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
             }
             for (std::uint64_t& switches : house.furniture_switches) {
                 if (!reader.u64(switches)) { error = "invalid furniture switch state"; return false; }
+            }
+        }
+        if (version >= 11) {
+            for (std::size_t f = 0; f < acnet::kHouseFloorCount; ++f) {
+                if (!reader.u8(house.surfaces.wallpaper[f]) || !reader.u8(house.surfaces.flooring[f]) ||
+                    !reader.u8(house.surfaces.pattern_bits[f]) ||
+                    (house.surfaces.pattern_bits[f] & ~acnet::kHouseSurfacePatternMask) != 0) {
+                    error = "invalid house surface state"; return false;
+                }
+            }
+            if (!reader.u8(house.surfaces.exterior_palette) ||
+                !reader.u8(house.surfaces.ordered_exterior_palette) ||
+                !reader.u8(house.surfaces.next_exterior_palette) || !reader.u8(house.surfaces.door_design)) {
+                error = "invalid house surface state"; return false;
             }
         }
         if (!reader.u32(furniture_count) || furniture_count > acnet::kMaximumHouseFurniture) {

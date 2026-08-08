@@ -470,6 +470,7 @@ bool encode(const HouseUpdate& value, std::vector<std::uint8_t>& output) {
     for (std::uint64_t switches : value.furniture_switches) {
         if (!writer.u64(switches)) return false;
     }
+    if (!encode_house_surfaces(writer, value.surfaces)) return false;
     std::vector<std::pair<FurnitureAddress, ItemSlot>> furniture(value.furniture.begin(), value.furniture.end());
     std::sort(furniture.begin(), furniture.end(), [](const auto& left, const auto& right) {
         if (left.first.floor != right.first.floor) return left.first.floor < right.first.floor;
@@ -504,6 +505,7 @@ bool decode(const std::vector<std::uint8_t>& input, HouseUpdate& value) {
     for (std::uint64_t& switches : value.furniture_switches) {
         if (!reader.u64(switches)) return false;
     }
+    if (!decode_house_surfaces(reader, value.surfaces)) return false;
     if (!reader.u16(count) || count > kMaximumHouseFurniture || value.account == 0 ||
         !value.idempotency.valid() || value.house_id == 0 || value.expected_house_revision == 0 ||
         value.upgrade_level > kMaximumHouseUpgradeLevel) return false;

@@ -222,6 +222,13 @@ void transaction_messages_round_trip() {
     house.music_tracks[0] = 91;
     house.furniture_switches[1] = 0x1122334455667788ULL;
     house.furniture[{4, 5, 2, 1}] = {0x3001, 2};
+    house.surfaces.wallpaper[0] = 12;
+    house.surfaces.flooring[2] = 34;
+    house.surfaces.pattern_bits[1] = 3;
+    house.surfaces.exterior_palette = 5;
+    house.surfaces.ordered_exterior_palette = 6;
+    house.surfaces.next_exterior_palette = 7;
+    house.surfaces.door_design = 9;
     CHECK(acnet::encode(house, bytes));
     acnet::HouseUpdate decoded_house;
     CHECK(acnet::decode(bytes, decoded_house));
@@ -231,6 +238,14 @@ void transaction_messages_round_trip() {
     CHECK(decoded_house.music_tracks[0] == 91);
     CHECK(decoded_house.furniture_switches[1] == 0x1122334455667788ULL);
     CHECK(decoded_house.furniture.at({4, 5, 2, 1}).item == 0x3001);
+    CHECK(decoded_house.surfaces == house.surfaces);
+
+    /* A pattern_bits byte outside the two flags mHm_fllot_bit_c defines is not
+     * clamped into range, it is a decode failure -- otherwise a peer could hand
+     * the encoder bytes it would then refuse to re-encode. */
+    acnet::HouseUpdate bad_surface = house;
+    bad_surface.surfaces.pattern_bits[1] = 0x04;
+    CHECK(!acnet::encode(bad_surface, bytes));
 
     acnet::ZoneReadyRequest ready;
     ready.account = 47;
@@ -4084,6 +4099,11 @@ void production_clients_connect_move_and_render_each_other() {
     house_update.music_tracks[0] = 37;
     house_update.furniture_switches[0] = 5;
     house_update.furniture[{3, 4, 0, 0}] = {0x1100, 1};
+    house_update.surfaces.wallpaper[0] = 21;
+    house_update.surfaces.flooring[0] = 22;
+    house_update.surfaces.pattern_bits[0] = 2;
+    house_update.surfaces.exterior_palette = 3;
+    house_update.surfaces.door_design = 4;
     CHECK(first.request(house_update, ++transaction_now, error));
     std::optional<acnet::HouseUpdateResult> house_result;
     bool house_converged = false;
@@ -4110,6 +4130,14 @@ void production_clients_connect_move_and_render_each_other() {
     CHECK(second.baseline()->house.furniture_switches[0] == 5);
     CHECK(second.baseline()->house.furniture.at({3, 4, 0, 0}).item == 0x1100);
     CHECK(second.baseline()->house.furniture.at({3, 4, 0, 0}).condition == 1);
+    /* The visitor, not just the owner: this is the whole point of replicating
+     * the surfaces at all. */
+    CHECK(second.baseline()->house.surfaces.wallpaper[0] == 21);
+    CHECK(second.baseline()->house.surfaces.flooring[0] == 22);
+    CHECK(second.baseline()->house.surfaces.pattern_bits[0] == 2);
+    CHECK(second.baseline()->house.surfaces.exterior_palette == 3);
+    CHECK(second.baseline()->house.surfaces.door_design == 4);
+    CHECK(second.baseline()->house.surfaces == first.baseline()->house.surfaces);
 
     const std::int64_t before_exit_time = first.estimated_town_time(transaction_now);
     transfer_both(200, 1);

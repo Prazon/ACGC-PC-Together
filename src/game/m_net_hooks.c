@@ -205,11 +205,36 @@ static int Net_ResolveRoom(int scene, const AcNetHouseState* state, NetRoomBindi
     return FALSE;
 }
 
+/* The room surfaces and the exterior, gathered from the same save the furniture
+ * grid comes from. A shared cabin has no exterior of its own -- mHm_cottage_c
+ * has no palette or door -- so those four stay zero for it. */
+static void Net_CaptureHouseSurfaces(const NetRoomBinding* room, AcNetHouseSurfaces* surfaces) {
+    int floor;
+
+    memset(surfaces, 0, sizeof(*surfaces));
+    if (room == NULL || !room->valid) return;
+    for (floor = 0; floor < room->floor_count && floor < 3; ++floor) {
+        const mHm_flr_c* f = &room->floors[floor];
+        surfaces->wallpaper[floor] = f->wall_floor.wallpaper_idx;
+        surfaces->flooring[floor] = f->wall_floor.flooring_idx;
+        surfaces->pattern_bits[floor] =
+            (u8)((f->floor_bit_info.wall_original ? 1 : 0) | (f->floor_bit_info.floor_original ? 2 : 0));
+    }
+    if (!room->shared) {
+        const mHm_hs_c* home = &Save_Get(homes[room->slot]);
+        surfaces->exterior_palette = home->outlook_pal;
+        surfaces->ordered_exterior_palette = home->ordered_outlook_pal;
+        surfaces->next_exterior_palette = home->next_outlook_pal;
+        surfaces->door_design = home->door_original;
+    }
+}
+
 static size_t Net_CaptureHouse(const NetRoomBinding* room,
                                const AcNetHouseState* baseline,
                                MY_ROOM_ACTOR* my_room,
                                int16_t music_tracks[3],
                                uint64_t switches[12],
+                               AcNetHouseSurfaces* surfaces,
                                u64* hash_out) {
     size_t count = 0;
     int floor;
@@ -284,6 +309,11 @@ static size_t Net_CaptureHouse(const NetRoomBinding* room,
     }
     hash = Net_HashBytes(hash, &room->upgrade_level, sizeof(room->upgrade_level));
     hash = Net_HashBytes(hash, music_tracks, sizeof(baseline->music_tracks));
+    /* Repainting a wall or a house changes nothing in the furniture grid, so
+     * without this the candidate hash would not move and the submit would never
+     * fire. */
+    Net_CaptureHouseSurfaces(room, surfaces);
+    hash = Net_HashBytes(hash, surfaces, sizeof(*surfaces));
     /* The cabin has no light switch pair of its own -- the indexed switches are
      * per resident house -- so it contributes nothing here rather than hashing
      * some other room's lights. */
@@ -402,6 +432,36 @@ int Net_ApplyHouseStateBeforeRoom(GAME_PLAY* play) {
                    sizeof(layers[layer].items));
         }
     }
+    /* The surfaces the whole room sees. A visitor gets the owner's wallpaper and
+     * carpet instead of their own, and a repaint reaches everyone standing in
+     * the house rather than only whoever applied it. Written before the room
+     * actor reloads, since that is what re-reads them into the wall and floor
+     * texture banks. */
+    for (floor = 0; floor < room.floor_count && floor < 3; ++floor) {
+        mHm_flr_c* f = &room.floors[floor];
+        const u8 wall_original = (u8)(state.pattern_bits[floor] & 1);
+        const u8 floor_original = (u8)((state.pattern_bits[floor] >> 1) & 1);
+        if (f->wall_floor.wallpaper_idx != state.wallpaper[floor] ||
+            f->wall_floor.flooring_idx != state.flooring[floor] ||
+            f->floor_bit_info.wall_original != wall_original ||
+            f->floor_bit_info.floor_original != floor_original) changed = TRUE;
+        f->wall_floor.wallpaper_idx = state.wallpaper[floor];
+        f->wall_floor.flooring_idx = state.flooring[floor];
+        f->floor_bit_info.wall_original = wall_original;
+        f->floor_bit_info.floor_original = floor_original;
+    }
+    if (!room.shared) {
+        /* The cabin has no exterior of its own; only a resident house does. */
+        mHm_hs_c* home = &Save_Get(homes[room.slot]);
+        if (home->outlook_pal != state.exterior_palette ||
+            home->ordered_outlook_pal != state.ordered_exterior_palette ||
+            home->next_outlook_pal != state.next_exterior_palette ||
+            home->door_original != state.door_design) changed = TRUE;
+        home->outlook_pal = state.exterior_palette;
+        home->ordered_outlook_pal = state.ordered_exterior_palette;
+        home->next_outlook_pal = state.next_exterior_palette;
+        home->door_original = state.door_design;
+    }
     if (!room.shared) {
         if (state.main_light_on) mRmTp_IndexLightSwitchON(room.slot * 2);
         else mRmTp_IndexLightSwitchOFF(room.slot * 2);
@@ -420,6 +480,7 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     NetRoomBinding room;
     int16_t music_tracks[3];
     uint64_t switches[12];
+    AcNetHouseSurfaces surfaces;
     u64 hash;
     size_t count;
     int floor;
@@ -468,7 +529,7 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     furniture_move_active = mPlib_check_player_actor_main_index_Furniture_Move((GAME*)play) ||
                             aMR_NetFurnitureMoveActive(my_room);
     if (!is_editor && last_house_revision == state.revision && !force_house_reconcile) {
-        count = Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &hash);
+        count = Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &surfaces, &hash);
         (void)count;
         if (house_submitted_hash == 0) {
             house_submitted_hash = hash;
@@ -501,11 +562,11 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     if (state.initialized && my_room != NULL && floor >= 0 && floor < 3)
         aMR_NetSetMusic(my_room, state.music_tracks[floor]);
     if (!is_editor) {
-        Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &house_submitted_hash);
+        Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &surfaces, &house_submitted_hash);
         return;
     }
     if (house_update_pending) return;
-    count = Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &hash);
+    count = Net_CaptureHouse(&room, &state, my_room, music_tracks, switches, &surfaces, &hash);
     if (hash != house_candidate_hash) {
         house_candidate_hash = hash;
         if (furniture_move_active) {
@@ -527,7 +588,7 @@ static void Net_UpdateHouseState(GAME_PLAY* play) {
     if (acnet_client_submit_house_update(state.house_id, state.revision, room.upgrade_level,
                                          room.shared ? 0 : (u8)mRmTp_Index2LightSwitchStatus(room.slot * 2),
                                          room.shared ? 0 : (u8)mRmTp_Index2LightSwitchStatus(room.slot * 2 + 1),
-                                         music_tracks, switches, house_furniture, count)) {
+                                         music_tracks, switches, &surfaces, house_furniture, count)) {
         house_update_pending = TRUE;
     }
 }
