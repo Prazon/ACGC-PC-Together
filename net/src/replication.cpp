@@ -356,7 +356,11 @@ static bool decode_notices(ByteReader& reader, NoticeBoard& board) {
 
 static bool encode_villagers(ByteWriter& writer, const VillagerRoster& roster) {
     if (roster.revision == 0) return false;
-    if (!writer.u32(roster.revision) || !writer.u8(roster.initialized ? 1 : 0)) return false;
+    if (roster.move_in.pending && roster.move_in.slot >= kVillagerSlots) return false;
+    if (!writer.u32(roster.revision) || !writer.u8(roster.initialized ? 1 : 0) ||
+        !writer.u8(roster.move_in.pending ? 1 : 0) || !writer.u8(roster.move_in.slot) ||
+        !writer.u32(roster.move_in.seed) ||
+        !writer.u64(static_cast<std::uint64_t>(roster.last_move_in_unix))) return false;
     for (const VillagerSlot& slot : roster.slots) {
         if (!valid_villager_slot(slot) || !writer.u8(slot.occupied ? 1 : 0)) return false;
         if (!slot.occupied) continue;
@@ -378,9 +382,17 @@ static bool encode_villagers(ByteWriter& writer, const VillagerRoster& roster) {
 
 static bool decode_villagers(ByteReader& reader, VillagerRoster& roster) {
     std::uint8_t initialized = 0;
+    std::uint8_t pending = 0;
+    std::uint64_t last_move_in = 0;
     if (!reader.u32(roster.revision) || !reader.u8(initialized) || initialized > 1 ||
+        !reader.u8(pending) || pending > 1 || !reader.u8(roster.move_in.slot) ||
+        !reader.u32(roster.move_in.seed) || !reader.u64(last_move_in) ||
         roster.revision == 0) return false;
     roster.initialized = initialized != 0;
+    roster.move_in.pending = pending != 0;
+    roster.last_move_in_unix = static_cast<std::int64_t>(last_move_in);
+    /* A pending opening names a real slot; a viewer indexes the roster with it. */
+    if (roster.move_in.pending && roster.move_in.slot >= kVillagerSlots) return false;
     for (VillagerSlot& slot : roster.slots) {
         std::uint8_t occupied = 0;
         slot = {};

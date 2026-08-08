@@ -647,6 +647,51 @@ extern "C" int acnet_client_villagers(AcNetVillager* output) {
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" int acnet_client_villager_move_in(uint8_t* slot, uint32_t* seed) {
+    try {
+        if (!client || client->baseline() == nullptr) return 0;
+        const acnet::VillagerRoster& roster = client->baseline()->villagers;
+        if (!roster.initialized || !roster.move_in.pending) return 0;
+        if (slot != nullptr) *slot = roster.move_in.slot;
+        if (seed != nullptr) *seed = roster.move_in.seed;
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_villager_move_in(uint8_t slot, const AcNetVillager* villager) {
+    try {
+        if (!client || villager == nullptr || slot >= acnet::kVillagerSlots) return 0;
+        acnet::VillagerRequest request;
+        request.type = acnet::VillagerOpType::MoveIn;
+        request.slot = slot;
+        acnet::VillagerSlot converted;
+        villager_from_c(*villager, converted);
+        if (!converted.occupied) return 0;
+        request.villager = converted.villager;
+        return client->request_villager(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_villager_move_out(uint8_t slot) {
+    try {
+        if (!client || slot >= acnet::kVillagerSlots) return 0;
+        acnet::VillagerRequest request;
+        request.type = acnet::VillagerOpType::AnnounceMoveOut;
+        request.slot = slot;
+        return client->request_villager(request, acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_take_villager_result(uint16_t* result_code) {
+    try {
+        if (!client) return 0;
+        const auto result = client->take_villager_result();
+        if (!result.has_value()) return 0;
+        if (result_code != nullptr) *result_code = static_cast<uint16_t>(result->code);
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" uint32_t acnet_client_villager_revision(void) {
     try {
         if (!client || client->baseline() == nullptr || !client->baseline()->villagers.initialized) return 0;

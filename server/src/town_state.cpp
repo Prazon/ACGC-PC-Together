@@ -22,8 +22,17 @@ constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
  * 15 adds the noticeboard; an older checkpoint has none and the board starts
  * empty.
  * 16 adds the villager roster. An older checkpoint has none, so the roster
- * reads as uninitialized and the next bootstrap adopts one. */
-constexpr std::uint16_t kTownStateVersion = 16;
+ * reads as uninitialized and the next bootstrap adopts one.
+ * 17 extends the roster with the pending move-in and the town's move-in clock.
+ *
+ * The roster is stored through the *wire* codec so the checkpoint and the
+ * baseline cannot disagree about its shape -- which is worth having, but means
+ * a wire change invalidates what version 16 wrote. The blob is length-prefixed
+ * precisely so that case is recoverable: a version-16 roster is skipped rather
+ * than rejected, leaving it uninitialized for the next bootstrap to re-adopt.
+ * A checkpoint is not worth failing to load over a roster that one login
+ * restores. */
+constexpr std::uint16_t kTownStateVersion = 17;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -459,9 +468,15 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
         std::uint16_t roster_size = 0;
         if (!reader.u16(roster_size)) { error = "invalid villager roster"; return false; }
         std::vector<std::uint8_t> roster(roster_size);
-        if ((roster_size != 0 && !reader.bytes(roster.data(), roster.size())) ||
-            !acnet::decode_villager_delta(roster, villagers_)) {
+        if (roster_size != 0 && !reader.bytes(roster.data(), roster.size())) {
             error = "invalid villager roster"; return false;
+        }
+        if (!acnet::decode_villager_delta(roster, villagers_)) {
+            if (version >= 17) { error = "invalid villager roster"; return false; }
+            /* A version-16 roster in the older encoding. Skipped, not rejected:
+             * the bytes were consumed by the length prefix, and the next
+             * bootstrap re-adopts a roster from a client. */
+            villagers_ = {};
         }
     }
 

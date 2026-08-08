@@ -1,6 +1,7 @@
 #pragma once
 
 #include "acnet/player_query.hpp"
+#include "acnet/world.hpp"
 #include "acnet/types.hpp"
 
 #include <array>
@@ -185,8 +186,25 @@ struct VillagerSlot {
     }
 };
 
+/* A move-in in progress. The server owns the *decision* -- when somebody is due
+ * and which slot they take -- but not the villager: picking one needs the
+ * character, name and personality tables, which the server holds none of and is
+ * not allowed to. So it publishes the opening and a seed, and the first client
+ * to run the game's own roll against that seed supplies the newcomer. Every
+ * connected client may try; the first accepted request clears the opening and
+ * the rest are refused as stale, which needs no election. */
+struct VillagerMoveIn {
+    bool pending = false;
+    std::uint8_t slot = 0;
+    std::uint32_t seed = 0;
+};
+
 struct VillagerRoster {
     std::array<VillagerSlot, kVillagerSlots> slots{};
+    VillagerMoveIn move_in;
+    /* Town time of the last move-in, so the one-per-day rule is the town's and
+     * not fifteen private clocks. 0 means none yet. */
+    std::int64_t last_move_in_unix = 0;
     Revision revision = 1;
     /* False until a client has handed over a generated roster. The server does
      * not invent villagers: it has no name, species or personality tables and
@@ -195,7 +213,9 @@ struct VillagerRoster {
     bool initialized = false;
 
     bool operator==(const VillagerRoster& other) const {
-        return slots == other.slots && revision == other.revision && initialized == other.initialized;
+        return slots == other.slots && revision == other.revision && initialized == other.initialized &&
+               move_in.pending == other.move_in.pending && move_in.slot == other.move_in.slot &&
+               move_in.seed == other.move_in.seed && last_move_in_unix == other.last_move_in_unix;
     }
 };
 
@@ -212,5 +232,34 @@ constexpr EntityId kVillagerEntityBase = 2000;
 constexpr EntityId villager_entity(std::size_t slot) {
     return kVillagerEntityBase + static_cast<EntityId>(slot);
 }
+
+enum class VillagerOpType : std::uint8_t {
+    /* A client supplies the newcomer for the opening the server published. */
+    MoveIn,
+    /* A client reports that a villager announced they are leaving. The original
+     * decides this from dialogue -- remove_exp accumulated from how a player
+     * has treated them -- which is client-side state; the server owns what
+     * follows, which is the slot actually emptying a day later. */
+    AnnounceMoveOut,
+};
+
+constexpr std::uint8_t kMaximumVillagerOp = static_cast<std::uint8_t>(VillagerOpType::AnnounceMoveOut);
+
+struct VillagerRequest {
+    VillagerOpType type = VillagerOpType::MoveIn;
+    AccountId account = 0;
+    IdempotencyKey idempotency;
+    Revision expected_revision = 0;
+    std::uint8_t slot = 0;
+    VillagerIdentity villager; /* MoveIn only */
+};
+
+struct VillagerResult {
+    ResultCode code = ResultCode::InternalError;
+    IdempotencyKey idempotency;
+    Revision revision = 0;
+    std::uint8_t slot = 0;
+    bool replayed = false;
+};
 
 } // namespace acnet

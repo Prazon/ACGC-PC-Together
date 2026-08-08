@@ -403,6 +403,10 @@ extern void mNpc_RenewalNpcRoom(s16* wall_floor);
 extern void mNpc_RenewalSetNpc(ACTOR* actor);
 extern int mNpc_GetFriendAnimalNum(PersonalID_c* pid);
 extern int mNpc_CheckFriendAllAnimal(PersonalID_c* pid);
+/* Offers a newcomer for an opening the server published. Runs the game's own
+ * move-in roll against the server's seed, so every client offering for the same
+ * opening offers the same villager. No-op offline or with no opening. */
+extern void mNpc_NetOfferMoveIn();
 extern void mNpc_SetNpcFurnitureRandom(mFM_fg_data_c** fg_data_table, int fg_base_id);
 extern mActor_name_t mNpc_GetNpcFurniture(AnmPersonalID_c* anm_id);
 extern void mNpc_ClearInAnimal();

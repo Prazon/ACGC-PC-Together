@@ -677,6 +677,9 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
         case MessageType::HouseUpdateResult:
             if (!decode(packet.payload, house_update_result_.emplace())) return false;
             break;
+        case MessageType::VillagerResult:
+            if (!decode(packet.payload, villager_result_.emplace())) return false;
+            break;
         case MessageType::NoticePostResult:
             if (!decode(packet.payload, notice_result_.emplace())) return false;
             break;
@@ -973,6 +976,19 @@ std::optional<FurnitureResult> ClientRuntime::take_furniture_result() {
 }
 std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
     auto result = std::move(house_update_result_); house_update_result_.reset(); return result;
+}
+std::optional<VillagerResult> ClientRuntime::take_villager_result() {
+    auto result = std::move(villager_result_); villager_result_.reset(); return result;
+}
+bool ClientRuntime::request_villager(const VillagerRequest& request, std::uint64_t now_ms, std::string& error) {
+    if (!has_baseline_) { error = "no baseline yet"; return false; }
+    VillagerRequest sending = request;
+    sending.account = config_.account;
+    sending.idempotency = {random_nonzero_u64(), random_nonzero_u64()};
+    sending.expected_revision = baseline_.villagers.revision;
+    std::vector<std::uint8_t> payload;
+    if (!encode(sending, payload)) { error = "failed to encode a villager request"; return false; }
+    return send_payload(MessageType::VillagerRequest, Channel::Transactions, payload, now_ms, error);
 }
 std::optional<NoticePostResult> ClientRuntime::take_notice_result() {
     auto result = std::move(notice_result_); notice_result_.reset(); return result;

@@ -629,6 +629,7 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
                 shop_delta.target_account = 0;
                 if (acnet::encode_shop_delta(shop, shop_delta.payload)) deltas_.append(std::move(shop_delta));
             }
+            if (!run_villager_turnover(background_error_)) return false;
             /* The stalk market turns over on Sunday, as Kabu_manager does: a
              * new buy price, a new trend chosen from the old one's odds, and
              * the six selling days that follow. Everyone is quoted the same
@@ -1825,6 +1826,84 @@ bool TownRuntime::dispatch(Connection& connection,
             }
             return true;
         }
+        case acnet::MessageType::VillagerRequest: {
+            acnet::VillagerRequest request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            acnet::VillagerResult result;
+            result.idempotency = request.idempotency;
+            result.slot = request.slot;
+            const std::uint64_t key = request.idempotency.high ^ (request.idempotency.low * 1099511628211ULL) ^
+                                      (connection.account * 1000003ULL);
+            const auto prior = villager_idempotency_.find(key);
+            if (prior != villager_idempotency_.end()) {
+                result = prior->second;
+                result.replayed = true;
+            } else if (!villagers_.initialized || request.expected_revision != villagers_.revision) {
+                result.code = acnet::ResultCode::StaleRevision;
+                result.revision = villagers_.revision;
+            } else if (request.type == acnet::VillagerOpType::MoveIn) {
+                /* The opening has to still be open, and be the one the client
+                 * was told about: every connected client may offer a newcomer
+                 * and the first accepted one closes it, so the rest land here. */
+                bool duplicate = false;
+                for (const acnet::VillagerSlot& entry : villagers_.slots) {
+                    if (entry.occupied && entry.villager.npc_id == request.villager.npc_id) duplicate = true;
+                }
+                acnet::VillagerSlot candidate{true, request.villager};
+                if (!villagers_.move_in.pending || villagers_.move_in.slot != request.slot ||
+                    villagers_.slots[request.slot].occupied) {
+                    result.code = acnet::ResultCode::Conflict;
+                    result.revision = villagers_.revision;
+                } else if (duplicate || !acnet::valid_villager_slot(candidate)) {
+                    /* Two of the same character is a state the game cannot
+                     * represent -- the roster is keyed by who they are. */
+                    result.code = acnet::ResultCode::InvalidState;
+                    result.revision = villagers_.revision;
+                } else {
+                    villagers_.slots[request.slot] = candidate;
+                    villagers_.move_in = {};
+                    villagers_.last_move_in_unix = clock_.state().town_unix_seconds;
+                    villagers_.revision = advance_revision(villagers_.revision);
+                    result.code = acnet::ResultCode::Ok;
+                    result.revision = villagers_.revision;
+                    villager_idempotency_[key] = result;
+                    if (!sync_villager_npcs(error) || !commit_state(127, error) ||
+                        !database_.audit(connection.account, "villager-move-in",
+                                         "slot=" + std::to_string(static_cast<unsigned>(request.slot)),
+                                         wall_unix_seconds(), error)) return false;
+                    publish_villagers();
+                    record_event("A villager moved into slot " +
+                                 std::to_string(static_cast<unsigned>(request.slot)));
+                }
+            } else {
+                acnet::VillagerSlot& entry = villagers_.slots[request.slot];
+                if (!entry.occupied) {
+                    result.code = acnet::ResultCode::NotFound;
+                    result.revision = villagers_.revision;
+                } else {
+                    /* The announcement is the client's -- the original decides
+                     * it from dialogue -- but the slot emptying is the
+                     * server's, and happens at the next daily turnover. */
+                    entry.villager.removing = 1;
+                    villagers_.revision = advance_revision(villagers_.revision);
+                    result.code = acnet::ResultCode::Ok;
+                    result.revision = villagers_.revision;
+                    villager_idempotency_[key] = result;
+                    if (!commit_state(128, error) ||
+                        !database_.audit(connection.account, "villager-move-out",
+                                         "slot=" + std::to_string(static_cast<unsigned>(request.slot)),
+                                         wall_unix_seconds(), error)) return false;
+                    publish_villagers();
+                    record_event("A villager in slot " + std::to_string(static_cast<unsigned>(request.slot)) +
+                                 " announced they are leaving");
+                }
+            }
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) { error = "failed to serialize villager result"; return false; }
+            return send_payload(connection, acnet::MessageType::VillagerResult, acnet::Channel::Transactions,
+                                payload, monotonic_ms, error);
+        }
         case acnet::MessageType::NoticePostRequest: {
             acnet::NoticePostRequest request;
             if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
@@ -2242,6 +2321,70 @@ bool TownRuntime::grant_bank_bells(acnet::AccountId account, std::uint64_t amoun
                              " balance=" + std::to_string(result.balance),
                          wall_unix_seconds(), error)) return false;
     record_event("operator granted " + std::to_string(amount) + " bells to account " + std::to_string(account));
+    return true;
+}
+
+void TownRuntime::publish_villagers() {
+    acnet::ReplicationDelta delta;
+    delta.kind = acnet::ResourceKind::Villager;
+    delta.zone = 0;
+    delta.target_account = 0;
+    if (acnet::encode_villager_delta(villagers_, delta.payload)) deltas_.append(std::move(delta));
+}
+
+/* mNpc_Grow's timing, owned by the town instead of by fifteen private clocks.
+ *
+ * The original also gates on the field rank -- a local assessment of how tidy
+ * the town is -- and on the arriving player having spoken to every current
+ * villager. Neither is available here: the rank is computed from terrain
+ * attributes the server has no copy of, and "has met everyone" is per-player.
+ * The client keeps both checks before it offers a newcomer, so they still
+ * apply; what the server owns is the part that must be single-valued, which is
+ * *when* an opening exists and *which slot* it is. */
+bool TownRuntime::run_villager_turnover(std::string& error) {
+    error.clear();
+    if (!villagers_.initialized) return true;
+    const std::int64_t town_time = clock_.state().town_unix_seconds;
+    bool changed = false;
+
+    /* Anybody who announced a departure yesterday is gone today. Doing this
+     * server-side is the whole point: a move-out decided per client would empty
+     * a different slot in every town. */
+    for (std::size_t slot = 0; slot < acnet::kVillagerSlots; ++slot) {
+        acnet::VillagerSlot& entry = villagers_.slots[slot];
+        if (!entry.occupied || entry.villager.removing == 0) continue;
+        entry = {};
+        changed = true;
+        record_event("Villager in slot " + std::to_string(slot) + " moved out");
+    }
+
+    if (!villagers_.move_in.pending) {
+        std::size_t free_slot = acnet::kVillagerSlots;
+        std::size_t occupied = 0;
+        for (std::size_t slot = 0; slot < acnet::kVillagerSlots; ++slot) {
+            if (villagers_.slots[slot].occupied) ++occupied;
+            else if (free_slot == acnet::kVillagerSlots) free_slot = slot;
+        }
+        /* One per day, and only into a real vacancy. */
+        const bool due = free_slot != acnet::kVillagerSlots && occupied != 0 &&
+                         (villagers_.last_move_in_unix == 0 ||
+                          town_time - villagers_.last_move_in_unix >= 86400);
+        if (due) {
+            std::uint32_t seed = 0;
+            if (!acnet::secure_random(reinterpret_cast<std::uint8_t*>(&seed), sizeof(seed)))
+                seed = static_cast<std::uint32_t>(villagers_.revision * 2654435761U);
+            villagers_.move_in.pending = true;
+            villagers_.move_in.slot = static_cast<std::uint8_t>(free_slot);
+            villagers_.move_in.seed = seed;
+            changed = true;
+            record_event("A villager is moving into slot " + std::to_string(free_slot));
+        }
+    }
+
+    if (!changed) return true;
+    villagers_.revision = advance_revision(villagers_.revision);
+    if (!sync_villager_npcs(error) || !commit_state(126, error)) return false;
+    publish_villagers();
     return true;
 }
 

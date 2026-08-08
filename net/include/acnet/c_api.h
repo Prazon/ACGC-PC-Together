@@ -467,6 +467,18 @@ uint32_t acnet_client_villager_revision(void);
 /* Hand the locally generated roster to a town that has none yet. Ignored once
  * the server owns one. */
 int acnet_client_submit_villagers(const AcNetVillager* villagers);
+/* An opening the server has published: a slot is empty and a newcomer is due.
+ * The server decides when and where, but cannot choose *who* -- that needs the
+ * game's character tables -- so a client runs the roll against `seed` and
+ * offers the result. Returns 0 when no move-in is pending. */
+int acnet_client_villager_move_in(uint8_t* slot, uint32_t* seed);
+/* Offer the newcomer for a published opening. Every client may try; the first
+ * accepted closes the opening and the rest are refused. */
+int acnet_client_request_villager_move_in(uint8_t slot, const AcNetVillager* villager);
+/* Report that the villager in `slot` announced they are leaving. The slot is
+ * emptied by the server at the next daily turnover, not here. */
+int acnet_client_request_villager_move_out(uint8_t slot);
+int acnet_client_take_villager_result(uint16_t* result_code);
 
 uint32_t acnet_client_gyroid_serial(void);
 /* The gyroid of resident house `slot` (0..3). Zero when the slot has no

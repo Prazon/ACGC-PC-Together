@@ -1,4 +1,4 @@
-# Dedicated town protocol v25
+# Dedicated town protocol v26
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -154,6 +154,35 @@ the same codec the baseline uses so the two cannot disagree. Once adopted the
 roster is the server's; a later bootstrap cannot overwrite it. An uninitialized
 roster is a legal value and means "waiting for a client to hand one over",
 exactly as an empty island tile list does.
+
+### Move-ins and move-outs (v26)
+
+The roster also carries a **pending move-in** (`pending`, `slot`, `seed`) and
+the town's last move-in time. The split follows what must be single-valued: the
+server owns *when* somebody is due — one per day, into a real vacancy — and
+*which slot* they take; it cannot own *who*, because picking a villager needs
+the character, name and personality tables it holds none of.
+
+So the server publishes the opening and a seed, and a client runs
+`mNpc_Grow`'s own roll against that seed and offers the result through
+`VillagerRequest` (44) / `VillagerResult` (45). Every connected client may
+offer; the first accepted request closes the opening and the rest are refused
+as `Conflict`, which needs no election — and because they all seed from the
+same value they are offering the same villager, so the race has no visible
+outcome. A move-in naming a character already in town is refused with
+`InvalidState`: the roster is keyed by who they are, and two of the same
+villager is a state the game cannot represent.
+
+The two conditions the original checks that the server cannot — the player
+belonging to this town, and having spoken to every current villager — stay on
+the client, where the data is.
+
+`AnnounceMoveOut` is the mirror: the original decides a departure from
+dialogue, which is client-side state, so the client reports it and the server
+owns what follows — the slot actually empties at the next daily turnover, not
+on announcement. The client detects it by diffing the local `removing` flag
+against the authoritative one rather than hooking the dialogue, which catches
+every path that sets it without having to find each one.
 
 Deliberately **not** carried: `Animal_c::memories`, the per-player relationship
 records. They are seven eighths of the 0x988-byte struct and are account-scoped

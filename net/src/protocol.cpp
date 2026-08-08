@@ -65,6 +65,8 @@ bool valid_message(std::uint16_t value) {
         case MessageType::TownTuneResult:
         case MessageType::NoticePostRequest:
         case MessageType::NoticePostResult:
+        case MessageType::VillagerRequest:
+        case MessageType::VillagerResult:
         case MessageType::ZoneTransferRequest:
         case MessageType::ZoneTransferOffer:
         case MessageType::ZoneReady:

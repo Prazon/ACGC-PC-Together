@@ -1756,6 +1756,86 @@ void villager_roster_is_town_state() {
     CHECK(decoded_bootstrap.villagers == roster);
 }
 
+void villager_move_in_and_out_are_server_decisions() {
+    /* The opening round-trips with the roster: the server publishes which slot
+     * and what seed, and every client rolls the same newcomer from it. */
+    acnet::VillagerRoster roster;
+    roster.initialized = true;
+    roster.revision = 4;
+    roster.move_in.pending = true;
+    roster.move_in.slot = 7;
+    roster.move_in.seed = 0xABCD1234u;
+    roster.last_move_in_unix = 1786233600;
+    std::vector<std::uint8_t> payload;
+    CHECK(acnet::encode_villager_delta(roster, payload));
+    acnet::VillagerRoster decoded;
+    CHECK(acnet::decode_villager_delta(payload, decoded));
+    CHECK(decoded.move_in.pending);
+    CHECK(decoded.move_in.slot == 7);
+    CHECK(decoded.move_in.seed == 0xABCD1234u);
+    CHECK(decoded.last_move_in_unix == 1786233600);
+
+    /* A pending opening names a real slot -- a viewer indexes the roster with
+     * it, so an out-of-range one cannot survive the encoder. */
+    acnet::VillagerRoster bad_slot = roster;
+    bad_slot.move_in.slot = acnet::kVillagerSlots;
+    CHECK(!acnet::encode_villager_delta(bad_slot, payload));
+
+    acnet::VillagerIdentity newcomer;
+    newcomer.npc_id = 0x2222;
+    newcomer.looks = 1;
+    newcomer.relations.fill(128);
+
+    acnet::VillagerRequest move_in;
+    move_in.type = acnet::VillagerOpType::MoveIn;
+    move_in.account = 12;
+    move_in.idempotency = {5, 6};
+    move_in.expected_revision = 4;
+    move_in.slot = 7;
+    move_in.villager = newcomer;
+    CHECK(acnet::encode(move_in, payload));
+    acnet::VillagerRequest decoded_request;
+    CHECK(acnet::decode(payload, decoded_request));
+    CHECK(decoded_request.type == acnet::VillagerOpType::MoveIn);
+    CHECK(decoded_request.slot == 7);
+    CHECK(decoded_request.villager == newcomer);
+
+    /* A move-out names only the slot; the villager comes from the roster. */
+    acnet::VillagerRequest move_out;
+    move_out.type = acnet::VillagerOpType::AnnounceMoveOut;
+    move_out.account = 12;
+    move_out.idempotency = {7, 8};
+    move_out.expected_revision = 4;
+    move_out.slot = 2;
+    CHECK(acnet::encode(move_out, payload));
+    CHECK(acnet::decode(payload, decoded_request));
+    CHECK(decoded_request.type == acnet::VillagerOpType::AnnounceMoveOut);
+    CHECK(decoded_request.slot == 2);
+
+    /* A slot past the roster, a request quoting no revision, and a move-in
+     * offering a villager the game cannot represent are all refused. */
+    acnet::VillagerRequest out_of_range = move_out;
+    out_of_range.slot = acnet::kVillagerSlots;
+    CHECK(!acnet::encode(out_of_range, payload));
+    acnet::VillagerRequest unversioned = move_out;
+    unversioned.expected_revision = 0;
+    CHECK(!acnet::encode(unversioned, payload));
+    acnet::VillagerRequest nameless = move_in;
+    nameless.villager.npc_id = 0;
+    CHECK(!acnet::encode(nameless, payload));
+
+    acnet::VillagerResult result;
+    result.code = acnet::ResultCode::Ok;
+    result.idempotency = {5, 6};
+    result.revision = 5;
+    result.slot = 7;
+    CHECK(acnet::encode(result, payload));
+    acnet::VillagerResult decoded_result;
+    CHECK(acnet::decode(payload, decoded_result));
+    CHECK(decoded_result.revision == 5);
+    CHECK(decoded_result.slot == 7);
+}
+
 void notice_board_is_town_state() {
     acnet::NoticeBoard board;
     board.revision = 3;
@@ -5371,6 +5451,7 @@ int main() {
         {"shop shelf is the whole shelf", shop_shelf_is_the_whole_shelf},
         {"shop tier is earned and server owned", shop_tier_is_earned_and_server_owned},
         {"villager roster is town state", villager_roster_is_town_state},
+        {"villager move in and out", villager_move_in_and_out_are_server_decisions},
         {"notice board is town state", notice_board_is_town_state},
         {"town tune is town state", town_tune_is_town_state},
         {"turnip market is town state", turnip_market_is_town_state},

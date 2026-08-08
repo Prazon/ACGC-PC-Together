@@ -303,6 +303,12 @@ private:
     /* Registers one NpcState per occupied roster slot so villagers are real
      * server entities -- which is what conversation leases address. */
     bool sync_villager_npcs(std::string& error);
+    /* Publishes the roster after the server changes it. */
+    void publish_villagers();
+    /* The daily turnover: opens a move-in when one is due, and empties the slot
+     * of anybody who announced they were leaving. */
+    bool run_villager_turnover(std::string& error);
+    std::unordered_map<std::uint64_t, acnet::VillagerResult> villager_idempotency_;
     acnet::NoticeBoard notices_;
     std::unordered_map<std::uint64_t, acnet::NoticePostResult> notice_idempotency_;
     /* The fruit this town grows, reported once by the bootstrapping client.

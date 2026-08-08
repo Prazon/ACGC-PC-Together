@@ -176,6 +176,14 @@ void Net_ApplyAuthoritativeNotices(void);
  * Animal_c::memories is NOT projected; it is per-player and stays local. */
 int Net_VillagersAuthoritative(void);
 void Net_ApplyAuthoritativeVillagers(void);
+/* An opening the server has published: a slot is free and a newcomer is due.
+ * The server decides when and where but cannot choose who -- that needs the
+ * game's character tables -- so m_npc.c runs the original roll against `seed`
+ * and offers the result through Net_OfferVillagerMoveIn. */
+int Net_VillagerMoveInPending(u8* slot, u32* seed);
+/* Offer the villager the local roll just generated into `local_index` for the
+ * published opening `slot`. */
+int Net_OfferVillagerMoveIn(int slot, int local_index);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -240,6 +248,8 @@ void Net_ApplyAuthoritativeVillagers(void);
 #define Net_ApplyAuthoritativeNotices() ((void)0)
 #define Net_VillagersAuthoritative() FALSE
 #define Net_ApplyAuthoritativeVillagers() ((void)0)
+#define Net_VillagerMoveInPending(slot, seed) FALSE
+#define Net_OfferVillagerMoveIn(slot, local_index) FALSE
 #endif
 
 #ifdef __cplusplus

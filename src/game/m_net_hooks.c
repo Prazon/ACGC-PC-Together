@@ -1899,41 +1899,71 @@ void Net_ApplyAuthoritativeTownTune(void) {
  * -- so the first resident's town generation is the only possible source. Once
  * the server owns a roster this is ignored, and the projection below is what
  * every client reads instead. */
+/* One villager, save form to wire form. Shared by the bootstrap capture and the
+ * move-in offer so the two cannot describe the same villager differently. */
+static int Net_VillagerToWire(const Animal_c* animal, AcNetVillager* wire) {
+    memset(wire, 0, sizeof(*wire));
+    /* mNpc_LOOKS_UNSET in the personality, or no character at all, is how the
+     * original marks an empty slot. */
+    if (animal->id.npc_id == EMPTY_NO || animal->id.looks >= mNpc_LOOKS_UNSET) return FALSE;
+    wire->occupied = 1;
+    wire->npc_id = (uint16_t)animal->id.npc_id;
+    wire->land_id = animal->id.land_id;
+    memcpy(wire->land_name, animal->id.land_name, ACNET_VILLAGER_NAME_BYTES);
+    wire->name_id = animal->id.name_id;
+    wire->looks = animal->id.looks;
+    wire->home_block_x = animal->home_info.block_x;
+    wire->home_block_z = animal->home_info.block_z;
+    wire->home_ut_x = animal->home_info.ut_x;
+    wire->home_ut_z = animal->home_info.ut_z;
+    memcpy(wire->catchphrase, animal->catchphrase, ACNET_VILLAGER_CATCHPHRASE_BYTES);
+    wire->cloth = (uint16_t)animal->cloth;
+    wire->present_cloth = (uint16_t)animal->present_cloth;
+    wire->cloth_original_id = animal->cloth_original_id;
+    wire->umbrella_id = animal->umbrella_id;
+    wire->mood = animal->mood;
+    wire->mood_time = animal->mood_time;
+    wire->is_home = animal->is_home;
+    wire->moved_in = animal->moved_in;
+    wire->removing = animal->removing;
+    wire->previous_land_id = animal->previous_land_id;
+    memcpy(wire->previous_land_name, animal->anmuni.previous_land_name, ACNET_VILLAGER_NAME_BYTES);
+    memcpy(wire->parent_name, animal->parent_name, ACNET_VILLAGER_NAME_BYTES);
+    memcpy(wire->relations, animal->animal_relations, ACNET_VILLAGER_SLOTS);
+    return TRUE;
+}
+
+int Net_VillagerMoveInPending(u8* slot, u32* seed) {
+    uint8_t wire_slot = 0;
+    uint32_t wire_seed = 0;
+
+    if (!Net_VillagersAuthoritative()) return FALSE;
+    if (!acnet_client_villager_move_in(&wire_slot, &wire_seed)) return FALSE;
+    if (slot != NULL) *slot = (u8)wire_slot;
+    if (seed != NULL) *seed = (u32)wire_seed;
+    return TRUE;
+}
+
+int Net_OfferVillagerMoveIn(int slot, int local_index) {
+    AcNetVillager wire;
+
+    if (!Net_VillagersAuthoritative() || slot < 0 || slot >= ACNET_VILLAGER_SLOTS ||
+        local_index < 0 || local_index >= ANIMAL_NUM_MAX) return FALSE;
+    if (!Net_VillagerToWire(&Save_Get(animals[local_index]), &wire)) return FALSE;
+    /* Whatever the server does with this -- accept it into its own slot, or
+     * refuse it because another client got there first -- the next projection
+     * settles where the newcomer actually lives, so the local roll's placement
+     * does not have to be undone here. */
+    return acnet_client_request_villager_move_in((uint8_t)slot, &wire);
+}
+
 static void Net_CaptureVillagers(void) {
     AcNetVillager wire[ACNET_VILLAGER_SLOTS];
     int i;
 
     memset(wire, 0, sizeof(wire));
     for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
-        const Animal_c* animal = &Save_Get(animals[i]);
-
-        /* mNpc_LOOKS_UNSET in the personality, or no character at all, is how
-         * the original marks an empty slot. */
-        if (animal->id.npc_id == EMPTY_NO || animal->id.looks >= mNpc_LOOKS_UNSET) continue;
-        wire[i].occupied = 1;
-        wire[i].npc_id = (uint16_t)animal->id.npc_id;
-        wire[i].land_id = animal->id.land_id;
-        memcpy(wire[i].land_name, animal->id.land_name, ACNET_VILLAGER_NAME_BYTES);
-        wire[i].name_id = animal->id.name_id;
-        wire[i].looks = animal->id.looks;
-        wire[i].home_block_x = animal->home_info.block_x;
-        wire[i].home_block_z = animal->home_info.block_z;
-        wire[i].home_ut_x = animal->home_info.ut_x;
-        wire[i].home_ut_z = animal->home_info.ut_z;
-        memcpy(wire[i].catchphrase, animal->catchphrase, ACNET_VILLAGER_CATCHPHRASE_BYTES);
-        wire[i].cloth = (uint16_t)animal->cloth;
-        wire[i].present_cloth = (uint16_t)animal->present_cloth;
-        wire[i].cloth_original_id = animal->cloth_original_id;
-        wire[i].umbrella_id = animal->umbrella_id;
-        wire[i].mood = animal->mood;
-        wire[i].mood_time = animal->mood_time;
-        wire[i].is_home = animal->is_home;
-        wire[i].moved_in = animal->moved_in;
-        wire[i].removing = animal->removing;
-        wire[i].previous_land_id = animal->previous_land_id;
-        memcpy(wire[i].previous_land_name, animal->anmuni.previous_land_name, ACNET_VILLAGER_NAME_BYTES);
-        memcpy(wire[i].parent_name, animal->parent_name, ACNET_VILLAGER_NAME_BYTES);
-        memcpy(wire[i].relations, animal->animal_relations, ACNET_VILLAGER_SLOTS);
+        (void)Net_VillagerToWire(&Save_Get(animals[i]), &wire[i]);
     }
     (void)acnet_client_submit_villagers(wire);
 }
@@ -1953,12 +1983,35 @@ void Net_ApplyAuthoritativeVillagers(void) {
     static u32 last_villager_revision = 0;
     AcNetVillager wire[ACNET_VILLAGER_SLOTS];
     u32 revision;
+    uint16_t code = 0;
     int i;
 
     if (!Net_IsConnected()) return;
+    /* A refusal changes nothing authoritative, so it would not move the
+     * revision and the optimistic local roll would sit there uncorrected.
+     * Forcing a reprojection is what takes it back. */
+    while (acnet_client_take_villager_result(&code)) {
+        last_villager_revision = 0;
+    }
     revision = acnet_client_villager_revision();
-    if (revision == 0 || revision == last_villager_revision) return;
+    if (revision == 0) return;
     if (!acnet_client_villagers(wire)) return;
+
+    /* A villager the local game has decided is leaving, whom the server does
+     * not know about yet. Detected by diffing rather than by hooking the
+     * dialogue: the original sets `removing` from several places -- a
+     * town-transfer, a conversation -- and a diff catches all of them without
+     * having to find each one. The server empties the slot at its next daily
+     * turnover; nothing is removed here. */
+    for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+        if (!wire[i].occupied || wire[i].removing) continue;
+        if (Save_Get(animals[i]).removing != 0 &&
+            Save_Get(animals[i]).id.npc_id == (mActor_name_t)wire[i].npc_id) {
+            (void)acnet_client_request_villager_move_out((uint8_t)i);
+        }
+    }
+
+    if (revision == last_villager_revision) return;
 
     for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
         Animal_c* animal = &Save_Get(animals[i]);
@@ -1994,6 +2047,15 @@ void Net_ApplyAuthoritativeVillagers(void) {
         memcpy(animal->anmuni.previous_land_name, wire[i].previous_land_name, LAND_NAME_SIZE);
         memcpy(animal->parent_name, wire[i].parent_name, PLAYER_NAME_LEN);
         memcpy(animal->animal_relations, wire[i].relations, ANIMAL_NUM_MAX);
+    }
+    {
+        /* mNpc_CheckGrow and the roster UI both read this, and it is derived
+         * rather than independent state, so it follows the projection. */
+        u8 occupied = 0;
+        for (i = 0; i < ANIMAL_NUM_MAX && i < ACNET_VILLAGER_SLOTS; ++i) {
+            if (wire[i].occupied) ++occupied;
+        }
+        Save_Set(now_npc_max, occupied);
     }
     last_villager_revision = revision;
 }
@@ -2347,6 +2409,10 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
     Net_ApplyAuthoritativeTownTune();
     Net_ApplyAuthoritativeNotices();
     Net_ApplyAuthoritativeVillagers();
+    /* After the projection, so the roll sees the authoritative roster it is
+     * adding to rather than a stale one. Cheap: it returns immediately unless
+     * the server has actually published an opening. */
+    mNpc_NetOfferMoveIn();
     Net_ApplyAuthoritativeGyroids(play);
     Net_SubmitGyroidIfEdited(play);
 }

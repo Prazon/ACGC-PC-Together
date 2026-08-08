@@ -816,4 +816,69 @@ bool decode(const std::vector<std::uint8_t>& input, NoticePostResult& value) {
     return true;
 }
 
+bool encode(const VillagerRequest& value, std::vector<std::uint8_t>& output) {
+    if (value.account == 0 || !value.idempotency.valid() || value.expected_revision == 0 ||
+        static_cast<std::uint8_t>(value.type) > kMaximumVillagerOp || value.slot >= kVillagerSlots) return false;
+    ByteWriter writer(kMaximumTransferBytes);
+    if (!writer.u8(static_cast<std::uint8_t>(value.type)) || !writer.u64(value.account) ||
+        !writer.u64(value.idempotency.high) || !writer.u64(value.idempotency.low) ||
+        !writer.u32(value.expected_revision) || !writer.u8(value.slot)) return false;
+    if (value.type == VillagerOpType::MoveIn) {
+        /* The newcomer rides through the roster's own codec, so a move-in and a
+         * baseline can never disagree about what a villager looks like. */
+        VillagerRoster carrier;
+        carrier.initialized = true;
+        carrier.slots[0] = {true, value.villager};
+        std::vector<std::uint8_t> payload;
+        if (!encode_villager_delta(carrier, payload) ||
+            payload.size() > std::numeric_limits<std::uint16_t>::max() ||
+            !writer.u16(static_cast<std::uint16_t>(payload.size())) ||
+            !writer.bytes(payload.data(), payload.size())) return false;
+    }
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, VillagerRequest& value) {
+    ByteReader reader(input);
+    std::uint8_t type = 0;
+    if (!reader.u8(type) || type > kMaximumVillagerOp || !reader.u64(value.account) ||
+        !reader.u64(value.idempotency.high) || !reader.u64(value.idempotency.low) ||
+        !reader.u32(value.expected_revision) || !reader.u8(value.slot) || value.account == 0 ||
+        !value.idempotency.valid() || value.expected_revision == 0 || value.slot >= kVillagerSlots) return false;
+    value.type = static_cast<VillagerOpType>(type);
+    if (value.type == VillagerOpType::MoveIn) {
+        std::uint16_t size = 0;
+        if (!reader.u16(size) || size > 4096) return false;
+        std::vector<std::uint8_t> payload(size);
+        if ((size != 0 && !reader.bytes(payload.data(), payload.size()))) return false;
+        VillagerRoster carrier;
+        if (!decode_villager_delta(payload, carrier) || !carrier.slots[0].occupied) return false;
+        value.villager = carrier.slots[0].villager;
+    }
+    return reader.finished();
+}
+
+bool encode(const VillagerResult& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!writer.u16(static_cast<std::uint16_t>(value.code)) || !writer.u64(value.idempotency.high) ||
+        !writer.u64(value.idempotency.low) || !writer.u32(value.revision) || !writer.u8(value.slot) ||
+        !writer.u8(value.replayed ? 1 : 0)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, VillagerResult& value) {
+    ByteReader reader(input);
+    std::uint16_t code = 0;
+    std::uint8_t replayed = 0;
+    if (!reader.u16(code) || code > static_cast<std::uint16_t>(ResultCode::InternalError) ||
+        !reader.u64(value.idempotency.high) || !reader.u64(value.idempotency.low) ||
+        !reader.u32(value.revision) || !reader.u8(value.slot) || !reader.u8(replayed) || replayed > 1 ||
+        !reader.finished()) return false;
+    value.code = static_cast<ResultCode>(code);
+    value.replayed = replayed != 0;
+    return true;
+}
+
 } // namespace acnet

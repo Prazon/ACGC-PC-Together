@@ -4402,6 +4402,8 @@ static int mNpc_SetGrowNpc(u8 looks) {
     return idx;
 }
 
+static int mNpc_GrowSelectAndPlace();
+
 extern void mNpc_Grow() {
     int selected;
     int grow_idx;
@@ -4421,6 +4423,69 @@ extern void mNpc_Grow() {
     }
 
     if (mNpc_CheckGrow() == TRUE) {
+        grow_idx = mNpc_GrowSelectAndPlace();
+
+        if (grow_idx >= 0 && grow_idx < ANIMAL_NUM_MAX) {
+            mNpc_SetNpcNameID(Save_GetPointer(animals[grow_idx]), 1);
+            mNpc_AddNowNpcMax(Save_GetPointer(now_npc_max));
+            mNpc_RenewRemoveHistory();
+        }
+    }
+    (void)selected;
+}
+
+/* The newcomer for an opening the server published.
+ *
+ * The server decides *when* somebody moves in and *which slot* they take -- one
+ * per day, into a real vacancy -- because those must be single-valued for the
+ * town. It cannot decide *who*: that needs the character, name and personality
+ * tables, which the server holds none of and is not allowed to. So it publishes
+ * a seed and the client runs the game's own roll against it.
+ *
+ * The two conditions the original checks that the server cannot are kept here,
+ * where the data is: the player must belong to this town, and must have spoken
+ * to every current villager.
+ *
+ * Seeding from the server's value is what stops fifteen clients each offering a
+ * different newcomer for the same opening. They can still race -- the first
+ * accepted request closes it and the rest are refused -- but with a shared seed
+ * they are all offering the same villager, so the race has no visible outcome.
+ *
+ * The roll writes into a local slot optimistically. Whatever the server does
+ * with the offer, the next roster projection settles where the newcomer
+ * actually lives, so nothing is unwound here. */
+extern void mNpc_NetOfferMoveIn() {
+    u8 slot = 0;
+    u32 seed = 0;
+    int grow_idx;
+
+    if (!Net_VillagerMoveInPending(&slot, &seed)) {
+        return;
+    }
+
+    if (mLd_PlayerManKindCheck() != FALSE ||
+        mNpc_CheckFriendAllAnimal(&Common_Get(now_private)->player_ID) != TRUE) {
+        return;
+    }
+
+    sqrand(seed);
+    grow_idx = mNpc_GrowSelectAndPlace();
+
+    if (grow_idx >= 0 && grow_idx < ANIMAL_NUM_MAX) {
+        mNpc_SetNpcNameID(Save_GetPointer(animals[grow_idx]), 1);
+        (void)Net_OfferVillagerMoveIn((int)slot, grow_idx);
+    }
+}
+
+/* The selection half of mNpc_Grow: pick a personality, then a character of that
+ * personality, and place them in the first free slot. Split out so the
+ * networked offer above can run exactly the same roll against a server seed
+ * rather than reimplementing it. Returns the slot used, or -1. */
+static int mNpc_GrowSelectAndPlace() {
+    int selected;
+    int grow_idx;
+
+    {
         lbRTC_time_c* rtc_time = Common_GetPointer(time.rtc_time);
         lbRTC_time_c* last_grow_time = Save_GetPointer(last_grow_time);
         u8 min_looks_bitfield;
@@ -4475,13 +4540,9 @@ extern void mNpc_Grow() {
         }
 
         grow_idx = mNpc_SetGrowNpc(selected_looks);
-
-        if (grow_idx >= 0 && grow_idx < ANIMAL_NUM_MAX) {
-            mNpc_SetNpcNameID(Save_GetPointer(animals[grow_idx]), 1);
-            mNpc_AddNowNpcMax(Save_GetPointer(now_npc_max));
-            mNpc_RenewRemoveHistory();
-        }
     }
+
+    return grow_idx;
 }
 
 extern void mNpc_ForceRemove() {
