@@ -3,6 +3,9 @@
 
 #include "pc_modloader.h"
 
+#include "pc_mod_arena.h"
+#include "m_ftr_profile_table.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -254,6 +257,36 @@ const void* pc_modloader_override(const char* bin_path, unsigned int expect_size
         return NULL;
     }
     return g_overrides[index].data;
+}
+
+int pc_modloader_grow_furniture(size_t extra, const void* base_profile) {
+    aFTR_PROFILE** grown;
+    size_t total;
+    size_t i;
+
+    if (extra == 0) return 1;
+    total = furniture_quality_count + extra;
+
+    /* From the mod arena, not malloc: these pointers end up inside display
+     * lists, where emu64 distinguishes a host pointer from an N64 segment
+     * address by range. */
+    grown = (aFTR_PROFILE**)pc_mod_arena_alloc(total * sizeof(*grown), 8);
+    if (grown == NULL) {
+        fprintf(stderr, "[Mods] could not grow the furniture table to %zu entries; "
+                        "mod furniture disabled\n", total);
+        return 0;
+    }
+
+    memcpy(grown, furniture_quality, furniture_quality_count * sizeof(*grown));
+    for (i = furniture_quality_count; i < total; i++) {
+        grown[i] = (aFTR_PROFILE*)base_profile;
+    }
+
+    /* Published last, as a single store. Everything the new table needs is in
+     * place before any reader can observe it. */
+    furniture_quality = grown;
+    furniture_quality_count = total;
+    return 1;
 }
 
 void pc_modloader_shutdown(void) {

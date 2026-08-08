@@ -1,4 +1,7 @@
-static aFTR_PROFILE* furniture_quality[] = {
+/* Included by src/data/furniture/ftr_profile_table.c and nowhere else. The
+ * symbol readers use is `furniture_quality`, a pointer defined there; this is
+ * the storage it initially points at. */
+static aFTR_PROFILE* furniture_quality_base[] = {
     &iam_sum_hal_chest02,
     &iam_sum_clchest03,
     &iam_sum_blue_bureau01,
@@ -1268,5 +1271,6 @@ static aFTR_PROFILE* furniture_quality[] = {
 };
 
 /* Indexed without a bounds check (m_catalog_ovl.c:170), so a missing entry is
- * a wild pointer dereference rather than a missing item. */
-FTR_TABLE_ASSERT(furniture_quality);
+ * a wild pointer dereference rather than a missing item. Asserted on the base
+ * table, which is the one an item is appended to. */
+FTR_TABLE_ASSERT(furniture_quality_base);

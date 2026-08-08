@@ -15,6 +15,8 @@
 #ifndef PC_MODLOADER_H
 #define PC_MODLOADER_H
 
+#include <stddef.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -28,6 +30,24 @@ int pc_modloader_init(void);
  * array, so a differently-sized replacement is a packaging error rather than
  * something to truncate into place. A mismatch is reported and refused. */
 const void* pc_modloader_override(const char* bin_path, unsigned int expect_size);
+
+/* Grows the furniture profile table by `extra` entries, so mod items can be
+ * indexed by the same unchecked reads the stock ones are
+ * (docs/MODLOADER_PLAN.md sec 7.5, Option A).
+ *
+ * The new entries start as `base_profile` -- the placeholder an item renders as
+ * until its real asset is resident. Callers then publish real profiles into the
+ * grown slots with a single pointer store, so a reader sees either the
+ * placeholder or the finished profile and never a half-built one.
+ *
+ * Returns 0 if the arena could not supply the memory, in which case the table
+ * is left exactly as it was and no mod item exists. Never partially grows.
+ *
+ * This is possible at all because the table has one definition
+ * (src/data/furniture/ftr_profile_table.c). While it was a `static` inside a
+ * .c_inc included by two translation units, each had a private copy and the
+ * symbol could not be repointed. */
+int pc_modloader_grow_furniture(size_t extra, const void* base_profile);
 
 void pc_modloader_shutdown(void);
 
