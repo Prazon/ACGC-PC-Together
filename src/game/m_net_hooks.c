@@ -2026,15 +2026,30 @@ static int Net_RemoteStillPresent(const AcNetRemotePlayer* states,
     return FALSE;
 }
 
+/* How long a remote that has dropped out of the sampled list is kept before its
+ * actor is destroyed.
+ *
+ * Absence is not the same as departure. ClientRuntime::remote_players omits a
+ * player whose interpolation history is empty, and the history is cleared for
+ * transient reasons -- half a second without a snapshot on the unreliable
+ * channel, an entity mismatch, a zone edge -- as well as permanent ones. The
+ * actor used to be destroyed on the first such frame and re-created a few
+ * frames later, and a fresh actor restarts whatever animation is playing from
+ * frame 1: a remote caught mid-cast visibly replayed the whole motion. Holding
+ * the actor across the gap costs a briefly frozen pose instead. */
+#define NET_REMOTE_ABSENT_FRAMES 30
+
 static void Net_SynchronizeRemoteActors(GAME_PLAY* play, int allow_remote_players) {
     AcNetRemotePlayer states[16];
     size_t count = 0;
     size_t i;
     ACTOR* actor;
+    int sampled = FALSE;
 
     u32 local_zone = Net_SceneZone(play->scene_id);
     if (allow_remote_players && local_zone != 0 && acnet_client_baseline_zone() == local_zone &&
         acnet_client_status() == ACNET_CONNECTED) {
+        sampled = TRUE;
         count = acnet_client_remote_players(states, 16);
         for (i = 0; i < count; ++i) {
             ACTOR* created;
@@ -2103,8 +2118,13 @@ static void Net_SynchronizeRemoteActors(GAME_PLAY* play, int allow_remote_player
         ACTOR* next = actor->next_actor;
         if (actor->id == mAc_PROFILE_NET_REMOTE_PLAYER) {
             AC_NET_REMOTE_PLAYER* remote = (AC_NET_REMOTE_PLAYER*)actor;
-            if (local_zone == 0 || remote->zone_id != local_zone ||
-                !Net_RemoteStillPresent(states, count, remote->account_id, remote->entity_id)) {
+            /* Not sampled at all, out of this scene, or in another zone: those
+             * are decisions, not gaps, and take effect immediately. */
+            if (!sampled || local_zone == 0 || remote->zone_id != local_zone) {
+                Actor_info_delete(&play->actor_info, actor, (GAME*)play);
+            } else if (Net_RemoteStillPresent(states, count, remote->account_id, remote->entity_id)) {
+                remote->missing_frames = 0;
+            } else if (++remote->missing_frames > NET_REMOTE_ABSENT_FRAMES) {
                 Actor_info_delete(&play->actor_info, actor, (GAME*)play);
             }
         }

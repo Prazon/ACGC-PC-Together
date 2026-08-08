@@ -1253,6 +1253,75 @@ Verification: `make test` 50/50; full Windows client build clean; the
 manual-test clients restaged from `bin/`. Visual confirmation is the next
 four-client run.
 
+## Remote tool animations no longer play twice (2026-08-07)
+
+Reported from a four-client session: a peer's fishing motion replayed from the
+start on the other clients — body and tool both — for a single action on the
+acting client. Two independent causes, both client-side presentation; no wire
+or server change.
+
+**A viewer restarts a remote skeleton in exactly two situations:** the
+replicated tuple `(body, overlay, looping, reversed)` changes, or the render
+data is fresh so `animation_loaded` is false. Resolving the ordinals for a full
+fishing cycle (several call sites pass effect/index constants where animation
+constants are meant — `eEC_EFFECT_TURI_MIZU` is 70, which really is
+`mPlayer_ANIM_TURI_WAIT1`) gives `68 SAO_SWING1` (ready and cast deliberately
+share one animation; `setup_main_Cast_rod` never re-inits the body) → `70
+TURI_WAIT1` → `69 TURI_HIKI1` → `71 NOT_GET_T1` → `64 GET_T1` → `65 GET_T2` →
+`66 PUTAWAY_T1`. No value repeats, so the replay was never the state machine —
+it was a rebuild.
+
+**1. The actor was destroyed on a one-frame absence.**
+`ClientRuntime::remote_players` omits a player whose interpolation history is
+empty (`TransformHistory::sample` fails only on an empty history), and the
+history is cleared for transient reasons as well as permanent ones — half a
+second without a snapshot on the unreliable channel, an entity mismatch, a zone
+edge. `Net_SynchronizeRemoteActors` treated that as departure and deleted the
+actor immediately; with snapshots every four ticks it was re-created ~50 ms
+later, too fast to read as a disappearance, and the replacement started the
+in-flight animation at frame 1. The `missing_frames > 180` grace inside
+`Net_Remote_Player_move` never ran: the sync executes first, in
+`Net_PreSimulation`, and deleted the actor before the move ever saw a gap.
+
+Now the sync owns the lifetime. Zone change, scene change and a missing sample
+list are still immediate; a remote that merely fell out of this frame's list is
+held for `NET_REMOTE_ABSENT_FRAMES` (30) with its last pose. The move proc no
+longer deletes anything. A departed peer can now linger up to half a second
+longer than before — the trade against replaying every long animation.
+
+**2. A rebuild threw the motion away.** Any appearance change — clothing,
+pattern, face — destructs and re-constructs both keyframes, and
+`apply_animation` then restarted at frame 1. It now captures
+`keyframe0/1.frame_control.current_frame` before the destruct and resumes
+there, but only when the tuple that comes back matches the one that was
+interrupted. The reverse init has no start-frame parameter, so a resumed
+reverse animation is placed after the call.
+
+**3. The rod's bend animation looped the whole time a peer was fishing.**
+`ITEM_MAIN_ROD_RELAX`/`ROD_VIB` are the only two item states whose keyframe the
+original never advances: `Player_actor_Item_main_rod_relax/_vib` call
+`Player_actor_Item_SetFrame_forUki_relax/_vib`, which write `current_frame`
+outright each frame from the float's geometry, starting from the `180.0f` the
+state is entered with — there is no `Item_CulcAnimation_Base` in either. The
+viewer was free-running `ROD_SINARI` in REPEAT at 0.5 instead, so the rod
+cycled its full bend over and over. `Net_Remote_Player_item_anim` now returns a
+start frame as well as a mode, and a start frame other than 1.0 marks the state
+as held: the item keyframe is initialised at 180 and not played. The float is
+not replicated, so the bend is static rather than modulated.
+
+Verification: `make test` 51/51; full Windows client build clean. Visual
+confirmation is the next four-client fishing run.
+
+Known and untouched, same area: holding A to chop or dig re-inits the *same*
+animation index on the acting client, so the tuple never changes and the viewer
+suppresses swings two onward — the converse of this bug. Fixing it needs a
+restart counter on the presentation delta (one byte, protocol bump), because
+the frame itself cannot ride a change-triggered reliable message. The take-out
+item scale ramp in `Net_Remote_Player_update_item_scale` also reads an
+ascending frame from an animation the original plays in reverse
+(`InitAnimation_Base3` on `PUTAWAY1`), so a remote's tool snaps to full size,
+shrinks away and pops back.
+
 ## House gyroids replicate and trade (2026-08-07)
 
 The gyroid in front of each resident house — its four display slots, visitor

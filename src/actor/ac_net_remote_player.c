@@ -75,6 +75,13 @@ typedef struct net_remote_render_data_s {
     u8 loaded_looping;
     u8 loaded_reversed;
     u8 animation_loaded;
+    /* Where keyframe0/1 stood when a skeleton rebuild threw them away. A
+     * rebuild is an appearance change, not an animation change, so the motion
+     * has to resume rather than start over -- restarting is what made a remote
+     * caught mid-cast play the whole cast a second time. */
+    f32 resume_frame0;
+    f32 resume_frame1;
+    u8 resume_valid;
     /* Last main index reported by the --verbose animation trace, so it prints
      * once per state change rather than once per frame. */
     u16 logged_action;
@@ -85,6 +92,9 @@ typedef struct net_remote_render_data_s {
     s8 loaded_item_kind;
     u8 item_skeleton_loaded;
     u8 item_visible;
+    /* The item states whose frame the original writes per frame instead of
+     * playing. A viewer holds the entry pose and must not advance them. */
+    u8 item_frame_held;
     f32 item_scale;
     /* Balloon presentation state. The original keeps the equivalent on
      * PLAYER_ACTOR; none of it is replicated because all of it is derivable
@@ -154,6 +164,11 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
     if (!mPlib_Load_PlayerFaceTexAndPallet(render->face_texture, render->face_palette, gender, face)) return FALSE;
 
     if (render->initialized) {
+        if (render->animation_loaded) {
+            render->resume_frame0 = render->keyframe0.frame_control.current_frame;
+            render->resume_frame1 = render->keyframe1.frame_control.current_frame;
+            render->resume_valid = TRUE;
+        }
         cKF_SkeletonInfo_R_dt(&render->keyframe0);
         cKF_SkeletonInfo_R_dt(&render->keyframe1);
     }
@@ -182,6 +197,11 @@ static int Net_Remote_Player_refresh_appearance(AC_NET_REMOTE_PLAYER* remote,
  * checked by the protocol decoder, so they can index the animation table
  * directly. */
 static void Net_Remote_Player_apply_animation(NET_REMOTE_RENDER_DATA* render, const AcNetRemotePlayer* state) {
+    const int mode = state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP;
+    f32 frame0 = 1.0f;
+    f32 frame1 = 1.0f;
+    int resume;
+
     if (render->animation_loaded && render->loaded_body == state->animation_body &&
         render->loaded_overlay == state->animation_overlay &&
         render->loaded_looping == state->animation_looping &&
@@ -193,24 +213,40 @@ static void Net_Remote_Player_apply_animation(NET_REMOTE_RENDER_DATA* render, co
         return;
     }
 
+    /* Only a rebuild of the very animation that was interrupted can be
+     * resumed; the captured frames belong to loaded_body/loaded_overlay, so an
+     * appearance change that lands on the same frame as a state change starts
+     * the new animation from the top as usual. */
+    resume = render->resume_valid && render->loaded_body == state->animation_body &&
+             render->loaded_overlay == state->animation_overlay &&
+             render->loaded_looping == state->animation_looping &&
+             render->loaded_reversed == state->animation_reversed;
+    if (resume) {
+        frame0 = render->resume_frame0;
+        frame1 = render->resume_frame1;
+    }
+    render->resume_valid = FALSE;
+
     if (render->loaded_part_table != state->animation_part_table) {
         mPlib_DMA_player_Part_Table(render->part_table, state->animation_part_table);
         render->loaded_part_table = state->animation_part_table;
     }
     if (state->animation_reversed) {
         cKF_SkeletonInfo_R_init_reverse_setspeedandmorphandmode(
-            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, 1.0f, 0.5f,
-            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, 1.0f, 0.5f, mode);
         cKF_SkeletonInfo_R_init_reverse_setspeedandmorphandmode(
-            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, 1.0f, 0.5f,
-            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, 1.0f, 0.5f, mode);
+        /* The reverse init has no start-frame parameter -- it always begins at
+         * the last frame -- so a resumed reverse animation is placed after it. */
+        if (resume) {
+            render->keyframe0.frame_control.current_frame = frame0;
+            render->keyframe1.frame_control.current_frame = frame1;
+        }
     } else {
         cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
-            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, 1.0f, 1.0f, 0.5f,
-            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+            &render->keyframe0, mPlib_Get_Pointer_Animation(state->animation_body), NULL, frame0, 1.0f, 0.5f, mode);
         cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
-            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, 1.0f, 1.0f, 0.5f,
-            state->animation_looping ? cKF_FRAMECONTROL_REPEAT : cKF_FRAMECONTROL_STOP);
+            &render->keyframe1, mPlib_Get_Pointer_Animation(state->animation_overlay), NULL, frame1, 1.0f, 0.5f, mode);
     }
     render->loaded_body = state->animation_body;
     render->loaded_overlay = state->animation_overlay;
@@ -329,10 +365,12 @@ static void Net_Remote_Player_update_animation_speed(AC_NET_REMOTE_PLAYER* remot
  *   putaway_rod ANIM_TRANS_WAIT1(15)-> ITEM_DATA_ROD_GET_T      INDEX_HOLD(19)          -> ITEM_MAIN_ROD_PUTAWAY
  *
  * Every other item state uses the item kind's basic animation, which is what
- * Player_actor_SetupItem_Base0/1 does. *mode_p takes the playback mode from
- * the same call site. */
-static int Net_Remote_Player_item_anim(int item_state, int kind, int* mode_p) {
+ * Player_actor_SetupItem_Base0/1 does. *mode_p and *frame_p take the playback
+ * mode and the start frame from the same call site. A start frame other than
+ * 1.0 marks a state the original never plays -- see the rod cases. */
+static int Net_Remote_Player_item_anim(int item_state, int kind, int* mode_p, f32* frame_p) {
     *mode_p = cKF_FRAMECONTROL_STOP;
+    *frame_p = 1.0f;
     switch (item_state) {
         case mPlayer_ITEM_MAIN_NET_SWING:
             *mode_p = cKF_FRAMECONTROL_REPEAT;
@@ -352,7 +390,17 @@ static int Net_Remote_Player_item_anim(int item_state, int kind, int* mode_p) {
             return mPlayer_ITEM_DATA_ROD_NOT_SWING;
         case mPlayer_ITEM_MAIN_ROD_RELAX:
         case mPlayer_ITEM_MAIN_ROD_VIB:
+            /* The only two states whose item keyframe the original never
+             * advances. Player_actor_Item_main_rod_relax/_vib call
+             * Player_actor_Item_SetFrame_forUki_relax/_vib, which write
+             * current_frame outright each frame from the float's geometry,
+             * starting from the 180.0f the state is entered with -- there is no
+             * Item_CulcAnimation_Base in either. The float is not replicated,
+             * so a viewer holds that entry pose. Playing the animation here
+             * instead ran the rod's whole bend cycle on a loop, over and over,
+             * for as long as the peer was waiting for a bite. */
             *mode_p = cKF_FRAMECONTROL_REPEAT;
+            *frame_p = 180.0f;
             return mPlayer_ITEM_DATA_ROD_SINARI;
         case mPlayer_ITEM_MAIN_ROD_COLLECT:
         case mPlayer_ITEM_MAIN_ROD_FLY:
@@ -415,6 +463,7 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
     int anim;
     int mode;
     int was_balloon;
+    f32 start_frame;
 
     if (render == NULL) return;
 
@@ -490,16 +539,18 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
         return;
     }
 
-    anim = Net_Remote_Player_item_anim(remote->item_state, kind, &mode);
+    anim = Net_Remote_Player_item_anim(remote->item_state, kind, &mode, &start_frame);
     if (!Net_Remote_Player_item_anim_valid(kind, anim)) {
         anim = mPlib_Get_BasicItemAnimeIndex_fromItemKind(kind);
         mode = cKF_FRAMECONTROL_REPEAT;
+        start_frame = 1.0f;
         if (!Net_Remote_Player_item_anim_valid(kind, anim)) {
             render->item_skeleton_loaded = FALSE;
             render->item_visible = FALSE;
             return;
         }
     }
+    render->item_frame_held = start_frame != 1.0f;
 
     if (render->item_skeleton_loaded && render->loaded_item_shape == shape && render->loaded_item_anim == anim) {
         return;
@@ -513,7 +564,8 @@ static void Net_Remote_Player_refresh_item(AC_NET_REMOTE_PLAYER* remote, GAME* g
      * swaps. This used to be 1.0, which ran every remote tool animation at
      * exactly double rate. */
     cKF_SkeletonInfo_R_init_standard_setframeandspeedandmorphandmode(
-        &render->item_keyframe, (cKF_Animation_R_c*)mPlib_Get_Item_DataPointer(anim), NULL, 1.0f, 0.5f, 0.0f, mode);
+        &render->item_keyframe, (cKF_Animation_R_c*)mPlib_Get_Item_DataPointer(anim), NULL, start_frame, 0.5f, 0.0f,
+        mode);
     render->loaded_item_shape = (s16)shape;
     render->loaded_item_anim = (s16)anim;
     render->loaded_item_kind = (s8)kind;
@@ -919,7 +971,7 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
                 if (render->item_visible && render->item_skeleton_loaded) {
                     if (mPlayer_ITEM_IS_BALLOON(render->loaded_item_kind)) {
                         Net_Remote_Player_balloon_move(actor, render);
-                    } else {
+                    } else if (!render->item_frame_held) {
                         cKF_SkeletonInfo_R_play(&render->item_keyframe);
                     }
                 }
@@ -927,7 +979,10 @@ static void Net_Remote_Player_move(ACTOR* actor, GAME* game) {
             return;
         }
     }
-    if (++remote->missing_frames > 180) Actor_delete(actor);
+    /* No sample this frame. Hold the last pose and leave the actor alone:
+     * Net_SynchronizeRemoteActors owns the lifetime and counts the absence, so
+     * a brief gap in the snapshot stream no longer destroys the actor and
+     * restarts the animation on the replacement. */
 }
 
 /* The hand joint's matrix is only available while the skeleton is being walked,
