@@ -196,9 +196,22 @@ std::vector<RuntimeEvent> TownRuntime::recent_events() const {
     return std::vector<RuntimeEvent>(recent_events_.begin(), recent_events_.end());
 }
 
+std::vector<acnet::NpcState> TownRuntime::npc_states() const {
+    const auto& registered = npcs_.all_npcs();
+    std::vector<acnet::NpcState> states;
+    states.reserve(registered.size());
+    for (const auto& entry : registered) states.push_back(entry.second);
+    /* By entity, so a viewer redrawing four times a second gets a stable order
+     * rather than whatever the hash map happens to hand back this frame. */
+    std::sort(states.begin(), states.end(), [](const acnet::NpcState& left, const acnet::NpcState& right) {
+        return left.entity < right.entity;
+    });
+    return states;
+}
+
 void TownRuntime::record_event(std::string message) {
     recent_events_.push_back({next_event_sequence_++, wall_unix_seconds(), std::move(message)});
-    while (recent_events_.size() > 12) recent_events_.pop_front();
+    while (recent_events_.size() > kRetainedEvents) recent_events_.pop_front();
 }
 
 std::uint8_t TownRuntime::house_light_mask() const {

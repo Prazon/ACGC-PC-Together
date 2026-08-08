@@ -95,6 +95,14 @@ struct RuntimeEvent {
     std::string message;
 };
 
+/* How much activity the runtime keeps. The console dashboard shows the last
+ * eight and used to set this at twelve, but a status client polls a few times a
+ * second and cursors on `sequence`, so the ring has to outlast the gap between
+ * two polls -- including the gap across a client restart -- or the client
+ * silently loses events it can never ask for again. 512 is a few tens of
+ * kilobytes and covers a stall of minutes. */
+constexpr std::size_t kRetainedEvents = 512;
+
 class TownRuntime {
 public:
     explicit TownRuntime(TownRuntimeConfig config);
@@ -176,6 +184,31 @@ public:
     std::vector<RuntimePlayerStatus> player_statuses() const;
     std::vector<RuntimeEvent> recent_events() const;
     bool town_initialized() const { return town_bootstrapped_; }
+
+    /* Read-only views for a status front end -- the operator console and the
+     * server window. Everything here is state the class already holds and
+     * already publishes to clients; none of it grants authority, and none of it
+     * is reachable any other way from outside, which is why a host trying to
+     * work out why a town looks wrong currently cannot see it.
+     *
+     * The roster, not just the counts villager_count() and friends report: the
+     * window plots houses from home_block_x/z and needs the identities. */
+    const acnet::VillagerRoster& villager_roster() const { return villagers_; }
+    /* Every registered NPC, villagers and service NPCs alike, with the account
+     * currently holding each in conversation. Copies rather than a reference
+     * into the authority: there are seventeen of these at most, and handing out
+     * the container would expose the whole subsystem to reach an entity map. */
+    std::vector<acnet::NpcState> npc_states() const;
+    /* Every tile the world holds for one zone, for the map. Per-tile tile()
+     * calls across the exterior would be a six-figure lookup count per frame. */
+    std::vector<std::pair<acnet::TileAddress, acnet::TileState>> zone_tiles(acnet::ZoneId zone) const {
+        return world_.tiles_in_zone(zone);
+    }
+    /* The town's scheduled special visitor, and the fruit it grows. Both are
+     * town identity a host wants on screen; neither is derivable from the
+     * config, because both are discovered from the bootstrapping client. */
+    const acnet::SpecialEvent& special_event() const { return special_event_; }
+    std::uint16_t native_fruit() const { return native_fruit_; }
     /* Island status for the operator console. The island is only authoritative
      * once a client has reported its acre layout, which a town created before
      * island support has never done -- so "awaiting" here is a real state an
