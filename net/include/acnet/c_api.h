@@ -93,6 +93,22 @@ typedef struct AcNetHouseFurniture {
     uint8_t condition;
 } AcNetHouseFurniture;
 
+/* One display slot of a house's exterior gyroid. `exchange` mirrors
+ * mHm_HANIWA_TRADE_*: 0 free, 1 display only, 2 for sale at `price`. */
+typedef struct AcNetGyroidItem {
+    uint16_t item;
+    uint8_t exchange;
+    uint32_t price;
+} AcNetGyroidItem;
+
+typedef struct AcNetGyroidState {
+    uint64_t house_id;
+    uint32_t revision;
+    AcNetGyroidItem items[4];
+    uint8_t message[128];
+    uint32_t bells;
+} AcNetGyroidState;
+
 typedef struct AcNetHouseUpdateResult {
     uint16_t result_code;
     uint64_t house_id;
@@ -315,6 +331,21 @@ int acnet_client_tile_changes_overflowed(void);
 uint8_t acnet_client_house_light_mask(void);
 int acnet_client_house(AcNetHouseState* output);
 size_t acnet_client_house_furniture(AcNetHouseFurniture* output, size_t capacity);
+/* Bumps whenever any resident gyroid changes -- by baseline or by delta -- and
+ * is zero until the first baseline, so a viewer reprojects only on change. */
+uint32_t acnet_client_gyroid_serial(void);
+/* The gyroid of resident house `slot` (0..3). Zero when the slot has no
+ * registered house or no baseline has arrived yet. */
+int acnet_client_gyroid(uint32_t slot, AcNetGyroidState* output);
+/* Owner: replace the display items, terms, and visitor message of the own
+ * house's gyroid. Bells never travel this way. Revisions are quoted from the
+ * mirrors, so callers need the serial and inventory revision to be non-zero. */
+int acnet_client_request_gyroid_update(uint32_t slot, const AcNetGyroidItem items[4], const uint8_t message[128]);
+/* Guest: take (and pay for) one displayed item off resident house `slot`'s
+ * gyroid. `expected_item` guards against the display changing underfoot. */
+int acnet_client_request_gyroid_take(uint32_t slot, uint32_t item_slot, uint16_t expected_item);
+/* Owner: empty the gyroid's proceeds into the wallet. */
+int acnet_client_request_gyroid_collect(uint32_t slot);
 size_t acnet_client_inventory(AcNetItemSlot* output, size_t capacity);
 uint32_t acnet_client_inventory_revision(void);
 /* The item this account is authoritatively holding, or 0 for an empty hand.

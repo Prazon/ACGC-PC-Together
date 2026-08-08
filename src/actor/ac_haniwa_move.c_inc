@@ -255,6 +255,10 @@ static void aHNW_check_proceeds(HANIWA_ACTOR* haniwa, GAME* game) {
         int handover_state;
 
         if (aHNW_check_handOver_proceeds(house_haniwa) == TRUE) {
+            /* Online, the proceeds move through a server transaction -- the
+             * wallet credit and the wallet-cap money bags above are optimistic
+             * and the projections settle them when the result lands. */
+            Net_RequestGyroidCollect(house_idx);
             house_haniwa->bells = 0;
             handover_state = aHNW_HANDOVER_YES;
         } else {

@@ -10,7 +10,7 @@ namespace acserver {
 namespace {
 
 constexpr std::uint32_t kTownStateMagic = 0x41545354U; // ATST
-constexpr std::uint16_t kTownStateVersion = 9;
+constexpr std::uint16_t kTownStateVersion = 10;
 constexpr std::size_t kMaximumStateBytes = 64U * 1024U * 1024U;
 
 bool write_transform(acnet::ByteWriter& writer, const acnet::Transform& value) {
@@ -234,6 +234,13 @@ std::vector<std::uint8_t> TownRuntime::encode_state() const {
                 !writer.u8(item.first.layer) ||
                 !writer.u16(item.second.item) || !writer.u8(item.second.condition)) return {};
         }
+        /* Version 10: the exterior gyroid. */
+        if (!writer.u32(house.gyroid.revision)) return {};
+        for (const acnet::GyroidItem& entry : house.gyroid.items) {
+            if (!writer.u16(entry.item) || !writer.u8(entry.exchange) || !writer.u32(entry.price)) return {};
+        }
+        if (!writer.bytes(house.gyroid.message.data(), house.gyroid.message.size()) ||
+            !writer.u32(house.gyroid.bells)) return {};
     }
     return writer.ok() ? writer.data() : std::vector<std::uint8_t>{};
 }
@@ -466,6 +473,17 @@ bool TownRuntime::decode_state(const std::vector<std::uint8_t>& payload, std::st
                 error = "invalid furniture state"; return false;
             }
             house.furniture[address] = item;
+        }
+        if (version >= 10) {
+            bool gyroid_ok = reader.u32(house.gyroid.revision) && house.gyroid.revision != 0;
+            for (acnet::GyroidItem& entry : house.gyroid.items) {
+                gyroid_ok = gyroid_ok && reader.u16(entry.item) && reader.u8(entry.exchange) &&
+                            reader.u32(entry.price);
+            }
+            gyroid_ok = gyroid_ok &&
+                        reader.bytes(house.gyroid.message.data(), house.gyroid.message.size()) &&
+                        reader.u32(house.gyroid.bells);
+            if (!gyroid_ok) { error = "invalid gyroid state"; return false; }
         }
         if (version < 4) house.initialized = furniture_count != 0;
         if (!housing_.restore_house(house)) { error = "failed to restore house"; return false; }

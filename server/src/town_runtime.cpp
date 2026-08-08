@@ -529,6 +529,11 @@ bool TownRuntime::initialize(std::int64_t wall_seconds, std::string& error) {
     economy_.set_sell_price_resolver([this](std::uint16_t item) {
         return acnet::shop_sell_price(item, native_fruit_, town_year());
     });
+    /* Collecting gyroid proceeds obeys the same wallet-overflow rule as a sale
+     * at Nook's counter: the cap breaks into money bags. */
+    housing_.set_wallet_policy(acnet::shop_wallet_overflow_rule().maximum,
+                               acnet::shop_wallet_overflow_rule().chunk,
+                               acnet::shop_wallet_overflow_rule().bag_item);
     std::uint64_t checkpoint_sequence = 0;
     if (checkpoint.has_value()) {
         checkpoint_sequence = checkpoint->sequence;
@@ -672,7 +677,7 @@ bool TownRuntime::allow_message(Connection& connection, acnet::MessageType type,
     }
     else if (type == acnet::MessageType::WorldRequest || type == acnet::MessageType::InventoryRequest ||
              type == acnet::MessageType::TradeRequest || type == acnet::MessageType::FurnitureRequest ||
-             type == acnet::MessageType::HouseUpdate ||
+             type == acnet::MessageType::HouseUpdate || type == acnet::MessageType::GyroidRequest ||
              type == acnet::MessageType::EncounterRequest || type == acnet::MessageType::ConversationRequest ||
              type == acnet::MessageType::ZoneTransferRequest || type == acnet::MessageType::ZoneReady) {
         rate = 10.0; burst = 20.0;
@@ -1147,6 +1152,16 @@ bool TownRuntime::send_baseline(Connection& connection,
     baseline.town_capacity = occupancy.capacity;
     baseline.residents = current_roster();
     baseline.house_light_mask = house_light_mask();
+    /* The four resident gyroids. Town-wide like the roster: they stand in the
+     * field, so a viewer indoors still keeps its mirror warm for the walk out. */
+    for (const auto& entry : housing_.houses()) {
+        const acnet::HouseState& house = entry.second;
+        if (house.shared || house.original_slot >= acnet::kOriginalResidentSlots) continue;
+        auto& slot = baseline.gyroids[house.original_slot];
+        slot.occupied = true;
+        slot.house_id = house.house_id;
+        slot.state = house.gyroid;
+    }
     if (viewer->zone >= 100 && viewer->zone < 100 + acnet::kOriginalResidentSlots) {
         for (const auto& entry : housing_.houses()) {
             if (entry.second.zone != viewer->zone) continue;
@@ -1706,6 +1721,42 @@ bool TownRuntime::dispatch(Connection& connection,
                 if (viewer != nullptr && viewer->zone == house->zone &&
                     !send_baseline(active.second, monotonic_ms, error)) return false;
             }
+            return true;
+        }
+        case acnet::MessageType::GyroidRequest: {
+            acnet::GyroidOperation request;
+            if (!acnet::decode(packet.payload, request)) { ++metrics_.malformed_packets; return true; }
+            request.account = connection.account;
+            const acnet::GyroidResult result = housing_.apply_gyroid(request);
+            std::vector<std::uint8_t> payload;
+            if (!acnet::encode(result, payload)) { error = "failed to serialize gyroid result"; return false; }
+            if (result.code == acnet::ResultCode::Ok && !result.replayed) {
+                if (!commit_transaction(connection.account,
+                                        static_cast<std::uint16_t>(acnet::MessageType::GyroidRequest),
+                                        result.code, error)) return false;
+                const acnet::HouseState* house = housing_.house(result.house_id);
+                if (house != nullptr) {
+                    acnet::GyroidDelta gyroid_delta;
+                    gyroid_delta.house_id = house->house_id;
+                    gyroid_delta.original_slot = house->original_slot;
+                    gyroid_delta.state = house->gyroid;
+                    acnet::ReplicationDelta delta;
+                    delta.kind = acnet::ResourceKind::Gyroid;
+                    if (!acnet::encode_gyroid_delta(gyroid_delta, delta.payload)) {
+                        error = "failed to serialize gyroid delta";
+                        return false;
+                    }
+                    deltas_.append(std::move(delta));
+                }
+            }
+            if (!send_payload(connection, acnet::MessageType::GyroidResult, acnet::Channel::Transactions,
+                              payload, monotonic_ms, error)) return false;
+            /* The inventory side of the operation -- the diffed display items,
+             * the paid price, the collected bells and any overflow bags --
+             * cannot be expressed by the result alone, so refresh the actor's
+             * whole mirror, exactly as HouseUpdate does for its zone. */
+            if (result.code == acnet::ResultCode::Ok && !result.replayed &&
+                !send_baseline(connection, monotonic_ms, error)) return false;
             return true;
         }
         case acnet::MessageType::EncounterRequest: {

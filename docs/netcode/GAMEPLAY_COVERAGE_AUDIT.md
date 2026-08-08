@@ -121,8 +121,11 @@ Player-to-player trading has full server escrow with zero game-side callers.
 `FurnitureOpType{Place, Remove}` is dead; the client hashes and submits the
 entire room. Conflict resolution is last-writer-wins at room granularity.
 `AcNetHouseState` carries no wallpaper/carpet (`mHm_wf_c wall_floor`), exterior
-palette, door design, mailbox, gyroid, or music box. Storage layers *are*
-covered — `mCoBG_LAYER_NUM` is 4 and all four are captured.
+palette, door design, mailbox, or music box. Storage layers *are* covered —
+`mCoBG_LAYER_NUM` is 4 and all four are captured. *(The gyroid came off this
+list 2026-08-07: display, message, purchases and proceeds are now a
+server-owned `GyroidState` with its own transaction family — see
+CURRENT_STATUS.md.)*
 
 ## Delivered in this pass — encounter species authority
 

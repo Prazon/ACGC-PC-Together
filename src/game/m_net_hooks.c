@@ -86,6 +86,15 @@ typedef struct net_furniture_motion_s {
     u8 destination_z;
 } NetFurnitureMotion;
 static NetFurnitureMotion house_motion;
+/* The four resident gyroids are projections of authoritative state. The two
+ * hashes watch the local player's own block (items and message only -- bells
+ * move exclusively through the Take/Collect transactions): projected is what
+ * the last projection wrote, submitted is what was last sent, and a block that
+ * matches neither is an edit the owner made in the submenu and settles as one
+ * whole-gyroid update when it closes. */
+static u32 last_gyroid_serial = 0;
+static u64 gyroid_projected_hash = 0;
+static u64 gyroid_submitted_hash = 0;
 static u32 pending_destination_zone = 0;
 static int zone_transfer_phase = 0;
 static u64 pending_transfer_token_high = 0;
@@ -1724,6 +1733,128 @@ static int Net_TileProjectable(const mActor_name_t* local_cell, u16 incoming) {
     return TRUE;
 }
 
+int Net_GyroidAuthoritative(void) {
+    return Net_IsConnected() && acnet_client_gyroid_serial() != 0;
+}
+
+/* A guest takes display slot `item_slot` from house `house_idx`'s gyroid,
+ * paying its price if it is for sale. The submenu's local mutation runs
+ * optimistically; forcing both projections makes the server's verdict land
+ * either way -- the accepted delta repaints the taken state, and a refusal
+ * repaints the untouched one. */
+int Net_RequestGyroidTake(int house_idx, int item_slot, mActor_name_t item) {
+    if (!Net_GyroidAuthoritative() || !Net_EconomyAuthoritative()) return FALSE;
+    if (house_idx < 0 || house_idx >= PLAYER_NUM || item_slot < 0 || item_slot >= HANIWA_ITEM_HOLD_NUM) return FALSE;
+    if (!acnet_client_request_gyroid_take((u32)house_idx, (u32)item_slot, (u16)item)) return FALSE;
+    last_inventory_revision = 0;
+    last_gyroid_serial = 0;
+    return TRUE;
+}
+
+int Net_RequestGyroidCollect(int house_idx) {
+    if (!Net_GyroidAuthoritative() || !Net_EconomyAuthoritative()) return FALSE;
+    if (house_idx < 0 || house_idx >= PLAYER_NUM) return FALSE;
+    if (!acnet_client_request_gyroid_collect((u32)house_idx)) return FALSE;
+    last_inventory_revision = 0;
+    last_gyroid_serial = 0;
+    return TRUE;
+}
+
+static u64 Net_HashGyroidBlock(const Haniwa_c* haniwa) {
+    u64 hash = 14695981039346656037ULL;
+    int i;
+    for (i = 0; i < HANIWA_ITEM_HOLD_NUM; ++i) {
+        hash = Net_HashBytes(hash, &haniwa->items[i].item, sizeof(haniwa->items[i].item));
+        hash = Net_HashBytes(hash, &haniwa->items[i].exchange_type, sizeof(haniwa->items[i].exchange_type));
+        hash = Net_HashBytes(hash, &haniwa->items[i].extra_data, sizeof(haniwa->items[i].extra_data));
+    }
+    return Net_HashBytes(hash, haniwa->message, HANIWA_MESSAGE_LEN);
+}
+
+/* Never written; hashed as the shape of a gyroid the server has no data for. */
+static Haniwa_c net_virgin_haniwa;
+
+/* Copy the server's four gyroids into Save_t.homes[].haniwa, where the gyroid
+ * actor, the tag overlay and the message board all read them. Skipped while a
+ * submenu is open: the owner may be mid-edit, and repainting under the drag
+ * hand is the same hazard the inventory projection avoids. */
+static void Net_ApplyAuthoritativeGyroids(GAME_PLAY* play) {
+    AcNetGyroidState state;
+    u32 serial;
+    int slot;
+    int my_slot;
+    serial = acnet_client_gyroid_serial();
+    if (serial == 0 || serial == last_gyroid_serial || play->submenu.open_flag) return;
+    my_slot = Net_ResidentSlot();
+    for (slot = 0; slot < PLAYER_NUM; ++slot) {
+        Haniwa_c* haniwa;
+        int i;
+        int virgin;
+        if (!acnet_client_gyroid((u32)slot, &state)) continue;
+        haniwa = &Save_Get(homes[slot]).haniwa;
+        virgin = state.revision == 1 && state.bells == 0;
+        for (i = 0; virgin && i < HANIWA_ITEM_HOLD_NUM; ++i) virgin = state.items[i].item == 0;
+        for (i = 0; virgin && i < HANIWA_MESSAGE_LEN; ++i) virgin = state.message[i] == 0;
+        if (slot == my_slot && virgin) {
+            /* First contact with a gyroid the server has never seen written.
+             * Projecting it would blank the game's default greeting on every
+             * client; keeping the local block and marking the virgin shape as
+             * "projected" makes the watch below upload it instead. */
+            gyroid_projected_hash = Net_HashGyroidBlock(&net_virgin_haniwa);
+            continue;
+        }
+        for (i = 0; i < HANIWA_ITEM_HOLD_NUM; ++i) {
+            haniwa->items[i].item = (mActor_name_t)state.items[i].item;
+            haniwa->items[i].exchange_type = (s16)state.items[i].exchange;
+            haniwa->items[i].extra_data = state.items[i].price;
+        }
+        memcpy(haniwa->message, state.message, HANIWA_MESSAGE_LEN);
+        haniwa->bells = state.bells;
+        if (slot == my_slot) gyroid_projected_hash = Net_HashGyroidBlock(haniwa);
+    }
+    gyroid_submitted_hash = 0;
+    last_gyroid_serial = serial;
+}
+
+/* Submit the local player's own gyroid whole once its block no longer matches
+ * what was projected or last sent. Every mutation path -- the tag overlay, the
+ * drag hand, the message editor -- settles into the save before the submenu
+ * closes, so one falling-edge watch covers them all without touching the
+ * overlay code. Bells are excluded from the hash and from the update. */
+static void Net_SubmitGyroidIfEdited(GAME_PLAY* play) {
+    AcNetGyroidItem items[HANIWA_ITEM_HOLD_NUM];
+    const Haniwa_c* haniwa;
+    u64 hash;
+    int i;
+    int my_slot = Net_ResidentSlot();
+    if (my_slot < 0 || my_slot >= PLAYER_NUM || play->submenu.open_flag || !Net_GyroidAuthoritative()) return;
+    haniwa = &Save_Get(homes[my_slot]).haniwa;
+    hash = Net_HashGyroidBlock(haniwa);
+    if (hash == gyroid_projected_hash || hash == gyroid_submitted_hash) return;
+    for (i = 0; i < HANIWA_ITEM_HOLD_NUM; ++i) {
+        items[i].item = (u16)haniwa->items[i].item;
+        items[i].exchange = (u8)haniwa->items[i].exchange_type;
+        items[i].price = haniwa->items[i].extra_data;
+        /* Normalise what the codec would refuse: an emptied slot keeps its old
+         * terms locally, the UI maps a zero price to "free" itself, and the
+         * unused fourth trade type defaults to display-only so nothing is
+         * given away by accident. */
+        if (items[i].item == 0) {
+            items[i].exchange = 0;
+            items[i].price = 0;
+        } else if (items[i].exchange > 2 || (items[i].exchange == 2 && items[i].price == 0)) {
+            items[i].exchange = items[i].exchange == 2 ? 0 : 1;
+            items[i].price = 0;
+        } else if (items[i].exchange != 2) {
+            items[i].price = 0;
+        }
+    }
+    if (acnet_client_request_gyroid_update((u32)my_slot, items, haniwa->message)) {
+        gyroid_submitted_hash = hash;
+        last_inventory_revision = 0;
+    }
+}
+
 /* Whether the item submenu's drag hand is holding something. While it is, the
  * grabbed item exists in neither the hand slot nor any pocket -- it lives only
  * on the cursor -- so both the reconciler and the inventory projection would
@@ -1868,6 +1999,8 @@ static void Net_ApplyAuthoritativeState(GAME_PLAY* play) {
         Net_ApplyAuthoritativeShopStock();
         last_shop_revision = shop_revision;
     }
+    Net_ApplyAuthoritativeGyroids(play);
+    Net_SubmitGyroidIfEdited(play);
 }
 
 static AC_NET_REMOTE_PLAYER* Net_FindRemote(GAME_PLAY* play, u64 account_id, u64 entity_id) {

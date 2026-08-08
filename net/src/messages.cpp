@@ -539,6 +539,74 @@ bool decode(const std::vector<std::uint8_t>& input, HouseUpdateResult& value) {
     return true;
 }
 
+namespace {
+
+bool valid_gyroid_operation(const GyroidOperation& value) {
+    if (static_cast<std::uint8_t>(value.type) > static_cast<std::uint8_t>(GyroidOpType::Collect) ||
+        value.item_slot >= kGyroidItemSlots) return false;
+    for (const GyroidItem& entry : value.items) {
+        if (entry.item == 0) {
+            if (entry.exchange != 0 || entry.price != 0) return false;
+        } else if (entry.exchange > kMaximumGyroidExchange ||
+                   (entry.exchange == kGyroidExchangeSale ? entry.price == 0 : entry.price != 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+bool encode(const GyroidOperation& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!valid_gyroid_operation(value) || !writer.u8(static_cast<std::uint8_t>(value.type)) ||
+        !writer.u64(value.account) || !idempotency(writer, value.idempotency) || !writer.u64(value.house_id) ||
+        !writer.u32(value.expected_gyroid_revision) || !writer.u32(value.expected_inventory_revision) ||
+        !writer.u8(value.item_slot) || !writer.u16(value.expected_item)) return false;
+    for (const GyroidItem& entry : value.items) {
+        if (!writer.u16(entry.item) || !writer.u8(entry.exchange) || !writer.u32(entry.price)) return false;
+    }
+    if (!writer.bytes(value.message.data(), value.message.size())) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, GyroidOperation& value) {
+    ByteReader reader(input);
+    std::uint8_t type;
+    if (!reader.u8(type) || type > static_cast<std::uint8_t>(GyroidOpType::Collect) ||
+        !reader.u64(value.account) || !idempotency(reader, value.idempotency) || !reader.u64(value.house_id) ||
+        !reader.u32(value.expected_gyroid_revision) || !reader.u32(value.expected_inventory_revision) ||
+        !reader.u8(value.item_slot) || !reader.u16(value.expected_item)) return false;
+    for (GyroidItem& entry : value.items) {
+        if (!reader.u16(entry.item) || !reader.u8(entry.exchange) || !reader.u32(entry.price)) return false;
+    }
+    if (!reader.bytes(value.message.data(), value.message.size()) || !reader.finished()) return false;
+    value.type = static_cast<GyroidOpType>(type);
+    return valid_gyroid_operation(value);
+}
+
+bool encode(const GyroidResult& value, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (!result(writer, value.code) || !idempotency(writer, value.idempotency) || !writer.u64(value.house_id) ||
+        !writer.u32(value.gyroid_revision) || !writer.u32(value.inventory_revision) ||
+        !writer.u16(value.item) || !writer.u32(value.price) || !writer.u32(value.bells_collected) ||
+        !writer.u8(value.inventory_slot) || !writer.u8(value.replayed ? 1 : 0)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode(const std::vector<std::uint8_t>& input, GyroidResult& value) {
+    ByteReader reader(input);
+    std::uint8_t replayed;
+    if (!result(reader, value.code) || !idempotency(reader, value.idempotency) || !reader.u64(value.house_id) ||
+        !reader.u32(value.gyroid_revision) || !reader.u32(value.inventory_revision) ||
+        !reader.u16(value.item) || !reader.u32(value.price) || !reader.u32(value.bells_collected) ||
+        !reader.u8(value.inventory_slot) || !reader.u8(replayed) || replayed > 1 || !reader.finished()) return false;
+    value.replayed = replayed != 0;
+    return true;
+}
+
 bool encode(const EncounterRequest& value, std::vector<std::uint8_t>& output) {
     ByteWriter writer;
     if (static_cast<std::uint8_t>(value.kind) > static_cast<std::uint8_t>(EncounterKind::Insect) ||
@@ -596,7 +664,7 @@ bool encode_deltas(const std::vector<ReplicationDelta>& value, std::vector<std::
     ByteWriter writer(kMaximumTransferBytes);
     if (!writer.u16(static_cast<std::uint16_t>(value.size()))) return false;
     for (const ReplicationDelta& delta : value) {
-        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Museum) ||
+        if (static_cast<std::uint8_t>(delta.kind) > static_cast<std::uint8_t>(ResourceKind::Gyroid) ||
             delta.payload.size() > 65535 || !writer.u32(delta.revision) ||
             !writer.u8(static_cast<std::uint8_t>(delta.kind)) || !writer.u32(delta.zone) ||
             !writer.u64(delta.target_account) || !writer.u64(delta.entity) ||
@@ -621,7 +689,7 @@ bool decode_deltas(const std::vector<std::uint8_t>& input, std::vector<Replicati
         std::uint8_t reliable;
         std::uint8_t has_position;
         std::uint16_t size;
-        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Museum) ||
+        if (!reader.u32(delta.revision) || !reader.u8(kind) || kind > static_cast<std::uint8_t>(ResourceKind::Gyroid) ||
             !reader.u32(delta.zone) || !reader.u64(delta.target_account) || !reader.u64(delta.entity) ||
             !reader.u8(reliable) || !reader.u8(has_position) || reliable > 1 || has_position > 1 ||
             !vec3(reader, delta.position) || !reader.u16(size) || size > reader.remaining()) return false;

@@ -1253,6 +1253,82 @@ Verification: `make test` 50/50; full Windows client build clean; the
 manual-test clients restaged from `bin/`. Visual confirmation is the next
 four-client run.
 
+## House gyroids replicate and trade (2026-08-07)
+
+The gyroid in front of each resident house — its four display slots, visitor
+message, and held proceeds (`Haniwa_c` at `mHm_hs_c:0x25D4`) — was entirely
+client-local: items put up for sale never appeared on other clients, purchases
+diverged every save, and the proceeds only existed for whoever sold. It is now
+server state end to end. Protocol v16 → **v17**, town state v9 → **v10**.
+
+Server and wire:
+
+- `HouseState` gains a `GyroidState` (own revision, four `GyroidItem`s, the
+  128-byte message as opaque bytes like mail text, bells). Baselines carry all
+  four slot-indexed after the museum block; `ResourceKind::Gyroid` deltas keep
+  them live town-wide, like `Resident` — the gyroids stand in the field.
+- One `GyroidRequest`/`GyroidResult` message pair (34/35) with three
+  operations in `HousingAuthority::apply_gyroid`, all idempotent, revision-
+  quoted, and requiring the actor in the town field zone (the interior zone
+  does not authorize the exterior):
+  - **Update** (owner): replaces display and message whole; the server diffs
+    the display against the old one and balances it through the owner's
+    pockets, exactly as the whole-house furniture submit does. Bells never
+    travel this way.
+  - **Take** (guests only; the owner's path is Update): one displayed item
+    into the first empty pocket, price from wallet when for sale, proceeds
+    into the gyroid. Display-only slots (`TRADE_1`) and the unused `TRADE_3`
+    refuse; two guests racing for one item is a revision conflict.
+  - **Collect** (owner): proceeds into the wallet, breaking the cap into
+    money bags under the same overflow rule as a Nook sale.
+- After an accepted operation the server broadcasts the gyroid delta and
+  re-baselines the acting connection — a diffed update or an overflow bag
+  cannot be mirrored from the result alone.
+- Checkpoints persist the gyroid inside each house record (v10, version-gated
+  read, older checkpoints load with virgin gyroids).
+
+Client:
+
+- `Net_ApplyAuthoritativeGyroids` projects all four into
+  `Save_Get(homes[slot]).haniwa`, where the gyroid actor, the tag overlay and
+  the message board already read — so guest browsing, the price messages, and
+  the "your gyroid is holding bells" hint all work unmodified. Skipped while a
+  submenu is open, the same hazard the inventory projection avoids. First
+  contact with a virgin server gyroid keeps the local block instead, so a
+  blank server state cannot erase the game's default greeting.
+- Owner edits need no overlay hooks at all: a hash watch over the owner's own
+  block (items and message only — bells are excluded) submits it whole when
+  the submenu closes and the block matches neither what was projected nor what
+  was last sent. The tag overlay, drag hand, and message editor all settle
+  into the save first, so one falling-edge watch covers every mutation path.
+- Two decomp call sites: `mTG_get_proc` (`m_tag_ovl.c`) sends the take before
+  its optimistic local copy, and `aHNW_check_proceeds`
+  (`ac_haniwa_move.c_inc`) sends the collect. Both force the inventory and
+  gyroid projections so the server's verdict lands either way.
+
+Verification: `make check` (51/51 unit/integration, fuzz, load, chaos,
+month-soak with v10 checkpoints, smoke) and `make sanitize` (51/51) pass; the
+new "gyroid replication and trade" case covers the codecs (including malformed
+terms), the owner diff, guest purchase, free take, display-only refusal,
+owner/guest authorization, stale revisions, replay, and wallet-cap overflow
+into bags. Full Windows client build clean; **not yet drawn on screen** — the
+four-client launcher run is the visual gate, same as the economy path.
+
+Known limitations:
+
+- Turnips displayed on a gyroid no longer spoil online: `mAGrw_SpoilKabu`
+  runs client-locally at boot and the projection reverts it. Spoilage needs a
+  server-side daily job to be correct; today's behavior is "the server never
+  spoils".
+- A guest can only pay from the wallet. The original breaks pocket money bags
+  into the wallet mid-purchase; online that local break is reverted by the
+  projection and the server refuses a short wallet — the same limitation the
+  Nook counter has.
+- An owner edit refused as `InvalidState` (a pocket/display imbalance the
+  diff cannot settle) stays visible locally until the next gyroid delta
+  repaints it; the pockets themselves are already reverted by the inventory
+  projection.
+
 ## Compatibility note for the protocol version
 
 **Protocol v16, town state v9.** Two independent lines of work both landed as

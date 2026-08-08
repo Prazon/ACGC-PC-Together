@@ -228,6 +228,36 @@ Revision next_revision(Revision revision) {
     return revision == std::numeric_limits<Revision>::max() ? 1 : revision + 1;
 }
 
+bool valid_gyroid(const GyroidState& state) {
+    if (state.revision == 0) return false;
+    for (const GyroidItem& entry : state.items) {
+        if (entry.item == 0) {
+            if (entry.exchange != 0 || entry.price != 0) return false;
+        } else if (entry.exchange > kMaximumGyroidExchange ||
+                   (entry.exchange == kGyroidExchangeSale ? entry.price == 0 : entry.price != 0)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool encode_gyroid(ByteWriter& writer, const GyroidState& state) {
+    if (!valid_gyroid(state) || !writer.u32(state.revision)) return false;
+    for (const GyroidItem& entry : state.items) {
+        if (!writer.u16(entry.item) || !writer.u8(entry.exchange) || !writer.u32(entry.price)) return false;
+    }
+    return writer.bytes(state.message.data(), state.message.size()) && writer.u32(state.bells);
+}
+
+bool decode_gyroid(ByteReader& reader, GyroidState& state) {
+    if (!reader.u32(state.revision)) return false;
+    for (GyroidItem& entry : state.items) {
+        if (!reader.u16(entry.item) || !reader.u8(entry.exchange) || !reader.u32(entry.price)) return false;
+    }
+    return reader.bytes(state.message.data(), state.message.size()) && reader.u32(state.bells) &&
+           valid_gyroid(state);
+}
+
 } // namespace
 
 bool encode_player_delta(const PlayerPresentationDelta& delta, std::vector<std::uint8_t>& output) {
@@ -243,6 +273,21 @@ bool decode_player_delta(const std::vector<std::uint8_t>& input, PlayerPresentat
     return reader.u64(delta.account) && reader.u64(delta.entity) &&
            decode_presentation(reader, delta.presentation) && delta.account != 0 && delta.entity != 0 &&
            reader.finished();
+}
+
+bool encode_gyroid_delta(const GyroidDelta& delta, std::vector<std::uint8_t>& output) {
+    ByteWriter writer;
+    if (delta.house_id == 0 || delta.original_slot >= kOriginalResidentSlots ||
+        !writer.u64(delta.house_id) || !writer.u8(delta.original_slot) ||
+        !encode_gyroid(writer, delta.state)) return false;
+    output = writer.data();
+    return true;
+}
+
+bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& delta) {
+    ByteReader reader(input);
+    return reader.u64(delta.house_id) && reader.u8(delta.original_slot) && decode_gyroid(reader, delta.state) &&
+           delta.house_id != 0 && delta.original_slot < kOriginalResidentSlots && reader.finished();
 }
 
 bool ResidentRoster::operator==(const ResidentRoster& other) const {
@@ -295,6 +340,11 @@ bool encode_baseline(const ZoneBaseline& baseline, std::vector<std::uint8_t>& ou
         if (!encode_museum_delta(baseline.museum, museum) ||
             !writer.u32(static_cast<std::uint32_t>(museum.size())) ||
             !writer.bytes(museum.data(), museum.size())) return false;
+    }
+    for (const auto& entry : baseline.gyroids) {
+        if (entry.occupied && entry.house_id == 0) return false;
+        if (!writer.u8(entry.occupied ? 1 : 0)) return false;
+        if (entry.occupied && (!writer.u64(entry.house_id) || !encode_gyroid(writer, entry.state))) return false;
     }
     if (baseline.has_house && !encode_house(writer, baseline.house)) return false;
     for (const auto& entry : baseline.tiles) {
@@ -378,6 +428,14 @@ bool decode_baseline(const std::vector<std::uint8_t>& input, ZoneBaseline& basel
         std::vector<std::uint8_t> museum(museum_bytes);
         if (!reader.bytes(museum.data(), museum.size()) || !decode_museum_delta(museum, baseline.museum))
             return false;
+    }
+    for (auto& entry : baseline.gyroids) {
+        std::uint8_t occupied;
+        entry = {};
+        if (!reader.u8(occupied) || occupied > 1) return false;
+        entry.occupied = occupied != 0;
+        if (entry.occupied && (!reader.u64(entry.house_id) || entry.house_id == 0 ||
+                               !decode_gyroid(reader, entry.state))) return false;
     }
     baseline.has_house = has_house != 0;
     baseline.house = {};
@@ -614,7 +672,8 @@ bool DeltaLog::relevant(const ReplicationDelta& delta, const InterestContext& in
     if (delta.kind == ResourceKind::Clock || delta.kind == ResourceKind::Weather ||
         delta.kind == ResourceKind::Town ||
         delta.kind == ResourceKind::Resident || delta.kind == ResourceKind::Shop ||
-        delta.kind == ResourceKind::Museum) return true; /* town-wide: not zone or distance scoped */
+        delta.kind == ResourceKind::Museum ||
+        delta.kind == ResourceKind::Gyroid) return true; /* town-wide: not zone or distance scoped */
     if (delta.zone != 0 && delta.zone != interest.zone) return false;
     if (!interest.exterior || !delta.has_position || delta.reliable) return true;
     const float dx = delta.position.x - interest.position.x;

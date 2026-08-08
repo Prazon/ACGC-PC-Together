@@ -354,6 +354,191 @@ HouseUpdateResult HousingAuthority::replace_contents(const HouseUpdate& update) 
     return result;
 }
 
+void HousingAuthority::set_wallet_policy(std::uint32_t maximum, std::uint32_t chunk, std::uint16_t overflow_item) {
+    wallet_maximum_ = maximum;
+    wallet_overflow_chunk_ = chunk;
+    wallet_overflow_item_ = overflow_item;
+}
+
+GyroidResult HousingAuthority::apply_gyroid(const GyroidOperation& operation) {
+    GyroidResult result;
+    result.idempotency = operation.idempotency;
+    result.house_id = operation.house_id;
+    if (!operation.idempotency.valid() || world_ == nullptr ||
+        static_cast<std::uint8_t>(operation.type) > static_cast<std::uint8_t>(GyroidOpType::Collect) ||
+        (operation.type == GyroidOpType::Take && operation.item_slot >= kGyroidItemSlots)) {
+        result.code = ResultCode::Malformed;
+        return result;
+    }
+    if (operation.type == GyroidOpType::Update) {
+        for (const GyroidItem& entry : operation.items) {
+            const bool valid = entry.item == 0
+                ? entry.exchange == 0 && entry.price == 0
+                : entry.exchange <= kMaximumGyroidExchange &&
+                  (entry.exchange == kGyroidExchangeSale ? entry.price != 0 : entry.price == 0);
+            if (!valid) {
+                result.code = ResultCode::Malformed;
+                return result;
+            }
+        }
+    }
+    const OperationKey key{operation.account, operation.idempotency};
+    const auto prior = gyroid_idempotency_.find(key);
+    if (prior != gyroid_idempotency_.end()) {
+        result = prior->second;
+        result.replayed = true;
+        return result;
+    }
+    const auto house_it = houses_.find(operation.house_id);
+    const InventoryState* current_inventory = world_->inventory(operation.account);
+    if (house_it == houses_.end() || current_inventory == nullptr) {
+        result.code = ResultCode::NotFound;
+        gyroid_idempotency_[key] = result;
+        return result;
+    }
+    HouseState& house = house_it->second;
+    result.gyroid_revision = house.gyroid.revision;
+    result.inventory_revision = current_inventory->revision;
+    /* A shared house has no exterior gyroid; the owner works their own and a
+     * guest works someone else's, so Take is the one op the owner may not use
+     * -- taking your own display back is an Update. */
+    const bool owner_op = operation.type != GyroidOpType::Take;
+    if (house.shared || house.owner == 0 || (owner_op ? house.owner != operation.account
+                                                      : house.owner == operation.account)) {
+        result.code = ResultCode::Unauthorized;
+        gyroid_idempotency_[key] = result;
+        return result;
+    }
+    /* The gyroid stands in the field, not in the house's interior zone. */
+    if (players_ != nullptr) {
+        const PlayerView* player = players_->by_account(operation.account);
+        if (player == nullptr || !player->interaction_eligible || player->zone != kTownFieldZone) {
+            result.code = ResultCode::OutOfRange;
+            gyroid_idempotency_[key] = result;
+            return result;
+        }
+    }
+    if (house.gyroid.revision != operation.expected_gyroid_revision ||
+        current_inventory->revision != operation.expected_inventory_revision) {
+        result.code = ResultCode::StaleRevision;
+        gyroid_idempotency_[key] = result;
+        return result;
+    }
+    GyroidState candidate = house.gyroid;
+    InventoryState candidate_inventory = *current_inventory;
+    bool inventory_changed = false;
+    switch (operation.type) {
+        case GyroidOpType::Update: {
+            /* The same diff replace_contents runs for furniture: items newly on
+             * display are consumed from the pockets, items taken off return to
+             * them, and the whole update fails if either side cannot balance. */
+            std::unordered_map<std::uint16_t, std::size_t> old_counts;
+            std::unordered_map<std::uint16_t, std::size_t> new_counts;
+            for (const GyroidItem& entry : candidate.items) {
+                if (entry.item != 0) ++old_counts[entry.item];
+            }
+            for (const GyroidItem& entry : operation.items) {
+                if (entry.item != 0) ++new_counts[entry.item];
+            }
+            for (const auto& entry : new_counts) {
+                const std::size_t old_count = old_counts[entry.first];
+                for (std::size_t count = old_count; count < entry.second; ++count) {
+                    const auto slot = std::find_if(candidate_inventory.slots.begin(),
+                                                   candidate_inventory.slots.end(),
+                        [&](const ItemSlot& value) { return value.item == entry.first; });
+                    if (slot == candidate_inventory.slots.end()) {
+                        result.code = ResultCode::InvalidState;
+                        gyroid_idempotency_[key] = result;
+                        return result;
+                    }
+                    *slot = {};
+                    inventory_changed = true;
+                }
+            }
+            for (const auto& entry : old_counts) {
+                const std::size_t new_count = new_counts[entry.first];
+                for (std::size_t count = new_count; count < entry.second; ++count) {
+                    const auto slot = empty_slot(candidate_inventory);
+                    if (!slot.has_value()) {
+                        result.code = ResultCode::InvalidState;
+                        gyroid_idempotency_[key] = result;
+                        return result;
+                    }
+                    candidate_inventory.slots[*slot] = {entry.first, 0};
+                    inventory_changed = true;
+                }
+            }
+            candidate.items = operation.items;
+            candidate.message = operation.message;
+            break;
+        }
+        case GyroidOpType::Take: {
+            GyroidItem& entry = candidate.items[operation.item_slot];
+            const auto slot = empty_slot(candidate_inventory);
+            if (entry.item == 0 || entry.exchange == kGyroidExchangeDisplay ||
+                (operation.expected_item != 0 && entry.item != operation.expected_item) || !slot.has_value()) {
+                result.code = ResultCode::InvalidState;
+                gyroid_idempotency_[key] = result;
+                return result;
+            }
+            const std::uint32_t price = entry.exchange == kGyroidExchangeSale ? entry.price : 0;
+            if (candidate_inventory.bells < price) {
+                result.code = ResultCode::InvalidState;
+                gyroid_idempotency_[key] = result;
+                return result;
+            }
+            candidate_inventory.bells -= price;
+            candidate.bells += std::min(price, std::numeric_limits<std::uint32_t>::max() - candidate.bells);
+            candidate_inventory.slots[*slot] = {entry.item, 0};
+            result.item = entry.item;
+            result.price = price;
+            result.inventory_slot = *slot;
+            entry = {};
+            inventory_changed = true;
+            break;
+        }
+        case GyroidOpType::Collect: {
+            if (candidate.bells == 0) {
+                result.code = ResultCode::InvalidState;
+                gyroid_idempotency_[key] = result;
+                return result;
+            }
+            result.bells_collected = candidate.bells;
+            candidate_inventory.bells +=
+                std::min(candidate.bells, std::numeric_limits<std::uint32_t>::max() - candidate_inventory.bells);
+            candidate.bells = 0;
+            /* The wallet cannot hold it all, so the overflow comes back as
+             * money bags -- the same policy the economy applies to a sale.
+             * Bells that fit in no pocket stay in the wallet above the cap
+             * rather than being destroyed. */
+            if (wallet_maximum_ != 0 && wallet_overflow_chunk_ != 0) {
+                while (candidate_inventory.bells >= wallet_maximum_) {
+                    const auto bag = empty_slot(candidate_inventory);
+                    if (!bag.has_value()) break;
+                    candidate_inventory.bells -= wallet_overflow_chunk_;
+                    candidate_inventory.slots[*bag].item = wallet_overflow_item_;
+                }
+            }
+            inventory_changed = true;
+            break;
+        }
+    }
+    candidate.revision = next_revision(candidate.revision);
+    if (inventory_changed) {
+        candidate_inventory.revision = next_revision(candidate_inventory.revision);
+        if (!world_->set_inventory(operation.account, candidate_inventory)) {
+            result.code = ResultCode::InternalError;
+            return result;
+        }
+    }
+    house.gyroid = std::move(candidate);
+    result.code = ResultCode::Ok;
+    result.gyroid_revision = house.gyroid.revision;
+    result.inventory_revision = inventory_changed ? candidate_inventory.revision : current_inventory->revision;
+    gyroid_idempotency_[key] = result;
+    return result;
+}
+
 std::size_t HousingAuthority::resident_count() const {
     std::size_t count = 0;
     for (AccountId account : residents_) {

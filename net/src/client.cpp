@@ -349,6 +349,8 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             town_capacity_ = baseline_.town_capacity;
             residents_ = baseline_.residents;
             has_residents_ = true;
+            gyroids_ = baseline_.gyroids;
+            ++gyroid_serial_;
             baseline_received_ms_ = now_ms;
             has_baseline_ = true;
             /* A baseline is the whole truth for this chunk, so anything still
@@ -529,6 +531,24 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
                     has_residents_ = true;
                     if (has_baseline_) baseline_.residents = roster;
                 }
+                if (delta.kind == ResourceKind::Gyroid) {
+                    GyroidDelta gyroid;
+                    if (!decode_gyroid_delta(delta.payload, gyroid)) {
+                        error = "malformed gyroid delta";
+                        return false;
+                    }
+                    ZoneBaseline::GyroidEntry& entry = gyroids_[gyroid.original_slot];
+                    /* An older delta can arrive after a newer one; the revision
+                     * decides, not arrival order. */
+                    if (!entry.occupied || entry.house_id != gyroid.house_id ||
+                        gyroid.state.revision >= entry.state.revision) {
+                        entry.occupied = true;
+                        entry.house_id = gyroid.house_id;
+                        entry.state = gyroid.state;
+                        ++gyroid_serial_;
+                        if (has_baseline_) baseline_.gyroids[gyroid.original_slot] = entry;
+                    }
+                }
                 if (delta.revision > baseline_revision_) baseline_revision_ = delta.revision;
             }
             break;
@@ -622,6 +642,11 @@ bool ClientRuntime::dispatch(DecodedPacket packet, std::uint64_t now_ms, std::st
             break;
         case MessageType::HouseUpdateResult:
             if (!decode(packet.payload, house_update_result_.emplace())) return false;
+            break;
+        case MessageType::GyroidResult:
+            if (!decode(packet.payload, gyroid_result_.emplace())) return false;
+            if (has_baseline_ && gyroid_result_->code == ResultCode::Ok)
+                baseline_.inventory.revision = gyroid_result_->inventory_revision;
             break;
         case MessageType::EncounterResult:
             if (!decode(packet.payload, encounter_result_.emplace())) return false;
@@ -873,6 +898,13 @@ bool ClientRuntime::request(EncounterRequest value, std::uint64_t now_ms, std::s
     return send_payload(MessageType::EncounterRequest, Channel::Transactions, payload, now_ms, error);
 }
 
+bool ClientRuntime::request(GyroidOperation value, std::uint64_t now_ms, std::string& error) {
+    value.account = config_.account;
+    std::vector<std::uint8_t> payload;
+    if (!encode(value, payload)) { error = "failed to encode gyroid request"; return false; }
+    return send_payload(MessageType::GyroidRequest, Channel::Transactions, payload, now_ms, error);
+}
+
 std::optional<WorldResult> ClientRuntime::take_world_result() {
     auto result = std::move(world_result_); world_result_.reset(); return result;
 }
@@ -896,6 +928,9 @@ std::optional<HouseUpdateResult> ClientRuntime::take_house_update_result() {
 }
 std::optional<EncounterResult> ClientRuntime::take_encounter_result() {
     auto result = std::move(encounter_result_); encounter_result_.reset(); return result;
+}
+std::optional<GyroidResult> ClientRuntime::take_gyroid_result() {
+    auto result = std::move(gyroid_result_); gyroid_result_.reset(); return result;
 }
 
 std::vector<RemotePresentation> ClientRuntime::remote_players() const {

@@ -38,6 +38,11 @@ enum class ResourceKind : std::uint8_t {
      * and a donor needs to know a species is already displayed before offering
      * it. Carries the revision a Donate has to quote. */
     Museum,
+    /* One house's exterior gyroid: the displayed items, the visitor message,
+     * and the held proceeds. Town-wide, because the gyroids stand in the field
+     * where every player can browse them, not inside the house whose baseline
+     * would otherwise carry them. */
+    Gyroid,
 };
 
 /* Town-wide occupancy, replicated so the count stays live between baselines.
@@ -98,6 +103,17 @@ struct ResidentRoster {
 bool encode_resident_delta(const ResidentRoster& roster, std::vector<std::uint8_t>& output);
 bool decode_resident_delta(const std::vector<std::uint8_t>& input, ResidentRoster& roster);
 
+/* One resident house's gyroid changing. `original_slot` names the save-side
+ * Save_t.homes[] entry the viewer projects it into. */
+struct GyroidDelta {
+    std::uint64_t house_id = 0;
+    std::uint8_t original_slot = 0;
+    GyroidState state;
+};
+
+bool encode_gyroid_delta(const GyroidDelta& delta, std::vector<std::uint8_t>& output);
+bool decode_gyroid_delta(const std::vector<std::uint8_t>& input, GyroidDelta& delta);
+
 struct ZoneBaseline {
     Tick server_tick = 0;
     Revision revision = 0;
@@ -125,6 +141,14 @@ struct ZoneBaseline {
     /* Town-wide, like the shelf: what the museum already displays, so a donor
      * is not offered a duplicate and Donate has a revision to quote. */
     MuseumState museum;
+    /* The four resident gyroids, slot-indexed. `occupied` false means the slot
+     * has no registered house and the state beside it is meaningless. */
+    struct GyroidEntry {
+        bool occupied = false;
+        std::uint64_t house_id = 0;
+        GyroidState state;
+    };
+    std::array<GyroidEntry, kOriginalResidentSlots> gyroids{};
     std::vector<std::pair<TileAddress, TileState>> tiles;
     std::vector<PlayerSnapshot> players;
     std::vector<NpcState> npcs;

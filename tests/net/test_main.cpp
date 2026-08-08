@@ -2782,6 +2782,198 @@ void zone_handoffs_and_four_resident_housing_are_safe() {
     CHECK(housing.apply(visitor).code == acnet::ResultCode::Unauthorized);
 }
 
+void gyroids_replicate_and_transact() {
+    /* Wire round trips first: the operation, the result, and the delta. */
+    acnet::GyroidOperation update;
+    update.type = acnet::GyroidOpType::Update;
+    update.account = 1;
+    update.idempotency = {70, 1};
+    update.house_id = 10000;
+    update.expected_gyroid_revision = 1;
+    update.expected_inventory_revision = 1;
+    update.items[0] = {0x1100, acnet::kGyroidExchangeSale, 400};
+    update.items[2] = {0x2200, acnet::kGyroidExchangeFree, 0};
+    update.message[0] = 'Y';
+    update.message[127] = 'o';
+    std::vector<std::uint8_t> bytes;
+    CHECK(acnet::encode(update, bytes));
+    acnet::GyroidOperation decoded_op;
+    CHECK(acnet::decode(bytes, decoded_op));
+    CHECK(decoded_op.type == acnet::GyroidOpType::Update);
+    CHECK(decoded_op.items[0].price == 400);
+    CHECK(decoded_op.items[2].item == 0x2200);
+    CHECK(decoded_op.message[127] == 'o');
+    bytes.pop_back();
+    CHECK(!acnet::decode(bytes, decoded_op));
+    /* A sale without a price, a price on a free item, and an empty slot with
+     * terms are all nonsense the codec refuses in both directions. */
+    acnet::GyroidOperation invalid = update;
+    invalid.items[0] = {0x1100, acnet::kGyroidExchangeSale, 0};
+    CHECK(!acnet::encode(invalid, bytes));
+    invalid.items[0] = {0x1100, acnet::kGyroidExchangeFree, 5};
+    CHECK(!acnet::encode(invalid, bytes));
+    invalid.items[0] = {0, acnet::kGyroidExchangeSale, 0};
+    CHECK(!acnet::encode(invalid, bytes));
+    invalid = update;
+    invalid.item_slot = acnet::kGyroidItemSlots;
+    CHECK(!acnet::encode(invalid, bytes));
+
+    acnet::GyroidResult wire_result;
+    wire_result.code = acnet::ResultCode::Ok;
+    wire_result.idempotency = {70, 1};
+    wire_result.house_id = 10000;
+    wire_result.gyroid_revision = 2;
+    wire_result.inventory_revision = 3;
+    wire_result.item = 0x1100;
+    wire_result.price = 400;
+    wire_result.inventory_slot = 5;
+    CHECK(acnet::encode(wire_result, bytes));
+    acnet::GyroidResult decoded_result;
+    CHECK(acnet::decode(bytes, decoded_result));
+    CHECK(decoded_result.price == 400 && decoded_result.inventory_slot == 5);
+
+    acnet::GyroidDelta delta;
+    delta.house_id = 10000;
+    delta.original_slot = 2;
+    delta.state.revision = 4;
+    delta.state.items[3] = {0x3300, acnet::kGyroidExchangeDisplay, 0};
+    delta.state.bells = 77;
+    CHECK(acnet::encode_gyroid_delta(delta, bytes));
+    acnet::GyroidDelta decoded_delta;
+    CHECK(acnet::decode_gyroid_delta(bytes, decoded_delta));
+    CHECK(decoded_delta.original_slot == 2 && decoded_delta.state.items[3].item == 0x3300 &&
+          decoded_delta.state.bells == 77);
+    delta.original_slot = acnet::kOriginalResidentSlots;
+    CHECK(!acnet::encode_gyroid_delta(delta, bytes));
+
+    /* Authority. Account 1 owns the house; account 2 is the browsing guest. */
+    acnet::WorldAuthority world(nullptr);
+    acnet::InventoryState owner_inventory;
+    owner_inventory.slots[0].item = 0x1100;
+    owner_inventory.slots[1].item = 0x2200;
+    CHECK(world.register_inventory(1, owner_inventory));
+    acnet::InventoryState guest_inventory;
+    guest_inventory.bells = 1000;
+    CHECK(world.register_inventory(2, guest_inventory));
+    acnet::HousingAuthority housing(&world);
+    housing.set_wallet_policy(99999, 30000, 0x1EC0);
+    CHECK(housing.register_resident(0, 1, 100));
+
+    /* The owner puts both pocket items on display; they leave the pockets. */
+    update.house_id = housing.house_for(1)->house_id;
+    auto result = housing.apply_gyroid(update);
+    CHECK(result.code == acnet::ResultCode::Ok);
+    CHECK(world.inventory(1)->slots[0].item == 0);
+    CHECK(world.inventory(1)->slots[1].item == 0);
+    CHECK(housing.house_for(1)->gyroid.items[0].item == 0x1100);
+    CHECK(housing.house_for(1)->gyroid.message[0] == 'Y');
+    CHECK(housing.apply_gyroid(update).replayed);
+
+    /* The guest may not buy with a stale revision, an empty slot, or thin air
+     * for a wallet; the owner may not "take" their own display at all. */
+    acnet::GyroidOperation take;
+    take.type = acnet::GyroidOpType::Take;
+    take.account = 2;
+    take.idempotency = {70, 2};
+    take.house_id = update.house_id;
+    take.expected_gyroid_revision = 1;
+    take.expected_inventory_revision = world.inventory(2)->revision;
+    take.item_slot = 0;
+    take.expected_item = 0x1100;
+    CHECK(housing.apply_gyroid(take).code == acnet::ResultCode::StaleRevision);
+    take.idempotency = {70, 3};
+    take.expected_gyroid_revision = result.gyroid_revision;
+    take.item_slot = 1;
+    take.expected_item = 0;
+    CHECK(housing.apply_gyroid(take).code == acnet::ResultCode::InvalidState);
+    take.idempotency = {70, 4};
+    take.account = 1;
+    take.item_slot = 0;
+    take.expected_item = 0x1100;
+    take.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(housing.apply_gyroid(take).code == acnet::ResultCode::Unauthorized);
+
+    /* A real purchase: the item lands in the guest's pocket, the price leaves
+     * their wallet, and the gyroid holds the proceeds. */
+    take.idempotency = {70, 5};
+    take.account = 2;
+    take.expected_inventory_revision = world.inventory(2)->revision;
+    result = housing.apply_gyroid(take);
+    CHECK(result.code == acnet::ResultCode::Ok);
+    CHECK(result.item == 0x1100 && result.price == 400);
+    CHECK(world.inventory(2)->slots[result.inventory_slot].item == 0x1100);
+    CHECK(world.inventory(2)->bells == 600);
+    CHECK(housing.house_for(1)->gyroid.items[0].item == 0);
+    CHECK(housing.house_for(1)->gyroid.bells == 400);
+
+    /* The free item costs nothing; 600 bells stay put. */
+    acnet::GyroidOperation take_free = take;
+    take_free.idempotency = {70, 6};
+    take_free.expected_gyroid_revision = result.gyroid_revision;
+    take_free.expected_inventory_revision = result.inventory_revision;
+    take_free.item_slot = 2;
+    take_free.expected_item = 0x2200;
+    result = housing.apply_gyroid(take_free);
+    CHECK(result.code == acnet::ResultCode::Ok && result.price == 0);
+    CHECK(world.inventory(2)->bells == 600);
+
+    /* Only the owner collects, and the wallet cap breaks into money bags
+     * exactly as a sale at the counter does. */
+    acnet::GyroidOperation collect;
+    collect.type = acnet::GyroidOpType::Collect;
+    collect.account = 2;
+    collect.idempotency = {70, 7};
+    collect.house_id = take.house_id;
+    collect.expected_gyroid_revision = result.gyroid_revision;
+    collect.expected_inventory_revision = result.inventory_revision;
+    CHECK(housing.apply_gyroid(collect).code == acnet::ResultCode::Unauthorized);
+    world.inventory(1);
+    {
+        acnet::InventoryState rich = *world.inventory(1);
+        rich.bells = 99900;
+        CHECK(world.set_inventory(1, rich));
+    }
+    collect.account = 1;
+    collect.idempotency = {70, 8};
+    collect.expected_inventory_revision = world.inventory(1)->revision;
+    result = housing.apply_gyroid(collect);
+    CHECK(result.code == acnet::ResultCode::Ok);
+    CHECK(result.bells_collected == 400);
+    /* 99900 + 400 = 100300, over the 99999 cap: one 30000 bag comes back. */
+    CHECK(world.inventory(1)->bells == 70300);
+    CHECK(world.inventory(1)->slots[0].item == 0x1EC0);
+    CHECK(housing.house_for(1)->gyroid.bells == 0);
+    collect.idempotency = {70, 9};
+    collect.expected_gyroid_revision = result.gyroid_revision;
+    collect.expected_inventory_revision = result.inventory_revision;
+    CHECK(housing.apply_gyroid(collect).code == acnet::ResultCode::InvalidState);
+
+    /* Display-only items refuse a take. */
+    acnet::GyroidOperation display = update;
+    display.idempotency = {70, 10};
+    display.expected_gyroid_revision = housing.house_for(1)->gyroid.revision;
+    display.expected_inventory_revision = world.inventory(1)->revision;
+    display.items = {};
+    display.items[0] = {0x3300, acnet::kGyroidExchangeDisplay, 0};
+    /* 0x3300 is not in the owner's pockets, so the diff must refuse it... */
+    CHECK(housing.apply_gyroid(display).code == acnet::ResultCode::InvalidState);
+    {
+        acnet::InventoryState stocked = *world.inventory(1);
+        stocked.slots[10].item = 0x3300;
+        CHECK(world.set_inventory(1, stocked));
+    }
+    display.idempotency = {70, 11};
+    display.expected_inventory_revision = world.inventory(1)->revision;
+    CHECK(housing.apply_gyroid(display).code == acnet::ResultCode::Ok);
+    acnet::GyroidOperation take_display = take;
+    take_display.idempotency = {70, 12};
+    take_display.expected_gyroid_revision = housing.house_for(1)->gyroid.revision;
+    take_display.expected_inventory_revision = world.inventory(2)->revision;
+    take_display.item_slot = 0;
+    take_display.expected_item = 0x3300;
+    CHECK(housing.apply_gyroid(take_display).code == acnet::ResultCode::InvalidState);
+}
+
 void persistence_recovers_checkpoints_journal_and_gci() {
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path root =
@@ -3030,6 +3222,12 @@ void clock_jobs_and_replication_survive_empty_time() {
     baseline.residents.slots[2].name = {'R', 'E', 'X', ' ', ' ', ' ', ' ', ' '};
     baseline.residents.slots[2].gender = 0;
     baseline.residents.slots[2].occupied = true;
+    baseline.gyroids[0].occupied = true;
+    baseline.gyroids[0].house_id = 10000;
+    baseline.gyroids[0].state.revision = 3;
+    baseline.gyroids[0].state.items[1] = {0x1234, acnet::kGyroidExchangeSale, 500};
+    baseline.gyroids[0].state.message[0] = 'H';
+    baseline.gyroids[0].state.bells = 1200;
     std::vector<std::uint8_t> baseline_bytes;
     CHECK(acnet::encode_baseline(baseline, baseline_bytes));
     acnet::ZoneBaseline decoded;
@@ -3054,6 +3252,16 @@ void clock_jobs_and_replication_survive_empty_time() {
     CHECK(decoded.residents.slots[2].account == 9002);
     CHECK(!decoded.residents.slots[1].occupied);
     CHECK(decoded.residents.slots[1].account == 0);
+    /* The gyroids ride the baseline town-wide, like the roster. */
+    CHECK(decoded.gyroids[0].occupied);
+    CHECK(decoded.gyroids[0].house_id == 10000);
+    CHECK(decoded.gyroids[0].state.revision == 3);
+    CHECK(decoded.gyroids[0].state.items[1].item == 0x1234);
+    CHECK(decoded.gyroids[0].state.items[1].exchange == acnet::kGyroidExchangeSale);
+    CHECK(decoded.gyroids[0].state.items[1].price == 500);
+    CHECK(decoded.gyroids[0].state.message[0] == 'H');
+    CHECK(decoded.gyroids[0].state.bells == 1200);
+    CHECK(!decoded.gyroids[1].occupied);
     baseline_bytes.pop_back();
     CHECK(!acnet::decode_baseline(baseline_bytes, decoded));
 
@@ -4818,6 +5026,7 @@ int main() {
         {"operator gifts survive a restart", operator_gifts_survive_a_restart},
         {"NPC conversation leases", npc_leases_scope_conversations_and_disconnects},
         {"zone handoff and housing", zone_handoffs_and_four_resident_housing_are_safe},
+        {"gyroid replication and trade", gyroids_replicate_and_transact},
         {"persistence crash recovery", persistence_recovers_checkpoints_journal_and_gci},
         {"semantic GCI round trip", gci_semantic_conversion_preserves_native_save},
         {"clock jobs and replication", clock_jobs_and_replication_survive_empty_time},

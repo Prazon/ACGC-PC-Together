@@ -21,6 +21,7 @@
 | Museum collection | Client requests | Server transaction, museum revision | Baseline plus town-wide `Museum` delta |
 | Zone transition | Client requests | Coordinator | Reliable transfer token |
 | House/furniture | Client requests | Server transaction | Reliable revisioned delta |
+| House gyroid (display items, message, proceeds) | Owner submits whole; guest take and owner collect are requests | Server transaction, gyroid revision, `HousingAuthority` | Baseline plus town-wide `Gyroid` delta; actor re-baselined |
 | Resident roster (who owns each of the four houses) | Server | Server, from the persistent account table | Baseline plus town-wide `Resident` delta |
 | Island tiles and ground items | Client requests | Server transaction, zone 300 | Reliable `Tile` delta, as above |
 | Island cabin furniture | Any client present in the cabin | Server transaction, shared house | Re-baseline to the cabin's occupants |

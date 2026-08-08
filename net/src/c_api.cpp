@@ -910,6 +910,78 @@ extern "C" int acnet_client_submit_house_update(uint64_t house_id,
     } catch (...) { capture_exception(); return 0; }
 }
 
+extern "C" uint32_t acnet_client_gyroid_serial(void) {
+    return client ? client->gyroid_serial() : 0;
+}
+
+extern "C" int acnet_client_gyroid(uint32_t slot, AcNetGyroidState* output) {
+    try {
+        if (!client || output == nullptr) return 0;
+        const auto* entry = client->gyroid(slot);
+        if (entry == nullptr) return 0;
+        output->house_id = entry->house_id;
+        output->revision = entry->state.revision;
+        for (std::size_t i = 0; i < acnet::kGyroidItemSlots; ++i) {
+            output->items[i] = {entry->state.items[i].item, entry->state.items[i].exchange,
+                                entry->state.items[i].price};
+        }
+        std::copy(entry->state.message.begin(), entry->state.message.end(), output->message);
+        output->bells = entry->state.bells;
+        return 1;
+    } catch (...) { capture_exception(); return 0; }
+}
+
+namespace {
+
+int request_gyroid(acnet::GyroidOperation&& operation, uint32_t slot) {
+    if (!client) return 0;
+    const auto* entry = client->gyroid(slot);
+    const acnet::ZoneBaseline* baseline = client->baseline();
+    if (entry == nullptr || baseline == nullptr || baseline->inventory.revision == 0) return 0;
+    operation.idempotency = random_idempotency();
+    operation.house_id = entry->house_id;
+    operation.expected_gyroid_revision = entry->state.revision;
+    operation.expected_inventory_revision = baseline->inventory.revision;
+    return operation.idempotency.valid() &&
+           client->request(std::move(operation), acnet::client_monotonic_milliseconds(), last_error) ? 1 : 0;
+}
+
+} // namespace
+
+extern "C" int acnet_client_request_gyroid_update(uint32_t slot,
+                                                  const AcNetGyroidItem items[4],
+                                                  const uint8_t message[128]) {
+    try {
+        if (items == nullptr || message == nullptr) return 0;
+        acnet::GyroidOperation operation;
+        operation.type = acnet::GyroidOpType::Update;
+        for (std::size_t i = 0; i < acnet::kGyroidItemSlots; ++i) {
+            operation.items[i] = {items[i].item, items[i].exchange, items[i].price};
+        }
+        std::copy_n(message, operation.message.size(), operation.message.begin());
+        return request_gyroid(std::move(operation), slot);
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_gyroid_take(uint32_t slot, uint32_t item_slot, uint16_t expected_item) {
+    try {
+        if (item_slot >= acnet::kGyroidItemSlots) return 0;
+        acnet::GyroidOperation operation;
+        operation.type = acnet::GyroidOpType::Take;
+        operation.item_slot = static_cast<std::uint8_t>(item_slot);
+        operation.expected_item = expected_item;
+        return request_gyroid(std::move(operation), slot);
+    } catch (...) { capture_exception(); return 0; }
+}
+
+extern "C" int acnet_client_request_gyroid_collect(uint32_t slot) {
+    try {
+        acnet::GyroidOperation operation;
+        operation.type = acnet::GyroidOpType::Collect;
+        return request_gyroid(std::move(operation), slot);
+    } catch (...) { capture_exception(); return 0; }
+}
+
 extern "C" int acnet_client_take_house_update_result(AcNetHouseUpdateResult* output) {
     try {
         if (!client || output == nullptr) return 0;

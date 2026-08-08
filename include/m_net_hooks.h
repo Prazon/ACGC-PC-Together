@@ -127,6 +127,18 @@ u64 Net_CarriedMailId(int index);
 int Net_RequestTakeMail(u64 mail_id);
 int Net_RequestClaimMail(u64 mail_id);
 int Net_RequestDiscardMail(u64 mail_id);
+
+/* TRUE once the server has reported the four resident gyroids.
+ * Save_Get(homes[i]).haniwa is then a projection of authoritative state: the
+ * owner's edits are captured and submitted whole when the submenu closes, and
+ * the two contested moves below are server transactions. */
+int Net_GyroidAuthoritative(void);
+/* A guest takes (and pays for) display slot `item_slot` of house `house_idx`'s
+ * gyroid. The local mutation may proceed optimistically; the projection
+ * settles it when the result and the gyroid delta land. */
+int Net_RequestGyroidTake(int house_idx, int item_slot, mActor_name_t item);
+/* The owner empties the gyroid's sale proceeds into their wallet. */
+int Net_RequestGyroidCollect(int house_idx);
 #else
 #define Net_PreSimulation(play) ((void)0)
 #define Net_PostSimulation(play) ((void)0)
@@ -177,6 +189,9 @@ int Net_RequestDiscardMail(u64 mail_id);
 #define Net_RequestTakeMail(mail_id) FALSE
 #define Net_RequestClaimMail(mail_id) FALSE
 #define Net_RequestDiscardMail(mail_id) FALSE
+#define Net_GyroidAuthoritative() FALSE
+#define Net_RequestGyroidTake(house_idx, item_slot, item) FALSE
+#define Net_RequestGyroidCollect(house_idx) FALSE
 #endif
 
 #ifdef __cplusplus

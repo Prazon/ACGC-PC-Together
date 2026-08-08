@@ -3326,6 +3326,11 @@ static void mTG_get_proc(Submenu* submenu, mSM_MenuInfo_c* menu_info) {
             mTG_return_tag_init(submenu, mTG_TYPE_NONE, mTG_RETURN_CLOSE);
             sAdo_SysTrgStart(MONO(NA_SE_3));
         } else {
+            /* Online, taking off someone's gyroid is a server transaction: the
+             * price, the pocket slot and the proceeds are all committed there,
+             * and the projections settle whatever the optimistic copy below
+             * gets wrong. */
+            Net_RequestGyroidTake(menu_info->data1, tag->tag_col, haniwa_item_p->item);
             inventory_ovl = submenu->overlay->inventory_ovl;
             money_name_p = mTG_money_name;
             money_amount_p = mTG_money_amount;

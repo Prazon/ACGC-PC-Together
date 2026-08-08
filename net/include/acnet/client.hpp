@@ -124,6 +124,14 @@ public:
      * is why has_residents() is separate from an all-vacant roster. */
     const ResidentRoster& residents() const { return residents_; }
     bool has_residents() const { return has_residents_; }
+    /* The four resident gyroids, slot-indexed; seeded by the baseline and kept
+     * live by Gyroid deltas. The serial counts changes -- baseline or delta --
+     * so a viewer reprojects only when something actually moved, exactly like
+     * baseline_serial(). Zero until the first baseline. */
+    const ZoneBaseline::GyroidEntry* gyroid(std::size_t slot) const {
+        return slot < gyroids_.size() && gyroids_[slot].occupied ? &gyroids_[slot] : nullptr;
+    }
+    std::uint32_t gyroid_serial() const { return gyroid_serial_; }
     /* The authoritative mailbox mirror: the baseline seeds it and Mail deltas
      * keep it live, so a claim always quotes a revision the server issued. */
     const MailboxState& mailbox() const { return baseline_.mailbox; }
@@ -146,6 +154,7 @@ public:
     bool request(FurnitureOperation operation, std::uint64_t now_ms, std::string& error);
     bool request(HouseUpdate update, std::uint64_t now_ms, std::string& error);
     bool request(EncounterRequest request, std::uint64_t now_ms, std::string& error);
+    bool request(GyroidOperation operation, std::uint64_t now_ms, std::string& error);
 
     std::optional<WorldResult> take_world_result();
     std::optional<EconomyResult> take_economy_result();
@@ -155,6 +164,7 @@ public:
     std::optional<FurnitureResult> take_furniture_result();
     std::optional<HouseUpdateResult> take_house_update_result();
     std::optional<EncounterResult> take_encounter_result();
+    std::optional<GyroidResult> take_gyroid_result();
     std::optional<TownBootstrapResult> take_town_bootstrap_result();
 
 private:
@@ -235,6 +245,8 @@ private:
     std::uint8_t town_capacity_ = 1;
     ResidentRoster residents_;
     bool has_residents_ = false;
+    std::array<ZoneBaseline::GyroidEntry, kOriginalResidentSlots> gyroids_{};
+    std::uint32_t gyroid_serial_ = 0;
     std::optional<WorldResult> world_result_;
     std::optional<EconomyResult> economy_result_;
     std::optional<TradeResult> trade_result_;
@@ -243,6 +255,7 @@ private:
     std::optional<FurnitureResult> furniture_result_;
     std::optional<HouseUpdateResult> house_update_result_;
     std::optional<EncounterResult> encounter_result_;
+    std::optional<GyroidResult> gyroid_result_;
     std::optional<TownBootstrapResult> town_bootstrap_result_;
     Transform authoritative_local_;
     std::uint32_t authoritative_ack_ = 0;

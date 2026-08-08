@@ -1,4 +1,4 @@
-# Dedicated town protocol v16
+# Dedicated town protocol v17
 
 `kProtocolVersion` in `net/include/acnet/types.hpp` is the source of truth;
 negotiation is strict (`min == max`), so a version mismatch is a clean
@@ -43,6 +43,45 @@ the roster differs from the last one published, which covers a first login
 claiming a slot, an appearance change, and a GCI import alike. Like `Town`, a
 `Resident` delta is town-wide and bypasses zone and distance filtering — the map
 is usually opened from indoors.
+
+## House gyroids
+
+Each resident house's exterior gyroid (`Haniwa_c`: four display slots, a
+128-byte visitor message in the game's own font encoding, and the bells guests
+have paid) is server state, added in v17.
+
+`Baseline` carries all four after the museum block, slot-indexed: `occupied`
+(u8), then for an occupied slot a u64 `house_id` and the gyroid state —
+`revision` (u32), four items of `item` (u16), `exchange` (u8), `price` (u32),
+the 128 message bytes, and `bells` (u32). `exchange` mirrors
+`mHm_HANIWA_TRADE_*`: 0 free, 1 display-only, 2 for sale, and the unused 3 is
+rejected. An item of 0 must carry zero terms; a sale must carry a non-zero
+price and anything else must not. `ResourceKind::Gyroid` deltas carry one
+house's `house_id` (u64), `original_slot` (u8) and the same state encoding, and
+are town-wide like `Resident` — the gyroids stand in the field where anyone can
+browse them.
+
+`GyroidRequest` (34) / `GyroidResult` (35) ride the Transactions channel and
+carry one of three operations, discriminated by a leading u8:
+
+- **Update** (owner only): replaces the four display slots and the message
+  whole. The server diffs the display against the old one and moves the
+  difference through the owner's pockets, exactly as a whole-house furniture
+  submit does; an update that cannot balance is refused. Bells never travel
+  this way.
+- **Take** (guests only — the owner's path is Update): removes one displayed
+  item into the first empty pocket, paying `price` from the wallet when the
+  slot is for sale. Display-only slots and short wallets refuse.
+- **Collect** (owner only): empties the accumulated bells into the wallet,
+  breaking the wallet cap into money bags under the same overflow rule as a
+  sale at the counter.
+
+All three quote the gyroid revision and the inventory revision, carry an
+idempotency key, and require the actor to stand in the town field zone — the
+house's interior zone does not authorize its exterior gyroid. After an accepted
+operation the server broadcasts the gyroid delta and re-baselines the acting
+connection, because a diffed update or an overflow bag cannot be mirrored from
+the result alone.
 
 ## Encounters
 
